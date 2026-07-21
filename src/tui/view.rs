@@ -39,6 +39,7 @@ pub(crate) fn draw(f: &mut Frame, app: &App) {
     match &app.overlay {
         Overlay::None => {}
         Overlay::Help => draw_help(f),
+        Overlay::Notice { text } => draw_notice(f, text),
         Overlay::ConfirmRemove { info, force, dirty } => {
             draw_confirm_remove(f, info, *force, *dirty)
         }
@@ -289,6 +290,27 @@ fn draw_help(f: &mut Frame) {
     f.render_widget(Clear, area);
     f.render_widget(
         Paragraph::new(Text::from(lines)).block(Block::bordered().title(" Help ")),
+        area,
+    );
+}
+
+/// A small, dismissible notice modal (rejected actions, etc.).
+fn draw_notice(f: &mut Frame, text: &str) {
+    let lines = vec![
+        Line::from(text.to_string()),
+        Line::raw(""),
+        Line::styled(
+            "press enter or esc to dismiss",
+            Style::new().fg(Color::DarkGray),
+        ),
+    ];
+    let width = (text.len() as u16 + 4).max(28).min(f.area().width);
+    let area = centered(f.area(), width, (lines.len() + 2) as u16);
+    f.render_widget(Clear, area);
+    f.render_widget(
+        Paragraph::new(Text::from(lines))
+            .wrap(Wrap { trim: false })
+            .block(Block::bordered().title(" Notice ")),
         area,
     );
 }
