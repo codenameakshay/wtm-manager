@@ -83,6 +83,13 @@ pub(crate) enum CreateField {
 pub(crate) enum Overlay {
     None,
     Help,
+    /// A dismissible informational modal (e.g. a rejected action). Any key
+    /// closes it; crucially it captures that key so it never falls through to
+    /// a normal-mode binding — notably `Enter`, which would otherwise switch
+    /// worktree and quit the whole TUI.
+    Notice {
+        text: String,
+    },
     ConfirmRemove {
         info: WorktreeInfo,
         /// Explicit force choice; required before confirming a dirty
@@ -265,6 +272,18 @@ impl App {
                     key.code,
                     KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('?') | KeyCode::Enter
                 ) {
+                    self.overlay = Overlay::None;
+                }
+                Vec::new()
+            }
+            // A notice swallows EVERY key (nothing leaks to normal mode) and
+            // closes only on an explicit acknowledge/cancel key. This is what
+            // makes a burst like `d f Enter` safe when `d` opened the notice
+            // (cursor on the main worktree): `f` is swallowed and keeps the
+            // modal up, and the trailing Enter dismisses it here instead of
+            // falling through to the normal-mode switch-and-quit binding.
+            Overlay::Notice { .. } => {
+                if matches!(key.code, KeyCode::Enter | KeyCode::Esc | KeyCode::Char('q')) {
                     self.overlay = Overlay::None;
                 }
                 Vec::new()
@@ -471,10 +490,13 @@ impl App {
                     return Vec::new();
                 };
                 if info.is_main {
-                    self.message = Some(Message {
+                    // A modal (not a footer note): the follow-up keystroke a
+                    // user types when they expected the remove dialog — most
+                    // dangerously Enter — is captured here instead of leaking
+                    // into normal mode, where Enter would switch and quit.
+                    self.overlay = Overlay::Notice {
                         text: "cannot remove the main worktree".to_string(),
-                        error: true,
-                    });
+                    };
                     return Vec::new();
                 }
                 let dirty = info.status.as_ref().is_some_and(|s| s.dirty);
@@ -762,10 +784,12 @@ mod tests {
             info("main", true),
             with_status(info("feat", false), true, false),
         ]);
-        // On main: message, no modal.
+        // On main: a dismissible notice modal opens (not a passive footer
+        // note), and dismissing it returns to a clean state.
         app.update(key(KeyCode::Char('d')));
+        assert!(matches!(app.overlay, Overlay::Notice { .. }));
+        app.update(key(KeyCode::Esc));
         assert!(matches!(app.overlay, Overlay::None));
-        assert!(app.message.as_ref().unwrap().text.contains("main"));
 
         // On the dirty worktree: modal opens, Enter alone is refused.
         app.update(key(KeyCode::Char('j')));
@@ -786,6 +810,36 @@ mod tests {
             }
             other => panic!("expected Remove, got {other:?}"),
         }
+        assert!(matches!(app.overlay, Overlay::None));
+    }
+
+    /// Regression: pressing `d f Enter` while the cursor is on the main
+    /// worktree (a common mistake when you have a single worktree and never
+    /// moved off `main`) must NOT silently switch-and-quit the TUI. `d` opens
+    /// a notice, `f` is swallowed but keeps it open, and the trailing Enter
+    /// dismisses the notice instead of falling through to `Effect::Switch`.
+    #[test]
+    fn d_f_enter_on_main_never_switches() {
+        let mut app = app_with(vec![
+            info("main", true),
+            with_status(info("feat", false), true, false),
+        ]);
+        // Cursor starts on main (index 0).
+        let fx = app.update(key(KeyCode::Char('d')));
+        assert!(fx.is_empty());
+        assert!(matches!(app.overlay, Overlay::Notice { .. }));
+
+        // `f` is absorbed and keeps the notice up.
+        let fx = app.update(key(KeyCode::Char('f')));
+        assert!(fx.is_empty());
+        assert!(matches!(app.overlay, Overlay::Notice { .. }));
+
+        // The trailing Enter dismisses the notice — never a Switch/Quit.
+        let fx = app.update(key(KeyCode::Enter));
+        assert!(
+            fx.is_empty(),
+            "Enter must dismiss the notice, not switch/quit: {fx:?}"
+        );
         assert!(matches!(app.overlay, Overlay::None));
     }
 
