@@ -4,6 +4,7 @@
 //! Reads go through `git2` (never a spawned `git` process); mutations shell
 //! out to the user's `git` binary so hooks and behavior match exactly.
 
+pub mod cdfile;
 pub mod cli;
 pub mod commands;
 pub mod config;
@@ -14,6 +15,7 @@ pub mod output;
 pub mod repo;
 pub mod setup;
 pub mod template;
+pub mod tui;
 pub mod worktree;
 
 pub use error::{Error, Result};

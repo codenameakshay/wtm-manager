@@ -5,6 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-07-21
+
+### Added
+
+- **Full-screen TUI** (`wtm tui`, alias `wtm ui`; bare `wtm` also launches it
+  on a TTY, printing help and exiting 0 in non-TTY contexts instead): left
+  pane lists all worktrees with status badges (branch, short HEAD,
+  ahead/behind, dirty, merged/gone/missing markers), right pane shows
+  details (upstream, path, HEAD, dirty files, recent commits). Status loads
+  in the background so launch is instant. Keybindings: `j`/`k`/`↓`/`↑` move
+  selection, `g`/`G` jump to first/last, `Enter` switch (cd on exit), `n`
+  new worktree, `d` remove (confirm; force if dirty), `Space` multi-select,
+  `p` prune merged/gone/missing (or selection) with confirm, `o` open in
+  editor, `x` run a command, `y` copy path, `/` fuzzy filter, `r` refresh
+  status, `?` help overlay, `q`/`Esc` quit.
+- **Bundled Agent Skill** at `skills/wtm/` (`SKILL.md`, `reference.md`,
+  `scripts/install.sh`) teaching coding agents to install and drive `wtm`
+  non-interactively.
+
+### Changed
+
+- **Shell wrapper**: replaced the old stdout-capture-based `wtm init`
+  wrapper with a unified cd-on-exit mechanism built on a `$WTM_CD_FILE` temp
+  file, so `cd`-on-switch works uniformly for plain commands and for the
+  full-screen TUI (which owns the terminal and can't have its stdout
+  captured). `wtm add --cd` and `wtm switch` now write the resolved path to
+  `$WTM_CD_FILE` when the wrapper is active, instead of relying on stdout
+  capture.
+
 ## [0.1.0] - 2026-07-21
 
 Initial release.

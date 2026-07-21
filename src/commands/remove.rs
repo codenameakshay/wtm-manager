@@ -1,49 +1,22 @@
 //! `wtm remove` — remove a worktree, with dirty/main/cwd safety checks.
+//!
+//! The safety-checked removal itself lives in [`remove_worktree`] so that
+//! the CLI command and the TUI `d` action share one implementation.
 
 use std::path::Path;
 
 use crate::cli::{GlobalArgs, RemoveArgs};
 use crate::error::{Error, Result};
 use crate::gitcmd;
+use crate::model::WorktreeInfo;
+use crate::repo::RepoContext;
 
 /// Remove a worktree (picked interactively when no name is given).
 pub fn run(args: &RemoveArgs, global: &GlobalArgs) -> Result<()> {
     let (ctx, config) = super::prepare(global)?;
     let target = super::resolve_target(&ctx, args.name.as_deref(), "remove")?;
 
-    if target.is_main {
-        return Err(Error::MainWorktree {
-            action: "remove".to_string(),
-        });
-    }
-
-    // Refuse to remove the worktree the user is standing in.
-    if contains_cwd(&target.path) {
-        return Err(Error::Other(format!(
-            "refusing to remove '{}': it contains the current directory (cd elsewhere first)",
-            target.display_name()
-        )));
-    }
-
-    if target.is_missing {
-        // The directory is gone; `git worktree remove --force` is the only
-        // way to drop the stale registry entry. Nothing on disk is touched.
-        if !global.quiet {
-            eprintln!(
-                "note: directory {} is missing; removing the stale registry entry",
-                target.path.display()
-            );
-        }
-        gitcmd::worktree_remove(&ctx.main_root, &target.path, true)?;
-    } else {
-        if !args.force && is_dirty(&target.path)? {
-            return Err(Error::Dirty {
-                name: target.display_name().to_string(),
-                path: target.path.clone(),
-            });
-        }
-        gitcmd::worktree_remove(&ctx.main_root, &target.path, args.force)?;
-    }
+    remove_worktree(&ctx, &target, args.force, global.quiet)?;
 
     println!(
         "Removed worktree '{}' ({})",
@@ -66,6 +39,54 @@ pub fn run(args: &RemoveArgs, global: &GlobalArgs) -> Result<()> {
                 }
             }
         }
+    }
+
+    Ok(())
+}
+
+/// Shared removal core with every safety rule:
+/// - the main worktree is never removed;
+/// - the worktree containing the current directory is never removed;
+/// - a dirty worktree is refused unless `force`;
+/// - a registry entry whose directory is already gone is removed with
+///   `--force` (the only way git drops the stale entry; nothing on disk is
+///   touched).
+pub(crate) fn remove_worktree(
+    ctx: &RepoContext,
+    target: &WorktreeInfo,
+    force: bool,
+    quiet: bool,
+) -> Result<()> {
+    if target.is_main {
+        return Err(Error::MainWorktree {
+            action: "remove".to_string(),
+        });
+    }
+
+    // Refuse to remove the worktree the user is standing in.
+    if contains_cwd(&target.path) {
+        return Err(Error::Other(format!(
+            "refusing to remove '{}': it contains the current directory (cd elsewhere first)",
+            target.display_name()
+        )));
+    }
+
+    if target.is_missing {
+        if !quiet {
+            eprintln!(
+                "note: directory {} is missing; removing the stale registry entry",
+                target.path.display()
+            );
+        }
+        gitcmd::worktree_remove(&ctx.main_root, &target.path, true)?;
+    } else {
+        if !force && is_dirty(&target.path)? {
+            return Err(Error::Dirty {
+                name: target.display_name().to_string(),
+                path: target.path.clone(),
+            });
+        }
+        gitcmd::worktree_remove(&ctx.main_root, &target.path, force)?;
     }
 
     Ok(())

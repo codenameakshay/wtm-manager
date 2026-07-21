@@ -115,6 +115,94 @@ pub fn containing(ctx: &RepoContext, path: &Path) -> Result<Option<WorktreeInfo>
         .max_by_key(|i| i.path.components().count()))
 }
 
+/// Cap on dirty file paths stored in [`WorktreeDetails`] (the total count is
+/// always exact).
+pub const DETAIL_DIRTY_CAP: usize = 15;
+/// Cap on recent commits stored in [`WorktreeDetails`].
+pub const DETAIL_COMMIT_CAP: usize = 10;
+
+/// One line of recent history in [`WorktreeDetails`].
+#[derive(Debug, Clone)]
+pub struct CommitLine {
+    /// Abbreviated commit id.
+    pub id: String,
+    /// First line of the commit message.
+    pub summary: String,
+}
+
+/// Read-only detail data for one worktree (TUI detail pane). Everything is
+/// capped so computing it stays cheap on large repositories.
+#[derive(Debug, Clone)]
+pub struct WorktreeDetails {
+    /// Upstream branch shorthand (e.g. "origin/main"), when configured.
+    pub upstream: Option<String>,
+    /// Dirty/untracked file paths, at most [`DETAIL_DIRTY_CAP`] entries.
+    pub dirty_files: Vec<String>,
+    /// Exact total number of dirty/untracked entries.
+    pub dirty_total: usize,
+    /// Most recent commits from HEAD, at most [`DETAIL_COMMIT_CAP`] entries.
+    pub commits: Vec<CommitLine>,
+}
+
+/// Detail data for the worktree at `path`, read with git2 only (never a
+/// spawned `git` process). Returns `None` when the directory cannot be
+/// opened as a repository (e.g. a missing worktree); individual sub-reads
+/// degrade to empty values rather than failing the whole lookup.
+pub fn details(path: &Path) -> Option<WorktreeDetails> {
+    let repo = git2::Repository::open(path).ok()?;
+
+    let upstream = repo
+        .head()
+        .ok()
+        .filter(|h| h.is_branch())
+        .and_then(|h| h.shorthand().ok().map(str::to_owned))
+        .and_then(|name| repo.find_branch(&name, git2::BranchType::Local).ok())
+        .and_then(|b| b.upstream().ok())
+        .and_then(|u| u.name().ok().flatten().map(str::to_owned));
+
+    // Same dirty semantics as `compute_status`: untracked included, ignored
+    // and submodules excluded.
+    let mut status_opts = git2::StatusOptions::new();
+    status_opts
+        .include_untracked(true)
+        .include_ignored(false)
+        .exclude_submodules(true);
+    let (dirty_files, dirty_total) = match repo.statuses(Some(&mut status_opts)) {
+        Ok(statuses) => {
+            let files = statuses
+                .iter()
+                .take(DETAIL_DIRTY_CAP)
+                .filter_map(|e| e.path().ok().map(str::to_owned))
+                .collect();
+            (files, statuses.len())
+        }
+        Err(_) => (Vec::new(), 0),
+    };
+
+    // Recent history from HEAD; an unborn branch yields no commits.
+    let mut commits = Vec::new();
+    if let Ok(mut walk) = repo.revwalk() {
+        if walk.push_head().is_ok() {
+            commits = walk
+                .take(DETAIL_COMMIT_CAP)
+                .filter_map(|oid| oid.ok())
+                .filter_map(|oid| repo.find_commit(oid).ok())
+                .map(|c| CommitLine {
+                    id: short_id(&repo, c.id()).unwrap_or_else(|| c.id().to_string()),
+                    summary: c.summary().ok().flatten().unwrap_or("").to_string(),
+                })
+                .collect();
+        }
+    }
+
+    Some(WorktreeDetails {
+        upstream,
+        dirty_files,
+        dirty_total,
+        commits,
+    })
+}
+
 /// Base tip resolved once in the main repository; shared read-only across the
 /// rayon status tasks (only an `Oid` and owned strings, both `Sync`).
 struct ResolvedBase {
@@ -610,6 +698,53 @@ mod tests {
             find(&ctx, "zzz").unwrap_err(),
             Error::WorktreeNotFound(_)
         ));
+    }
+
+    #[test]
+    fn details_reports_upstream_dirty_and_commits() {
+        let (tmp, ctx) = fixture();
+        let dest = tmp.path().join("wts").join("feat");
+        add_worktree(&ctx, &dest, "feat");
+        git(&dest, &["branch", "--set-upstream-to=main", "feat"]);
+        commit_file(&dest, "one.txt");
+        commit_file(&dest, "two.txt");
+        fs::write(dest.join("dirty.txt"), "x").unwrap();
+
+        let d = details(&dest).unwrap();
+        assert_eq!(d.upstream.as_deref(), Some("main"));
+        assert_eq!(d.dirty_total, 1);
+        assert_eq!(d.dirty_files, vec!["dirty.txt".to_string()]);
+        // README.md + one.txt + two.txt, newest first.
+        assert_eq!(d.commits.len(), 3);
+        assert_eq!(d.commits[0].summary, "two.txt");
+        assert!(d.commits[0].id.len() >= 7);
+
+        // The main worktree has no upstream and no dirty files.
+        let main = details(&ctx.main_root).unwrap();
+        assert_eq!(main.upstream, None);
+        assert_eq!(main.dirty_total, 0);
+        assert!(main.dirty_files.is_empty());
+    }
+
+    #[test]
+    fn details_caps_lists_and_rejects_missing_directories() {
+        let (tmp, ctx) = fixture();
+        let dest = tmp.path().join("wts").join("feat");
+        add_worktree(&ctx, &dest, "feat");
+
+        // Commits first: `commit_file` stages everything in the worktree.
+        for i in 0..(DETAIL_COMMIT_CAP + 2) {
+            commit_file(&dest, &format!("c{i}.txt"));
+        }
+        for i in 0..(DETAIL_DIRTY_CAP + 5) {
+            fs::write(dest.join(format!("f{i}.txt")), "x").unwrap();
+        }
+        let d = details(&dest).unwrap();
+        assert_eq!(d.dirty_files.len(), DETAIL_DIRTY_CAP);
+        assert_eq!(d.dirty_total, DETAIL_DIRTY_CAP + 5);
+        assert_eq!(d.commits.len(), DETAIL_COMMIT_CAP);
+
+        assert!(details(&tmp.path().join("no-such-dir")).is_none());
     }
 
     #[test]

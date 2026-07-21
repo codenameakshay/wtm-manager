@@ -39,3 +39,13 @@ jobs:
 
       - name: Performance gate
         run: cargo test --release --test perf_gate -- --ignored --nocapture
+
+  shellcheck:
+    name: shellcheck
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Shellcheck
+        run: shellcheck skills/wtm/scripts/*.sh

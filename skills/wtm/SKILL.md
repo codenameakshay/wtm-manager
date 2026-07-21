@@ -1,0 +1,85 @@
+---
+name: wtm
+description: Manages Git worktrees with the wtm CLI — installing wtm, creating/listing/switching/removing/pruning worktrees, running the wtm TUI, and setting up shell integration for cd-on-switch; fires on requests like "install wtm", "use worktrees", "create a worktree for branch X", "clean up merged worktrees", "switch worktree", "list my worktrees", or "set up wtm shell integration".
+---
+
+# wtm — fast Git worktree manager
+
+`wtm` discovers worktrees straight from git's own registry (works no matter
+where they live on disk), computes status in parallel, and exposes a small,
+scriptable command set plus an optional full-screen TUI.
+
+## 1. Install
+
+First check `git` is available (`git --version`); if not, tell the user to
+install Git before continuing — wtm requires it.
+
+Then check whether `wtm` is already installed: `wtm --version`. If present,
+skip to shell integration below.
+
+Otherwise pick the best available method, in order:
+
+1. **Homebrew**, if `brew` is on `PATH`:
+   ```sh
+   brew install codenameakshay/tap/wtm
+   ```
+2. **cargo**, if a Rust toolchain is on `PATH` (`cargo --version`):
+   ```sh
+   cargo install wtm
+   ```
+3. **Prebuilt binary** via the cargo-dist shell installer, otherwise:
+   ```sh
+   curl --proto '=https' --tlsv1.2 -LsSf https://github.com/codenameakshay/wtm/releases/latest/download/wtm-installer.sh | sh
+   ```
+
+`skills/wtm/scripts/install.sh` automates all of the above (detection,
+install, and shell integration) — prefer running it over doing these steps
+by hand. After installing, verify with `wtm --version`.
+
+### Shell integration
+
+`wtm switch`/`wtm add --cd`/the TUI's Enter action can only change the
+calling shell's directory through a small shell wrapper function — a plain
+subprocess can never `cd` its parent shell. **With user confirmation**,
+detect the user's shell (`$SHELL`), then idempotently append to the
+matching rc file (grep first — never duplicate):
+
+- zsh (`~/.zshrc`): `eval "$(command wtm init zsh)"`
+- bash (`~/.bashrc`): `eval "$(command wtm init bash)"`
+
+Tell the user exactly what line was added to which file, and that they need
+to open a new shell (or `source` the rc file) for it to take effect.
+
+## 2. Core usage for agents
+
+| Task | Command |
+|---|---|
+| Create a worktree for a branch | `wtm add <branch>` (`--from <base>` to branch off something other than the default base) |
+| List worktrees, machine-readable | `wtm list --json` |
+| List worktrees, fast (no status) | `wtm list --no-status` |
+| Get a worktree's path | `wtm path <name>` |
+| Remove a worktree | `wtm remove <name> --force` |
+| Clean up merged/gone worktrees | `wtm prune --merged --gone` (add `--dry-run` to preview) |
+| Open a worktree in the editor | `wtm open <name>` |
+
+**IMPORTANT for agents:**
+
+- Always use non-interactive subcommands with explicit arguments and
+  `--json`/`--no-status`/`--force` as needed — never rely on the
+  interactive picker (it requires a TTY and will hang or fail otherwise).
+- **Never launch `wtm tui` (alias `wtm ui`) or bare `wtm` expecting a UI**
+  when running non-interactively (agent shells, pipes, CI). Bare `wtm`
+  detects the non-TTY context, prints help, and exits 0 — it will not open
+  the TUI, but don't rely on that as a way to "check" anything; just avoid
+  invoking it without a subcommand.
+- `wtm switch <name>` only changes the calling shell's directory when the
+  user's shell wrapper (see above) is installed and active — which is never
+  the case inside an agent's own subprocess. From an agent, resolve the
+  path with `wtm path <name>` and `cd` yourself instead of running
+  `wtm switch`.
+
+## 3. Full reference
+
+For the complete command/flag/alias list, JSON output shape, configuration
+file format, the TUI and its keybindings, and common end-to-end workflows,
+read `reference.md` in this skill's directory.

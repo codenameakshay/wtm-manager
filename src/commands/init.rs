@@ -1,32 +1,20 @@
 //! `wtm init` — print shell integration: the `wtm` wrapper function (which
-//! implements `switch`/`--cd` by cd-ing in the parent shell) plus completion
-//! loading for the chosen shell.
+//! implements cd-on-exit for `switch`, `add --cd`, and the TUI via a temp
+//! cd file) plus completion loading for the chosen shell.
 
 use crate::cli::{GlobalArgs, InitArgs, ShellKind};
 use crate::error::Result;
 
-/// The wrapper function, byte-for-byte as specified in DESIGN.md. Valid in
-/// both zsh and bash.
+/// The wrapper function. Valid in both zsh and bash.
+///
+/// It creates a temp file, exports its path as `$WTM_CD_FILE`, and cd's into
+/// whatever path the binary wrote there. Unlike stdout capture, this works
+/// for the full-screen TUI too (which owns the terminal).
 const WRAPPER: &str = r#"wtm() {
-  case "$1" in
-    switch|cd|sw)
-      shift
-      local d
-      d="$(command wtm switch --print-path "$@")" || return
-      [ -n "$d" ] && builtin cd "$d" ;;
-    add|new|create)
-      command wtm "$@" || return
-      case " $* " in
-        *" --cd "*)
-          local b="" a
-          for a in "${@:2}"; do case "$a" in -*) ;; *) b="$a"; break ;; esac; done
-          if [ -n "$b" ]; then
-            local d
-            d="$(command wtm path "$b")" && [ -n "$d" ] && builtin cd "$d"
-          fi ;;
-      esac ;;
-    *) command wtm "$@" ;;
-  esac
+  local cdfile; cdfile="$(mktemp -t wtm-cd.XXXXXX)" || return
+  WTM_CD_FILE="$cdfile" command wtm "$@"; local status=$?
+  if [ -s "$cdfile" ]; then builtin cd "$(cat "$cdfile")"; fi
+  rm -f "$cdfile"; return $status
 }"#;
 
 /// Completion loading for zsh. `eval "$(wtm completions zsh)"` alone does not

@@ -10,11 +10,14 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use crate::output::ColorMode;
 
 /// A fast, ergonomic Git worktree manager.
+///
+/// With no subcommand: launches the interactive TUI on a terminal, prints
+/// help otherwise (agents/pipes/CI must never end up in a full-screen UI).
 #[derive(Debug, Parser)]
 #[command(name = "wtm", version, about, propagate_version = true)]
 pub struct Cli {
     #[command(subcommand)]
-    pub command: Command,
+    pub command: Option<Command>,
 
     #[command(flatten)]
     pub global: GlobalArgs,
@@ -69,6 +72,10 @@ pub enum Command {
 
     /// Print the absolute path of a worktree (scripting-friendly).
     Path(PathArgs),
+
+    /// Launch the full-screen interactive TUI.
+    #[command(visible_alias = "ui")]
+    Tui,
 
     /// Print shell integration (the `wtm` wrapper function plus completions).
     Init(InitArgs),

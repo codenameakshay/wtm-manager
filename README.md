@@ -72,35 +72,78 @@ wtm open feature/login             # open a worktree in $EDITOR
 
 wtm remove hotfix                  # remove a worktree (refuses if dirty)
 wtm prune --merged --gone          # clean up merged / upstream-gone worktrees
+
+wtm tui                            # or just `wtm` on a terminal
 ```
+
+## TUI
+
+`wtm tui` (alias `wtm ui`) launches a full-screen interactive interface for
+browsing and managing worktrees. Bare `wtm` with no subcommand does the same
+thing **when run on a terminal**; in a non-TTY context (piped output,
+agents, CI) bare `wtm` prints help and exits `0` instead — it never opens a
+full-screen UI somewhere that can't render one.
+
+Status (dirty/ahead/behind/merged/upstream-gone) loads in the background,
+so the worktree list appears instantly and status badges fill in as they
+resolve.
+
+Layout: the left pane lists every worktree with status badges (branch,
+short HEAD, ahead/behind, dirty, merged/gone/missing markers); the right
+pane shows details for the selected worktree (upstream, path, HEAD, dirty
+files, recent commits).
+
+| Key | Action |
+| --- | --- |
+| `j`/`k` or `↓`/`↑` | Move selection |
+| `g` / `G` | Jump to first / last |
+| `Enter` | Switch to worktree (cd on exit, via shell wrapper) |
+| `n` | New worktree (branch + base form; runs setup automation) |
+| `d` | Remove selected worktree (confirm; force required if dirty) |
+| `Space` | Toggle multi-select |
+| `p` | Prune merged/gone/missing (or multi-selected rows) with confirm |
+| `o` | Open in configured editor |
+| `x` | Run a command in the worktree |
+| `y` | Copy worktree path |
+| `/` | Fuzzy filter |
+| `r` | Refresh status |
+| `?` | Help overlay |
+| `q` / `Esc` | Quit |
 
 ## Shell setup
 
 `wtm` is a regular binary, and a child process can never change its parent
-shell's working directory. So that `wtm switch` (and `wtm add --cd`) can
-actually `cd` you into a worktree, add an `eval` of `wtm init <shell>` to
-your shell rc file. This installs a small shell function named `wtm` that
-wraps the binary: for `switch`/`cd`/`sw` it captures the resolved path on a
-side channel and `cd`s into it; for `add`/`new`/`create --cd` it does the
-same after creation; every other subcommand passes straight through to the
-real binary. It also wires up completions.
+shell's working directory. So that `wtm switch`, `wtm add --cd`, and the
+TUI's `Enter` action can actually `cd` you into a worktree, add an `eval` of
+`wtm init <shell>` to your shell rc file. This installs a small shell
+function named `wtm` that wraps the binary using a temp-file cd mechanism:
+it creates a temp file, exports its path as `$WTM_CD_FILE`, runs the real
+`wtm` binary with your original arguments, and — if the binary wrote a path
+into that file — `cd`s into it afterwards, then cleans the temp file up and
+preserves the binary's exit status. `wtm switch`, `wtm add --cd`, and the
+TUI's `Enter` action all write to `$WTM_CD_FILE` when it's set; every other
+subcommand is unaffected. It also wires up completions.
+
+This replaces the old stdout-capture-based wrapper: the temp-file mechanism
+works uniformly for plain commands *and* for the full-screen TUI, which owns
+the terminal and can't have its stdout captured that way.
 
 **zsh** (`~/.zshrc`):
 
 ```sh
-eval "$(wtm init zsh)"
+eval "$(command wtm init zsh)"
 ```
 
 **bash** (`~/.bashrc`):
 
 ```sh
-eval "$(wtm init bash)"
+eval "$(command wtm init bash)"
 ```
 
 Open a new shell (or `source` your rc file) afterwards. Without this, `wtm
-switch`/`wtm add --cd` still work, but only print the target path — they
-can't move you there themselves; the command's stderr will remind you when
-this happens.
+switch`/`wtm add --cd`/the TUI's `Enter` still work, but only print the
+target path — they can't move you there themselves; `wtm switch`'s stderr
+will remind you to run `wtm init` when this happens.
 
 ## Commands
 
@@ -206,6 +249,11 @@ none is set and `--with` wasn't given.
 Print a worktree's path and nothing else — no interactive picker, ever, so
 it's safe to use in scripts. If `<name>` is omitted, prints the path of the
 worktree containing your current directory.
+
+### `wtm tui` (alias: `ui`)
+
+Launch the full-screen interactive TUI — see [TUI](#tui) above. Bare `wtm`
+does the same on a TTY; elsewhere it prints help.
 
 ### `wtm init <shell>`
 
@@ -346,6 +394,25 @@ cargo fmt --all             # format
 cargo fmt --all --check     # check formatting (what CI runs)
 cargo clippy --all-targets -- -D warnings
 ```
+
+## Agent Skill
+
+This repo bundles an [Anthropic Agent Skill](https://www.anthropic.com/news/skills)
+at `skills/wtm/` that teaches a coding agent how to install and drive `wtm` —
+installation across Homebrew/cargo/prebuilt binaries, the core commands with
+`--json`/non-interactive usage patterns for agents, and a full command/config/
+TUI reference.
+
+Install it by copying the folder into your Claude Skills directory:
+
+```sh
+cp -r skills/wtm ~/.claude/skills/wtm
+```
+
+After that, telling a coding agent something like "install and use the wtm
+worktree manager" just works. The skill's `skills/wtm/scripts/install.sh`
+also works standalone as an automated installer (git check, best-available
+install method, optional shell integration).
 
 ## License
 

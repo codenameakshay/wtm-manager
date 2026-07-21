@@ -52,14 +52,120 @@ fn path_unknown_name_fails_helpfully() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn init_emits_shell_wrapper_for_zsh_and_bash() {
+fn init_emits_cd_file_shell_wrapper_for_zsh_and_bash() {
     let repo = TestRepo::new();
     for shell in ["zsh", "bash"] {
         repo.wtm().args(["init", shell]).assert().success().stdout(
-            predicate::str::contains("command wtm switch --print-path")
-                .and(predicate::str::contains("wtm()")),
+            predicate::str::contains("wtm()")
+                .and(predicate::str::contains("mktemp -t wtm-cd"))
+                .and(predicate::str::contains(
+                    "WTM_CD_FILE=\"$cdfile\" command wtm",
+                ))
+                .and(predicate::str::contains(
+                    "builtin cd \"$(cat \"$cdfile\")\"",
+                ))
+                .and(predicate::str::contains("rm -f \"$cdfile\"")),
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// cd-on-exit (WTM_CD_FILE) mechanism
+// ---------------------------------------------------------------------------
+
+#[test]
+fn switch_writes_cd_file_when_wrapper_is_active() {
+    let repo = TestRepo::new();
+    repo.wtm().args(["add", "feat"]).assert().success();
+
+    let cd_file = repo.base().join("cdfile");
+    let assert = repo
+        .wtm()
+        .env("WTM_CD_FILE", &cd_file)
+        .args(["switch", "feat"])
+        .assert()
+        .success();
+
+    let recorded = std::fs::read_to_string(&cd_file).expect("switch must write the cd file");
+    assert_eq!(
+        canon(Path::new(recorded.trim())),
+        canon(&repo.default_worktree_path("feat")),
+        "cd file must hold the target worktree path"
+    );
+    assert!(
+        stdout_str(&assert).trim().is_empty(),
+        "with the wrapper active, stdout stays empty (the cd file carries the path)"
+    );
+}
+
+#[test]
+fn switch_print_path_prints_even_with_cd_file() {
+    let repo = TestRepo::new();
+    repo.wtm().args(["add", "feat"]).assert().success();
+
+    let cd_file = repo.base().join("cdfile");
+    let assert = repo
+        .wtm()
+        .env("WTM_CD_FILE", &cd_file)
+        .args(["switch", "feat", "--print-path"])
+        .assert()
+        .success();
+
+    assert_eq!(
+        canon(Path::new(stdout_str(&assert).trim())),
+        canon(&repo.default_worktree_path("feat")),
+        "--print-path must keep printing the path for scripts"
+    );
+    assert!(cd_file.is_file(), "the cd file is still written");
+}
+
+#[test]
+fn switch_without_wrapper_prints_path_and_init_hint() {
+    let repo = TestRepo::new();
+    repo.wtm().args(["add", "feat"]).assert().success();
+
+    let assert = repo
+        .wtm()
+        .args(["switch", "feat"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("wtm init"));
+    assert_eq!(
+        canon(Path::new(stdout_str(&assert).trim())),
+        canon(&repo.default_worktree_path("feat"))
+    );
+}
+
+#[test]
+fn add_cd_writes_cd_file_when_wrapper_is_active() {
+    let repo = TestRepo::new();
+    let cd_file = repo.base().join("cdfile");
+    repo.wtm()
+        .env("WTM_CD_FILE", &cd_file)
+        .args(["add", "feat", "--cd"])
+        .assert()
+        .success();
+
+    let recorded = std::fs::read_to_string(&cd_file).expect("add --cd must write the cd file");
+    assert_eq!(
+        canon(Path::new(recorded.trim())),
+        canon(&repo.default_worktree_path("feat"))
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Bare `wtm` in non-TTY contexts
+// ---------------------------------------------------------------------------
+
+#[test]
+fn bare_wtm_non_tty_prints_help_and_exits_zero() {
+    let repo = TestRepo::new();
+    repo.wtm()
+        .write_stdin("")
+        .timeout(Duration::from_secs(10))
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Usage").and(predicate::str::contains("wtm")));
 }
 
 #[test]

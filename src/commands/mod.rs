@@ -23,7 +23,10 @@ use crate::worktree::{self, ListOptions};
 
 /// Dispatch a parsed CLI invocation to its command implementation.
 pub fn dispatch(cli: &Cli) -> Result<()> {
-    match &cli.command {
+    let Some(command) = &cli.command else {
+        return bare(&cli.global);
+    };
+    match command {
         Command::Add(args) => add::run(args, &cli.global),
         Command::List(args) => list::run(args, &cli.global),
         Command::Remove(args) => remove::run(args, &cli.global),
@@ -31,9 +34,22 @@ pub fn dispatch(cli: &Cli) -> Result<()> {
         Command::Prune(args) => prune::run(args, &cli.global),
         Command::Open(args) => open::run(args, &cli.global),
         Command::Path(args) => path::run(args, &cli.global),
+        Command::Tui => crate::tui::run(&cli.global),
         Command::Init(args) => init::run(args, &cli.global),
         Command::Completions(args) => completions::run(args, &cli.global),
         Command::Config(args) => config_cmd::run(args, &cli.global),
+    }
+}
+
+/// Bare `wtm`: on a terminal, launch the TUI; in a pipe/agent/CI context,
+/// print help and exit 0 — never hang and never open a full-screen UI.
+fn bare(global: &GlobalArgs) -> Result<()> {
+    if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
+        crate::tui::run(global)
+    } else {
+        use clap::CommandFactory;
+        Cli::command().print_help()?;
+        Ok(())
     }
 }
 
