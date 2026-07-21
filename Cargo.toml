@@ -1,9 +1,9 @@
 [package]
 name = "wtm"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 description = "A fast, ergonomic Git worktree manager"
-repository = "https://github.com/codenameakshay/wtm"
+repository = "https://github.com/codenameakshay/wtm-manager"
 license = "MIT OR Apache-2.0"
 keywords = ["git", "worktree", "cli", "developer-tools"]
 categories = ["command-line-utilities", "development-tools"]

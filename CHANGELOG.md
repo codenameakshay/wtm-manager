@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-07-21
+
+### Fixed
+
+- **TUI: force-delete no longer silently quits.** Pressing `d` while the
+  cursor was on the main worktree only showed a footer note and left the list
+  in normal mode, so a `d f Enter` burst fell through to the `Enter` = "switch
+  worktree and quit" binding — exiting the TUI (and, via the cd-on-exit
+  wrapper, dropping you back at the shell) without removing anything. A
+  rejected `d` now opens a dismissible notice modal that absorbs the follow-up
+  keystrokes instead of letting them leak into normal mode.
+
+### Changed
+
+- Corrected the package `repository` metadata to the actual repository
+  (`codenameakshay/wtm-manager`); the previous value produced broken install
+  and download links in release artifacts.
+
 ## [0.2.0] - 2026-07-21
 
 ### Added
