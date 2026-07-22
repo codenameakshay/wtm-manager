@@ -1,0 +1,20 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <!-- wtm glyph: two overlapping worktree cards, front card holds a branch fork -->
+  <!-- back card (depth / "another worktree") -->
+  <rect x="216" y="206" width="470" height="470" rx="112"
+        fill="none" stroke="#ffffff" stroke-width="46" opacity="0.5"/>
+  <!-- front card -->
+  <rect x="338" y="338" width="470" height="470" rx="112"
+        fill="none" stroke="#ffffff" stroke-width="46"/>
+  <!-- branch fork, centered in the front card -->
+  <g fill="none" stroke="#ffffff" stroke-width="42" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M573 706 L573 566"/>
+    <path d="M573 566 C573 498 487 494 487 430"/>
+    <path d="M573 566 C573 498 659 494 659 430"/>
+  </g>
+  <g fill="#ffffff">
+    <circle cx="573" cy="706" r="44"/>
+    <circle cx="487" cy="430" r="44"/>
+    <circle cx="659" cy="430" r="44"/>
+  </g>
+</svg>
