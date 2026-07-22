@@ -7,10 +7,13 @@ members = ["cargo:."]
 cargo-dist-version = "0.32.0"
 # CI backends to support
 ci = "github"
-# The installers to generate for each app
-installers = ["shell", "homebrew"]
-# The Homebrew tap to publish the formula to (create this repo before releasing)
-tap = "codenameakshay/homebrew-tap"
+# The installers to generate for each app.
+# Homebrew is intentionally omitted for now — there's no published tap yet, so
+# a generated formula would only advertise a `brew install` that doesn't work.
+# To add it later: set installers to ["shell", "homebrew"], add
+# `tap = "codenameakshay/homebrew-tap"` (create that repo first) and
+# `publish-jobs = ["homebrew"]`, then re-run `dist generate`.
+installers = ["shell"]
 # Target platforms to build apps for (Rust target-triple syntax)
 targets = ["aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]
 # Path that installers should place binaries in
@@ -19,7 +22,3 @@ install-path = "CARGO_HOME"
 hosting = "github"
 # Whether to install an updater program
 install-updater = false
-# Publish jobs are left empty: the Homebrew tap above is a placeholder repo
-# that doesn't exist yet. Once codenameakshay/homebrew-tap is created, add
-# `publish-jobs = ["homebrew"]` here and re-run `dist generate`.
-publish-jobs = []
