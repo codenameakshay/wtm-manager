@@ -36,16 +36,13 @@ if command -v wtm >/dev/null 2>&1; then
 else
   # --- Step 3: install via the best available method ------------------------
 
-  if command -v brew >/dev/null 2>&1; then
-    echo "Installing wtm via Homebrew..."
-    brew install codenameakshay/tap/wtm
-  elif command -v cargo >/dev/null 2>&1; then
-    echo "Installing wtm via cargo..."
-    cargo install wtm
+  if command -v cargo >/dev/null 2>&1; then
+    echo "Installing wtm from the GitHub repository via cargo..."
+    cargo install --git https://github.com/codenameakshay/wtm-manager --locked
   else
     echo "Installing wtm via the prebuilt-binary installer..."
     curl --proto '=https' --tlsv1.2 -LsSf \
-      https://github.com/codenameakshay/wtm/releases/latest/download/wtm-installer.sh | sh
+      https://github.com/codenameakshay/wtm-manager/releases/latest/download/wtm-installer.sh | sh
   fi
 
   # --- Step 4: verify ---------------------------------------------------------
