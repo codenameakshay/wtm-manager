@@ -14,7 +14,7 @@ fn remove_refuses_dirty_worktree_without_force() {
     let wt = canon(&repo.default_worktree_path("feature-x"));
 
     // An untracked file makes the worktree dirty.
-    std::fs::write(wt.join("untracked.txt"), "dirty\\n").unwrap();
+    std::fs::write(wt.join("untracked.txt"), "dirty\n").unwrap();
 
     repo.wtm()
         .args(["remove", "feature-x"])
@@ -134,7 +134,7 @@ fn prune_merged_removes_worktree_and_branch() {
     let wt = canon(&repo.default_worktree_path("merged-feat"));
 
     // Do real work on the branch, then merge it into main.
-    repo.commit_file_in(&wt, "feature.txt", "feature work\\n");
+    repo.commit_file_in(&wt, "feature.txt", "feature work\n");
     repo.git(
         repo.root(),
         &["merge", "--no-ff", "-m", "merge merged-feat", "merged-feat"],
@@ -165,7 +165,7 @@ fn prune_merged_never_touches_protected_branches() {
     repo.wtm().args(["add", "develop"]).assert().success();
     let wt = canon(&repo.default_worktree_path("develop"));
 
-    repo.commit_file_in(&wt, "dev.txt", "dev work\\n");
+    repo.commit_file_in(&wt, "dev.txt", "dev work\n");
     repo.git(
         repo.root(),
         &["merge", "--no-ff", "-m", "merge develop", "develop"],
