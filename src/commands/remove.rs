@@ -20,9 +20,7 @@ pub fn run(args: &RemoveArgs, global: &GlobalArgs) -> Result<()> {
     // branch must leave the entire worktree operation untouched.
     let branch_to_delete = if args.with_branch {
         match target.branch.as_deref() {
-            Some(branch)
-                if config.prune.protected_branches.iter().any(|p| p == branch) =>
-            {
+            Some(branch) if config.prune.protected_branches.iter().any(|p| p == branch) => {
                 return Err(Error::ProtectedBranch(branch.to_string()));
             }
             Some(branch) => Some(branch.to_string()),
