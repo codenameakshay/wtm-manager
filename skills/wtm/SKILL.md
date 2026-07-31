@@ -19,22 +19,22 @@ skip to shell integration below.
 
 Otherwise pick the best available method, in order:
 
-1. **Homebrew**, if `brew` is on `PATH`:
+1. **cargo**, if a Rust toolchain is on `PATH` (`cargo --version`):
    ```sh
-   brew install codenameakshay/tap/wtm
+   cargo install --git https://github.com/codenameakshay/wtm-manager --locked
    ```
-2. **cargo**, if a Rust toolchain is on `PATH` (`cargo --version`):
+2. **Prebuilt binary** via the cargo-dist shell installer, otherwise:
    ```sh
-   cargo install wtm
-   ```
-3. **Prebuilt binary** via the cargo-dist shell installer, otherwise:
-   ```sh
-   curl --proto '=https' --tlsv1.2 -LsSf https://github.com/codenameakshay/wtm/releases/latest/download/wtm-installer.sh | sh
+   curl --proto '=https' --tlsv1.2 -LsSf https://github.com/codenameakshay/wtm-manager/releases/latest/download/wtm-installer.sh | sh
    ```
 
-`skills/wtm/scripts/install.sh` automates all of the above (detection,
-install, and shell integration) — prefer running it over doing these steps
-by hand. After installing, verify with `wtm --version`.
+Homebrew support is planned but there is no published tap yet. The crate name
+`wtm` on crates.io belongs to a different project, so always use the git URL
+above when installing from source.
+
+`skills/wtm/scripts/install.sh` automates the available installation paths
+(detection, install, and shell integration) — prefer running it over doing
+these steps by hand. After installing, verify with `wtm --version`.
 
 ### Shell integration
 
