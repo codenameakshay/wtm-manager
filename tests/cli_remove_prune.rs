@@ -53,6 +53,28 @@ fn remove_keeps_branch_unless_with_branch() {
 }
 
 #[test]
+fn remove_with_branch_refuses_protected_branch_before_removal() {
+    let repo = TestRepo::new();
+    repo.wtm().args(["add", "develop"]).assert().success();
+    let wt = canon(&repo.default_worktree_path("develop"));
+
+    repo.wtm()
+        .args(["remove", "develop", "--with-branch"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("protected branch"));
+
+    assert!(
+        wt.is_dir(),
+        "a protected branch refusal must leave the worktree in place"
+    );
+    assert!(
+        repo.branch_exists("develop"),
+        "a protected branch refusal must leave the branch in place"
+    );
+}
+
+#[test]
 fn remove_refuses_main_worktree() {
     let repo = TestRepo::new();
     // Run from an unrelated cwd so the "you are standing in it" rule cannot
