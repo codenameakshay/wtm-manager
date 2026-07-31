@@ -1,6 +1,6 @@
 [package]
 name = "wtm"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 description = "A fast, ergonomic Git worktree manager"
 repository = "https://github.com/codenameakshay/wtm-manager"
