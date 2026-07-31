@@ -16,6 +16,22 @@ pub fn run(args: &RemoveArgs, global: &GlobalArgs) -> Result<()> {
     let (ctx, config) = super::prepare(global)?;
     let target = super::resolve_target(&ctx, args.name.as_deref(), "remove")?;
 
+    // Validate branch deletion before removing the worktree. A protected
+    // branch must leave the entire worktree operation untouched.
+    let branch_to_delete = if args.with_branch {
+        match target.branch.as_deref() {
+            Some(branch)
+                if config.prune.protected_branches.iter().any(|p| p == branch) =>
+            {
+                return Err(Error::ProtectedBranch(branch.to_string()));
+            }
+            Some(branch) => Some(branch.to_string()),
+            None => None,
+        }
+    } else {
+        None
+    };
+
     remove_worktree(&ctx, &target, args.force, global.quiet)?;
 
     println!(
@@ -24,21 +40,15 @@ pub fn run(args: &RemoveArgs, global: &GlobalArgs) -> Result<()> {
         target.path.display()
     );
 
-    if args.with_branch {
-        match &target.branch {
-            Some(branch) => {
-                if config.prune.protected_branches.iter().any(|p| p == branch) {
-                    return Err(Error::ProtectedBranch(branch.clone()));
-                }
-                gitcmd::branch_delete(&ctx.main_root, branch)?;
-                println!("Deleted branch '{branch}'");
-            }
-            None => {
-                if !global.quiet {
-                    eprintln!("note: no branch was checked out; nothing to delete");
-                }
-            }
+    match branch_to_delete {
+        Some(branch) => {
+            gitcmd::branch_delete(&ctx.main_root, &branch)?;
+            println!("Deleted branch '{branch}'");
         }
+        None if args.with_branch && !global.quiet => {
+            eprintln!("note: no branch was checked out; nothing to delete");
+        }
+        None => {}
     }
 
     Ok(())
