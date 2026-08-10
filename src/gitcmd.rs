@@ -3,9 +3,9 @@
 //! hooks, filters, and user configuration behave exactly like the `git` CLI.
 //!
 //! Output policy (consistent per function):
-//! - `worktree_add` / `worktree_add_new_branch` STREAM stdout/stderr to the
-//!   user (inherit) — git prints useful progress ("Preparing worktree ...").
-//!   On failure the error's stderr field notes that output was already shown.
+//! - `worktree_add` / `worktree_add_new_branch` stream stdout/stderr unless
+//!   quiet mode is active; quiet mode captures output and only surfaces it on
+//!   failure.
 //! - Everything else (`run`, `worktree_remove`, `worktree_prune`,
 //!   `branch_delete`) CAPTURES output and surfaces stderr inside
 //!   `Error::GitCommand` on failure.
@@ -36,24 +36,31 @@ pub fn run(cwd: &Path, args: &[&str]) -> Result<()> {
     }
 }
 
-/// `git worktree add <path> <branch>` (existing branch). Streams output.
-pub fn worktree_add(main_root: &Path, path: &Path, branch: &str) -> Result<()> {
+/// `git worktree add <path> <branch>` (existing branch). Captures output in
+/// quiet mode and streams it otherwise.
+pub fn worktree_add(main_root: &Path, path: &Path, branch: &str, quiet: bool) -> Result<()> {
     let path_str = path.to_string_lossy();
-    run_streaming(main_root, &["worktree", "add", path_str.as_ref(), branch])
+    run_with_output_policy(
+        main_root,
+        &["worktree", "add", path_str.as_ref(), branch],
+        quiet,
+    )
 }
 
 /// `git worktree add -b <branch> <path> <base>` (new branch from base).
-/// Streams output.
+/// Captures output in quiet mode and streams it otherwise.
 pub fn worktree_add_new_branch(
     main_root: &Path,
     path: &Path,
     branch: &str,
     base: &str,
+    quiet: bool,
 ) -> Result<()> {
     let path_str = path.to_string_lossy();
-    run_streaming(
+    run_with_output_policy(
         main_root,
         &["worktree", "add", "-b", branch, path_str.as_ref(), base],
+        quiet,
     )
 }
 
@@ -98,6 +105,14 @@ fn run_streaming(cwd: &Path, args: &[&str]) -> Result<()> {
             status: status.to_string(),
             stderr: "(git output was shown above)".to_string(),
         })
+    }
+}
+
+fn run_with_output_policy(cwd: &Path, args: &[&str], quiet: bool) -> Result<()> {
+    if quiet {
+        run(cwd, args)
+    } else {
+        run_streaming(cwd, args)
     }
 }
 
@@ -163,7 +178,7 @@ mod tests {
     fn worktree_add_new_branch_then_remove() {
         let (tmp, main) = fixture();
         let wt = tmp.path().join("wt-feat");
-        worktree_add_new_branch(&main, &wt, "feat", "main").unwrap();
+        worktree_add_new_branch(&main, &wt, "feat", "main", false).unwrap();
         assert!(wt.join(".git").exists());
 
         worktree_remove(&main, &wt, false).unwrap();
@@ -175,7 +190,7 @@ mod tests {
         let (tmp, main) = fixture();
         git(&main, &["branch", "other"]);
         let wt = tmp.path().join("wt-other");
-        worktree_add(&main, &wt, "other").unwrap();
+        worktree_add(&main, &wt, "other", false).unwrap();
         assert!(wt.join(".git").exists());
     }
 
@@ -191,7 +206,7 @@ mod tests {
     fn worktree_prune_cleans_stale_registry_entries() {
         let (tmp, main) = fixture();
         let wt = tmp.path().join("stale");
-        worktree_add_new_branch(&main, &wt, "stale", "main").unwrap();
+        worktree_add_new_branch(&main, &wt, "stale", "main", false).unwrap();
         fs::remove_dir_all(&wt).unwrap();
 
         worktree_prune(&main).unwrap();

@@ -13,7 +13,10 @@ use crate::error::Result;
 const WRAPPER: &str = r#"wtm() {
   local cdfile; cdfile="$(mktemp -t wtm-cd.XXXXXX)" || return
   WTM_CD_FILE="$cdfile" command wtm "$@"; local status=$?
-  if [ -s "$cdfile" ]; then builtin cd "$(cat "$cdfile")"; fi
+  if [ "$status" -eq 0 ] && [ -s "$cdfile" ]; then
+    local target; target="$(cat "$cdfile")"; target="${target%.}"
+    builtin cd -- "$target" || status=$?
+  fi
   rm -f "$cdfile"; return $status
 }"#;
 

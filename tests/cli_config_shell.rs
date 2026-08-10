@@ -61,9 +61,9 @@ fn init_emits_cd_file_shell_wrapper_for_zsh_and_bash() {
                 .and(predicate::str::contains(
                     "WTM_CD_FILE=\"$cdfile\" command wtm",
                 ))
-                .and(predicate::str::contains(
-                    "builtin cd \"$(cat \"$cdfile\")\"",
-                ))
+                .and(predicate::str::contains("target=\"$(cat \"$cdfile\")\""))
+                .and(predicate::str::contains("[ \"$status\" -eq 0 ]"))
+                .and(predicate::str::contains("builtin cd -- \"$target\""))
                 .and(predicate::str::contains("rm -f \"$cdfile\"")),
         );
     }
@@ -78,7 +78,8 @@ fn switch_writes_cd_file_when_wrapper_is_active() {
     let repo = TestRepo::new();
     repo.wtm().args(["add", "feat"]).assert().success();
 
-    let cd_file = repo.base().join("cdfile");
+    let cd_file = repo.base().join("wtm-cd.switch");
+    std::fs::write(&cd_file, "").unwrap();
     let assert = repo
         .wtm()
         .env("WTM_CD_FILE", &cd_file)
@@ -87,8 +88,9 @@ fn switch_writes_cd_file_when_wrapper_is_active() {
         .success();
 
     let recorded = std::fs::read_to_string(&cd_file).expect("switch must write the cd file");
+    let recorded = recorded.strip_suffix('.').expect("cd sentinel");
     assert_eq!(
-        canon(Path::new(recorded.trim())),
+        canon(Path::new(recorded)),
         canon(&repo.default_worktree_path("feat")),
         "cd file must hold the target worktree path"
     );
@@ -103,7 +105,8 @@ fn switch_print_path_prints_even_with_cd_file() {
     let repo = TestRepo::new();
     repo.wtm().args(["add", "feat"]).assert().success();
 
-    let cd_file = repo.base().join("cdfile");
+    let cd_file = repo.base().join("wtm-cd.print");
+    std::fs::write(&cd_file, "").unwrap();
     let assert = repo
         .wtm()
         .env("WTM_CD_FILE", &cd_file)
@@ -139,7 +142,8 @@ fn switch_without_wrapper_prints_path_and_init_hint() {
 #[test]
 fn add_cd_writes_cd_file_when_wrapper_is_active() {
     let repo = TestRepo::new();
-    let cd_file = repo.base().join("cdfile");
+    let cd_file = repo.base().join("wtm-cd.add");
+    std::fs::write(&cd_file, "").unwrap();
     repo.wtm()
         .env("WTM_CD_FILE", &cd_file)
         .args(["add", "feat", "--cd"])
@@ -147,10 +151,97 @@ fn add_cd_writes_cd_file_when_wrapper_is_active() {
         .success();
 
     let recorded = std::fs::read_to_string(&cd_file).expect("add --cd must write the cd file");
+    let recorded = recorded.strip_suffix('.').expect("cd sentinel");
     assert_eq!(
-        canon(Path::new(recorded.trim())),
+        canon(Path::new(recorded)),
         canon(&repo.default_worktree_path("feat"))
     );
+}
+
+#[test]
+fn add_cd_does_not_request_switch_when_setup_fails() {
+    let repo = TestRepo::new();
+    std::fs::write(
+        repo.root().join(".worktree.local.toml"),
+        "[setup]\ncommands = [\"exit 7\"]\n",
+    )
+    .unwrap();
+    let cd_file = repo.base().join("wtm-cd.failed-setup");
+    std::fs::write(&cd_file, "").unwrap();
+
+    repo.wtm()
+        .env("WTM_CD_FILE", &cd_file)
+        .args(["add", "failed-setup", "--cd"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("setup step failed"));
+
+    assert!(
+        std::fs::read(&cd_file).unwrap().is_empty(),
+        "failed setup must leave the shell handoff empty"
+    );
+    assert!(repo.default_worktree_path("failed-setup").is_dir());
+}
+
+#[test]
+fn quiet_add_and_remove_emit_no_success_or_git_progress() {
+    let repo = TestRepo::new();
+    repo.wtm()
+        .args(["--quiet", "add", "silent"])
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::is_empty());
+    repo.wtm()
+        .args(["--quiet", "remove", "silent"])
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::is_empty());
+}
+
+#[test]
+fn invalid_editor_is_reported_before_success() {
+    let repo = TestRepo::new();
+    std::fs::write(
+        repo.root().join(".worktree.local.toml"),
+        "editor = \"definitely-not-a-real-wtm-editor\"\n",
+    )
+    .unwrap();
+    repo.wtm()
+        .args(["open", "main"])
+        .assert()
+        .failure()
+        .stdout(predicate::str::is_empty())
+        .stderr(
+            predicate::str::contains("editor command is not available")
+                .and(predicate::str::contains("opened").not()),
+        );
+}
+
+#[cfg(unix)]
+#[test]
+fn quoted_editor_path_with_spaces_passes_preflight() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let repo = TestRepo::new();
+    let editor_dir = repo.base().join("editor tools");
+    std::fs::create_dir(&editor_dir).unwrap();
+    let editor = editor_dir.join("mock editor");
+    std::fs::write(&editor, "#!/bin/sh\nexit 0\n").unwrap();
+    std::fs::set_permissions(&editor, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let command = format!("'{}' --reuse-window", editor.display());
+    std::fs::write(
+        repo.root().join(".worktree.local.toml"),
+        format!("editor = {:?}\n", command),
+    )
+    .unwrap();
+
+    repo.wtm()
+        .args(["open", "main"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("opened"));
 }
 
 // ---------------------------------------------------------------------------
@@ -213,8 +304,12 @@ fn repo_config_relative_path_template_lands_under_main_root() {
 
 const SETUP_CONFIG: &str = r#"
 [setup]
-commands = ["touch setup-ran"]
 copy = [{ path = ".env" }]
+"#;
+
+const LOCAL_SETUP_CONFIG: &str = r#"
+[setup]
+commands = ["touch setup-ran"]
 "#;
 
 #[test]
@@ -223,6 +318,7 @@ fn setup_copies_files_and_runs_commands_in_new_worktree() {
     // Untracked file in the main worktree, copied by setup.copy.
     std::fs::write(repo.root().join(".env"), "SECRET=1\n").unwrap();
     repo.write_repo_config(SETUP_CONFIG);
+    std::fs::write(repo.root().join(".worktree.local.toml"), LOCAL_SETUP_CONFIG).unwrap();
 
     repo.wtm().args(["add", "with-setup"]).assert().success();
 
@@ -242,6 +338,7 @@ fn no_setup_skips_copy_and_commands() {
     let repo = TestRepo::new();
     std::fs::write(repo.root().join(".env"), "SECRET=1\n").unwrap();
     repo.write_repo_config(SETUP_CONFIG);
+    std::fs::write(repo.root().join(".worktree.local.toml"), LOCAL_SETUP_CONFIG).unwrap();
 
     repo.wtm()
         .args(["add", "without-setup", "--no-setup"])
@@ -258,6 +355,27 @@ fn no_setup_skips_copy_and_commands() {
         !wt.join("setup-ran").exists(),
         "--no-setup must skip setup.commands"
     );
+}
+
+#[test]
+fn shared_repo_setup_commands_are_rejected_with_actionable_error() {
+    let repo = TestRepo::new();
+    repo.write_repo_config(
+        r#"
+[setup]
+commands = ["touch should-not-run"]
+"#,
+    );
+
+    repo.wtm()
+        .args(["add", "blocked"])
+        .assert()
+        .failure()
+        .stderr(
+            predicate::str::contains(".worktree.toml")
+                .and(predicate::str::contains("setup.commands"))
+                .and(predicate::str::contains(".worktree.local.toml")),
+        );
 }
 
 // ---------------------------------------------------------------------------

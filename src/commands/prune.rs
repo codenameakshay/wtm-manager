@@ -1,12 +1,12 @@
 //! `wtm prune` — sweep stale worktrees (missing/prunable, and optionally
 //! merged or upstream-gone branches).
 //!
-//! Candidate selection ([`candidates`] / [`selection_candidates`]) and
-//! execution ([`execute`]) are shared with the TUI, which shows the same
+//! Candidate selection (`candidates` / `selection_candidates`) and
+//! execution (`execute`) are shared with the TUI, which shows the same
 //! would-prune list in a confirm modal before acting.
 
 use crate::cli::{GlobalArgs, PruneArgs};
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::gitcmd;
 use crate::model::WorktreeInfo;
 use crate::repo::RepoContext;
@@ -28,6 +28,7 @@ pub(crate) struct PruneCandidate {
 pub(crate) struct PruneReport {
     pub removed: usize,
     pub skipped: Vec<String>,
+    pub failures: Vec<String>,
 }
 
 /// Prune stale worktrees and finish with `git worktree prune`.
@@ -83,9 +84,16 @@ pub fn run(args: &PruneArgs, global: &GlobalArgs) -> Result<()> {
         return Ok(());
     }
 
-    let report = execute(&ctx, &candidates, args.force, true)?;
+    let report = execute(&ctx, &candidates, args.force, true);
     if !global.quiet {
         eprintln!("pruned {} worktree(s)", report.removed);
+    }
+    if !report.failures.is_empty() {
+        return Err(Error::Other(format!(
+            "prune completed with {} failure(s): {}",
+            report.failures.len(),
+            report.failures.join("; ")
+        )));
     }
     Ok(())
 }
@@ -187,27 +195,52 @@ pub(crate) fn execute(
     candidates: &[PruneCandidate],
     force: bool,
     announce: bool,
-) -> Result<PruneReport> {
+) -> PruneReport {
     let mut removed = 0usize;
     let mut skipped: Vec<String> = Vec::new();
+    let mut failures: Vec<String> = Vec::new();
 
     for c in candidates {
-        // Dirty safety, exactly like `remove`, unless --force. Skipping (with
-        // a warning) instead of aborting keeps the sweep useful.
-        if !force && !c.info.is_missing && c.info.status.as_ref().is_some_and(|s| s.dirty) {
-            if announce {
-                eprintln!(
-                    "warning: skipping '{}': uncommitted changes (use --force to override)",
-                    c.info.display_name()
-                );
+        // Re-check the filesystem immediately before removal. The listing
+        // shown to the user may be stale by the time they confirm, and an
+        // unavailable scan must fail closed rather than count as clean.
+        if !force && !c.info.is_missing {
+            match super::remove::is_dirty(&c.info.path) {
+                Ok(true) => {
+                    if announce {
+                        eprintln!(
+                            "warning: skipping '{}': uncommitted changes (use --force to override)",
+                            c.info.display_name()
+                        );
+                    }
+                    skipped.push(c.info.display_name().to_string());
+                    continue;
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    let failure = format!(
+                        "{}: could not verify clean state: {error}",
+                        c.info.display_name()
+                    );
+                    if announce {
+                        eprintln!("warning: failed to prune {failure}");
+                    }
+                    failures.push(failure);
+                    continue;
+                }
             }
-            skipped.push(c.info.display_name().to_string());
-            continue;
         }
 
         // Missing dirs need --force: it is the only way git drops the entry.
         let entry_force = force || c.info.is_missing;
-        gitcmd::worktree_remove(&ctx.main_root, &c.info.path, entry_force)?;
+        if let Err(error) = gitcmd::worktree_remove(&ctx.main_root, &c.info.path, entry_force) {
+            let failure = format!("{}: {error}", c.info.display_name());
+            if announce {
+                eprintln!("warning: failed to prune {failure}");
+            }
+            failures.push(failure);
+            continue;
+        }
         if announce {
             println!(
                 "Removed worktree '{}' ({}) [{}]",
@@ -220,14 +253,110 @@ pub(crate) fn execute(
 
         if c.delete_branch {
             if let Some(branch) = &c.info.branch {
-                gitcmd::branch_delete(&ctx.main_root, branch)?;
-                if announce {
-                    println!("Deleted branch '{branch}'");
+                match gitcmd::branch_delete(&ctx.main_root, branch) {
+                    Ok(()) => {
+                        if announce {
+                            println!("Deleted branch '{branch}'");
+                        }
+                    }
+                    Err(error) => {
+                        let failure = format!("delete branch '{branch}': {error}");
+                        if announce {
+                            eprintln!("warning: {failure}");
+                        }
+                        failures.push(failure);
+                    }
                 }
             }
         }
     }
 
-    gitcmd::worktree_prune(&ctx.main_root)?;
-    Ok(PruneReport { removed, skipped })
+    if let Err(error) = gitcmd::worktree_prune(&ctx.main_root) {
+        let failure = format!("final git worktree prune: {error}");
+        if announce {
+            eprintln!("warning: {failure}");
+        }
+        failures.push(failure);
+    }
+    PruneReport {
+        removed,
+        skipped,
+        failures,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::WorktreeStatus;
+    use std::process::Command;
+
+    fn init_repo(path: &std::path::Path) {
+        std::fs::create_dir(path).unwrap();
+        assert!(Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(path)
+            .status()
+            .unwrap()
+            .success());
+    }
+
+    fn candidate(path: std::path::PathBuf, name: &str) -> PruneCandidate {
+        PruneCandidate {
+            info: WorktreeInfo {
+                name: name.to_string(),
+                path,
+                branch: Some(name.to_string()),
+                head: None,
+                is_main: false,
+                is_missing: false,
+                is_locked: false,
+                is_prunable: true,
+                // Deliberately stale "clean" status: execute must re-check.
+                status: Some(WorktreeStatus {
+                    dirty: false,
+                    ahead: None,
+                    behind: None,
+                    upstream_gone: false,
+                    merged: false,
+                }),
+            },
+            reasons: vec!["prunable"],
+            delete_branch: false,
+        }
+    }
+
+    #[test]
+    fn execute_rechecks_dirty_state_and_fails_closed_when_unavailable() {
+        let temp = tempfile::tempdir().unwrap();
+        let main = temp.path().join("main");
+        init_repo(&main);
+        let dirty = temp.path().join("dirty");
+        init_repo(&dirty);
+        std::fs::write(dirty.join("untracked"), "changed\n").unwrap();
+        let unavailable = temp.path().join("not-a-repository");
+        std::fs::create_dir(&unavailable).unwrap();
+
+        let ctx = RepoContext {
+            main_root: main.clone(),
+            git_dir: main.join(".git"),
+            repo_name: "main".to_string(),
+        };
+        let report = execute(
+            &ctx,
+            &[
+                candidate(dirty.clone(), "dirty"),
+                candidate(unavailable.clone(), "unavailable"),
+            ],
+            false,
+            false,
+        );
+
+        assert_eq!(report.removed, 0);
+        assert_eq!(report.skipped, ["dirty"]);
+        assert_eq!(report.failures.len(), 1);
+        assert!(report.failures[0].contains("could not verify clean state"));
+        assert!(dirty.is_dir());
+        assert!(unavailable.is_dir());
+    }
 }

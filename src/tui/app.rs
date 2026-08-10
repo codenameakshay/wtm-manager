@@ -25,11 +25,18 @@ pub(crate) enum Msg {
     Key(KeyEvent),
     /// A worktree listing finished loading (fast pass or full-status pass).
     RowsLoaded {
+        generation: u64,
         rows: Vec<WorktreeInfo>,
         with_status: bool,
     },
+    RowsFailed {
+        generation: u64,
+        with_status: bool,
+        text: String,
+    },
     /// Detail-pane data for one worktree finished loading.
     Details {
+        generation: u64,
         path: PathBuf,
         details: Option<WorktreeDetails>,
     },
@@ -46,9 +53,9 @@ pub(crate) enum Msg {
 #[derive(Debug)]
 pub(crate) enum Effect {
     /// Load the worktree list on a background thread.
-    LoadRows { with_status: bool },
+    LoadRows { generation: u64, with_status: bool },
     /// Load detail-pane data for one worktree on a background thread.
-    LoadDetails { path: PathBuf },
+    LoadDetails { generation: u64, path: PathBuf },
     /// Write the cd file for `path` and quit.
     Switch { path: PathBuf },
     /// Run the shared create core (base is never empty; "HEAD" when the
@@ -60,7 +67,10 @@ pub(crate) enum Effect {
         force: bool,
     },
     /// Run the shared prune execution over pre-confirmed candidates.
-    Prune { candidates: Vec<PruneCandidate> },
+    Prune {
+        candidates: Vec<PruneCandidate>,
+        force: bool,
+    },
     /// Open the worktree in the configured editor.
     OpenEditor { path: PathBuf },
     /// Suspend the TUI and run a shell command inside the worktree.
@@ -99,6 +109,8 @@ pub(crate) enum Overlay {
     },
     ConfirmPrune {
         candidates: Vec<PruneCandidate>,
+        force: bool,
+        unsafe_count: usize,
     },
     Create {
         branch: String,
@@ -135,10 +147,13 @@ pub(crate) struct App {
     pub details: HashMap<PathBuf, Option<WorktreeDetails>>,
     /// Paths with an in-flight detail load (dedupes requests).
     requested: BTreeSet<PathBuf>,
+    detail_generations: HashMap<PathBuf, u64>,
     pub message: Option<Message>,
     /// True until a with-status listing has arrived (drives the "loading
     /// status…" indicator).
     pub status_loading: bool,
+    next_generation: u64,
+    rows_generation: u64,
     /// Configured base for new branches (prefills the create form).
     default_base: Option<String>,
     /// Branches prune must never touch.
@@ -157,8 +172,11 @@ impl App {
             overlay: Overlay::None,
             details: HashMap::new(),
             requested: BTreeSet::new(),
+            detail_generations: HashMap::new(),
             message: None,
             status_loading: true,
+            next_generation: 0,
+            rows_generation: 0,
             default_base,
             protected,
         }
@@ -183,11 +201,34 @@ impl App {
                 }
                 self.on_key(key)
             }
-            Msg::RowsLoaded { rows, with_status } => self.on_rows(rows, with_status),
-            Msg::Details { path, details } => {
+            Msg::RowsLoaded {
+                generation,
+                rows,
+                with_status,
+            } if generation == self.rows_generation => self.on_rows(rows, with_status),
+            Msg::RowsLoaded { .. } => Vec::new(),
+            Msg::RowsFailed {
+                generation,
+                with_status,
+                text,
+            } if generation == self.rows_generation => {
+                if with_status {
+                    self.status_loading = false;
+                }
+                self.message = Some(Message { text, error: true });
+                Vec::new()
+            }
+            Msg::RowsFailed { .. } => Vec::new(),
+            Msg::Details {
+                generation,
+                path,
+                details,
+            } if self.detail_generations.get(&path) == Some(&generation) => {
+                self.requested.remove(&path);
                 self.details.insert(path, details);
                 Vec::new()
             }
+            Msg::Details { .. } => Vec::new(),
             Msg::ActionOutcome {
                 text,
                 error,
@@ -195,15 +236,23 @@ impl App {
             } => {
                 self.message = Some(Message { text, error });
                 if refresh {
-                    self.status_loading = true;
-                    vec![
-                        Effect::LoadRows { with_status: false },
-                        Effect::LoadRows { with_status: true },
-                    ]
+                    vec![self.request_rows(true)]
                 } else {
                     Vec::new()
                 }
             }
+        }
+    }
+
+    pub(crate) fn request_rows(&mut self, with_status: bool) -> Effect {
+        self.next_generation += 1;
+        self.rows_generation = self.next_generation;
+        if with_status {
+            self.status_loading = true;
+        }
+        Effect::LoadRows {
+            generation: self.rows_generation,
+            with_status,
         }
     }
 
@@ -215,6 +264,7 @@ impl App {
             // Statuses changed, so cached details may be stale.
             self.details.clear();
             self.requested.clear();
+            self.detail_generations.clear();
         }
         let existing: BTreeSet<PathBuf> = self.rows.iter().map(|i| i.path.clone()).collect();
         self.marked.retain(|p| existing.contains(p));
@@ -246,7 +296,10 @@ impl App {
         }
         let path = info.path.clone();
         self.requested.insert(path.clone());
-        vec![Effect::LoadDetails { path }]
+        self.next_generation += 1;
+        let generation = self.next_generation;
+        self.detail_generations.insert(path.clone(), generation);
+        vec![Effect::LoadDetails { generation, path }]
     }
 
     fn on_key(&mut self, key: KeyEvent) -> Vec<Effect> {
@@ -315,14 +368,32 @@ impl App {
                 }
                 _ => Vec::new(),
             },
-            Overlay::ConfirmPrune { candidates } => match key.code {
+            Overlay::ConfirmPrune {
+                candidates,
+                force,
+                unsafe_count,
+            } => match key.code {
                 KeyCode::Esc | KeyCode::Char('n') => {
                     self.overlay = Overlay::None;
                     Vec::new()
                 }
+                KeyCode::Char('f') => {
+                    *force = !*force;
+                    Vec::new()
+                }
                 KeyCode::Enter | KeyCode::Char('y') => {
+                    if *unsafe_count > 0 && !*force {
+                        self.message = Some(Message {
+                            text: format!(
+                                "{unsafe_count} selected worktree(s) may be dirty — press f to toggle force"
+                            ),
+                            error: true,
+                        });
+                        return Vec::new();
+                    }
                     let effect = Effect::Prune {
                         candidates: std::mem::take(candidates),
+                        force: *force,
                     };
                     self.overlay = Overlay::None;
                     vec![effect]
@@ -508,6 +579,13 @@ impl App {
                 Vec::new()
             }
             KeyCode::Char('p') => {
+                if self.status_loading {
+                    self.message = Some(Message {
+                        text: "wait for status loading to finish before pruning".to_string(),
+                        error: true,
+                    });
+                    return Vec::new();
+                }
                 let candidates = if self.marked.is_empty() {
                     prune::candidates(self.rows.clone(), &self.protected, true, true, false)
                 } else {
@@ -525,7 +603,22 @@ impl App {
                         error: false,
                     });
                 } else {
-                    self.overlay = Overlay::ConfirmPrune { candidates };
+                    let unsafe_count = candidates
+                        .iter()
+                        .filter(|candidate| {
+                            !candidate.info.is_missing
+                                && candidate
+                                    .info
+                                    .status
+                                    .as_ref()
+                                    .is_none_or(|status| status.dirty)
+                        })
+                        .count();
+                    self.overlay = Overlay::ConfirmPrune {
+                        candidates,
+                        force: false,
+                        unsafe_count,
+                    };
                 }
                 Vec::new()
             }
@@ -548,8 +641,7 @@ impl App {
                 Vec::new()
             }
             KeyCode::Char('r') => {
-                self.status_loading = true;
-                vec![Effect::LoadRows { with_status: true }]
+                vec![self.request_rows(true)]
             }
             KeyCode::Char('?') => {
                 self.overlay = Overlay::Help;
@@ -648,6 +740,7 @@ mod tests {
     fn app_with(rows: Vec<WorktreeInfo>) -> App {
         let mut app = App::new(Some("origin/main".to_string()), vec!["main".to_string()]);
         app.update(Msg::RowsLoaded {
+            generation: 0,
             rows,
             with_status: true,
         });
@@ -657,7 +750,7 @@ mod tests {
     fn three_row_app() -> App {
         app_with(vec![
             info("main", true),
-            info("feat-a", false),
+            with_status(info("feat-a", false), false, false),
             info("feat-b", false),
         ])
     }
@@ -687,7 +780,7 @@ mod tests {
         let mut app = three_row_app();
         let fx = app.update(key(KeyCode::Char('j')));
         match &fx[..] {
-            [Effect::LoadDetails { path }] => assert_eq!(path, Path::new("/wt/feat-a")),
+            [Effect::LoadDetails { path, .. }] => assert_eq!(path, Path::new("/wt/feat-a")),
             other => panic!("expected LoadDetails, got {other:?}"),
         }
         // Moving away and back does not re-request.
@@ -708,6 +801,7 @@ mod tests {
         // Marks on rows that vanish from a reload are dropped.
         app.update(key(KeyCode::Char(' ')));
         app.update(Msg::RowsLoaded {
+            generation: 0,
             rows: vec![info("main", true), info("feat-b", false)],
             with_status: true,
         });
@@ -857,14 +951,14 @@ mod tests {
     fn prune_uses_marked_rows_and_confirms() {
         let mut app = app_with(vec![
             info("main", true),
-            info("feat-a", false),
+            with_status(info("feat-a", false), false, false),
             with_status(info("done", false), false, true),
         ]);
         // Mark feat-a (not merged, would never be auto-selected).
         app.update(key(KeyCode::Char('j')));
         app.update(key(KeyCode::Char(' ')));
         app.update(key(KeyCode::Char('p')));
-        let Overlay::ConfirmPrune { candidates } = &app.overlay else {
+        let Overlay::ConfirmPrune { candidates, .. } = &app.overlay else {
             panic!("expected ConfirmPrune");
         };
         assert_eq!(candidates.len(), 1);
@@ -873,7 +967,10 @@ mod tests {
 
         let fx = app.update(key(KeyCode::Enter));
         match &fx[0] {
-            Effect::Prune { candidates } => assert_eq!(candidates.len(), 1),
+            Effect::Prune { candidates, force } => {
+                assert_eq!(candidates.len(), 1);
+                assert!(!force);
+            }
             other => panic!("expected Prune, got {other:?}"),
         }
     }
@@ -886,7 +983,7 @@ mod tests {
             info("feat", false),
         ]);
         app.update(key(KeyCode::Char('p')));
-        let Overlay::ConfirmPrune { candidates } = &app.overlay else {
+        let Overlay::ConfirmPrune { candidates, .. } = &app.overlay else {
             panic!("expected ConfirmPrune");
         };
         assert_eq!(candidates.len(), 1);
@@ -980,7 +1077,13 @@ mod tests {
     fn refresh_and_outcome_reload_rows() {
         let mut app = three_row_app();
         let fx = app.update(key(KeyCode::Char('r')));
-        assert!(matches!(&fx[..], [Effect::LoadRows { with_status: true }]));
+        assert!(matches!(
+            &fx[..],
+            [Effect::LoadRows {
+                with_status: true,
+                ..
+            }]
+        ));
         assert!(app.status_loading);
 
         let fx = app.update(Msg::ActionOutcome {
@@ -990,12 +1093,99 @@ mod tests {
         });
         assert!(matches!(
             &fx[..],
-            [
-                Effect::LoadRows { with_status: false },
-                Effect::LoadRows { with_status: true },
-            ]
+            [Effect::LoadRows {
+                with_status: true,
+                ..
+            }]
         ));
         assert_eq!(app.message.as_ref().unwrap().text, "done");
+    }
+
+    #[test]
+    fn stale_row_results_are_ignored_and_current_failure_settles_loading() {
+        let mut app = three_row_app();
+        let first = app.request_rows(true);
+        let Effect::LoadRows {
+            generation: old, ..
+        } = first
+        else {
+            unreachable!()
+        };
+        let second = app.request_rows(true);
+        let Effect::LoadRows {
+            generation: current,
+            ..
+        } = second
+        else {
+            unreachable!()
+        };
+
+        app.update(Msg::RowsLoaded {
+            generation: old,
+            rows: vec![info("stale", false)],
+            with_status: true,
+        });
+        assert_eq!(app.rows[0].name, "main");
+        assert!(app.status_loading);
+
+        app.update(Msg::RowsFailed {
+            generation: current,
+            with_status: true,
+            text: "list failed: boom".to_string(),
+        });
+        assert!(!app.status_loading);
+        assert_eq!(app.rows[0].name, "main");
+        assert!(app.message.as_ref().unwrap().error);
+    }
+
+    #[test]
+    fn stale_detail_result_is_ignored() {
+        let mut app = three_row_app();
+        let effects = app.update(key(KeyCode::Char('j')));
+        let Effect::LoadDetails {
+            generation: old,
+            path,
+        } = &effects[0]
+        else {
+            unreachable!()
+        };
+        let old = *old;
+        let path = path.clone();
+        app.detail_generations.insert(path.clone(), old + 1);
+        app.update(Msg::Details {
+            generation: old,
+            path: path.clone(),
+            details: None,
+        });
+        assert!(!app.details.contains_key(&path));
+    }
+
+    #[test]
+    fn prune_waits_for_status_and_requires_force_for_dirty_candidates() {
+        let mut app = app_with(vec![
+            info("main", true),
+            with_status(info("dirty", false), true, true),
+        ]);
+        app.status_loading = true;
+        assert!(app.update(key(KeyCode::Char('p'))).is_empty());
+        assert!(app.message.as_ref().unwrap().text.contains("status"));
+
+        app.status_loading = false;
+        app.update(key(KeyCode::Char('p')));
+        let Overlay::ConfirmPrune {
+            unsafe_count,
+            force,
+            ..
+        } = &app.overlay
+        else {
+            panic!("expected prune confirmation");
+        };
+        assert_eq!(*unsafe_count, 1);
+        assert!(!force);
+        assert!(app.update(key(KeyCode::Enter)).is_empty());
+        app.update(key(KeyCode::Char('f')));
+        let effects = app.update(key(KeyCode::Enter));
+        assert!(matches!(&effects[..], [Effect::Prune { force: true, .. }]));
     }
 
     #[test]

@@ -1,18 +1,17 @@
 # wtm — internal design contract
 
 This file is the authoritative interface contract between modules while the
-project is being built. Every module MUST expose exactly the public API written
-here (you may add private helpers freely, and additional small public helpers if
-genuinely needed — but never change or remove a signature listed here without
-updating this file). `src/error.rs`, `src/model.rs`, and `src/lib.rs` already
-exist — read them first; do not modify them.
+project is being built. Public interfaces and behavioral invariants documented
+here must stay aligned with the implementation; update this contract whenever
+they change.
 
 Conventions:
 - Library code returns `crate::error::Result<T>` (`crate::Error`), never `anyhow`.
 - `anyhow` is used only in `src/main.rs`.
 - No panics on user error. `unwrap()` only where infallibility is locally provable.
 - All reads via `git2`; process spawn of `git` ONLY in `src/gitcmd.rs`.
-- Edition 2021, `cargo fmt` default style, `clippy -D warnings` must pass.
+- Edition 2021, MSRV 1.88, `cargo fmt` default style, `clippy -D warnings`,
+  rustdoc warnings, the performance gate, and dependency audit must pass.
 
 ## src/repo.rs — repository discovery
 
@@ -62,8 +61,8 @@ pub struct ListOptions {
     /// parallel with rayon. When false, `WorktreeInfo.status` is None.
     pub with_status: bool,
     /// Base ref for merged detection, e.g. "origin/main" (config
-    /// default_base). Resolved via revparse in the main repo; falls back to
-    /// the main worktree HEAD when None/unresolvable.
+    /// default_base). Resolved and peeled to a commit in the main repo. None
+    /// uses the main worktree HEAD; an invalid explicit value is an error.
     pub base: Option<String>,
 }
 
@@ -96,7 +95,9 @@ Status semantics (document + unit-test these in-module):
   remote-tracking ref is gone ⇒ true.
 - merged: branch tip is ancestor of (or equal to) resolved base tip, computed
   in the MAIN repo via `graph_descendant_of(base, tip)` or `merge_base == tip`.
-  The base's own worktree (branch == base shorthand) is NOT flagged merged.
+  The main worktree and the base's own linked worktree are NOT flagged merged.
+- A status scan/open failure makes the entire status unavailable (`None`); it
+  must never be rendered or acted on as a known-clean result.
 - Main worktree info: `name: "main"` (literal), `is_main: true`.
 - HEAD sha: short (7+) via `object.short_id()`.
 - For missing dirs: read `git_dir/worktrees/<name>/HEAD` textually to recover
@@ -108,15 +109,14 @@ Status semantics (document + unit-test these in-module):
 use std::path::Path;
 use crate::error::Result;
 
-/// Run `git <args>` with cwd = `cwd`, inheriting stdout/stderr when `stream`
-/// (used for user-visible mutations), else capturing. Non-zero exit ⇒
-/// Error::GitCommand with captured/collected stderr.
+/// Run `git <args>` with cwd = `cwd`, capturing output. Non-zero exit ⇒
+/// Error::GitCommand with captured stderr.
 pub fn run(cwd: &Path, args: &[&str]) -> Result<()>;
 
-/// `git worktree add <path> <branch>` (existing branch).
-pub fn worktree_add(main_root: &Path, path: &Path, branch: &str) -> Result<()>;
-/// `git worktree add -b <branch> <path> <base>` (new branch from base).
-pub fn worktree_add_new_branch(main_root: &Path, path: &Path, branch: &str, base: &str) -> Result<()>;
+/// Add an existing branch. Quiet captures Git output; otherwise it streams.
+pub fn worktree_add(main_root: &Path, path: &Path, branch: &str, quiet: bool) -> Result<()>;
+/// Create and add a branch. Quiet captures Git output; otherwise it streams.
+pub fn worktree_add_new_branch(main_root: &Path, path: &Path, branch: &str, base: &str, quiet: bool) -> Result<()>;
 /// `git worktree remove [--force] <path>`.
 pub fn worktree_remove(main_root: &Path, path: &Path, force: bool) -> Result<()>;
 /// `git worktree prune`.
@@ -175,9 +175,11 @@ impl Default for Config { /* built-in defaults above */ }
 /// ProjectDirs "wtm" — but PREFER the plain `~/.config/wtm/config.toml` path
 /// on macOS too, matching the README; use env override WTM_CONFIG_DIR for
 /// tests) < `<repo>/.worktree.toml` < `<repo>/.worktree.local.toml`.
-/// `setup.commands`, `setup.copy`, `prune.protected_branches` REPLACE (not
-/// append) when set by a later layer. Unparseable file ⇒ Error::Config with
-/// the file path in the message.
+/// `setup.copy` and `prune.protected_branches` replace earlier values.
+/// Executable `editor` and `setup.commands` are rejected in shared
+/// `.worktree.toml`; they are accepted only from global or local trusted
+/// config. Unparseable or untrusted executable config ⇒ Error::Config with
+/// the file path.
 pub fn load(repo_root: &Path) -> Result<Config>;
 
 /// Merge a parsed file over a config (exposed for unit tests).
@@ -231,11 +233,12 @@ use crate::config::Config;
 use crate::error::Result;
 
 /// Run post-create automation in this order:
-/// 1. For each setup.copy entry: source = main_root/path. Skip silently
-///    (with a stderr note unless quiet) when the source does not exist. Never
-///    overwrite an existing destination file. Create parent dirs. mode=copy
-///    copies file contents+permissions; mode=symlink creates a symlink to the
-///    ABSOLUTE source path.
+/// 1. Validate each setup.copy path as non-empty, relative, and free of `..`,
+///    root, or prefix components. Canonical sources must remain inside the
+///    main worktree. Reject source symlinks, recursive symlinks, and symlinked
+///    destination parents. Never overwrite an existing destination. Copy
+///    regular files/directories or create an absolute symlink to a contained
+///    regular source file.
 /// 2. Run each setup.commands entry via `sh -c`, cwd = worktree, streaming
 ///    stdout/stderr to the user (inherit). First failing command ⇒
 ///    Error::Setup naming the command (the worktree stays).
@@ -317,13 +320,14 @@ consistent across all commands: resolve ctx+config in a shared
 Key behaviors:
 - add: branch exists (local) ⇒ error BranchInUse if some worktree already has
   it checked out, else `worktree_add`. Branch doesn't exist ⇒ base = --from >
-  config.default_base (revparse; unresolvable ⇒ fall back to HEAD with a
-  stderr note) and `worktree_add_new_branch`. Destination = --path >
+  config.default_base > HEAD. Any explicitly selected base must resolve and
+  peel to a commit; otherwise fail before mutation. Then call
+  `worktree_add_new_branch`. Destination = --path >
   template::render; refuse if destination exists (DestinationExists). Then
   setup (unless --no-setup); on Error::Setup print it but exit non-zero.
-  --open: launch editor on the new path (see open). Print a success line with
-  the path to stdout. `--cd` is a no-op in the binary (the shell wrapper
-  implements it) but must be accepted.
+  --open: preflight and launch the editor on the new path. Print success only
+  outside quiet mode. `--cd` writes the target only after setup and all other
+  requested post-create actions succeed.
 - list: with_status = !no_status; --json ⇒ render_json to stdout.
 - remove: name optional ⇒ interactive picker (TTY-gated, see picker rules).
   Refuse main worktree (MainWorktree). Refuse when target contains cwd.
@@ -338,15 +342,20 @@ Key behaviors:
   --merged) + upstream_gone (only with --gone). Skip main worktree and any
   candidate whose branch ∈ protected_branches. --dry-run prints the plan and
   exits 0. Respect dirty-safety like remove unless --force. Always finish
-  with `git worktree prune`. Branch deletion: merged/gone candidates get
+  with `git worktree prune`. Process candidates independently, continue after
+  removal or branch-deletion failures, and report failures together after the
+  registry refresh. Branch deletion: merged/gone candidates get
   their branch deleted (that is the point of pruning); protected branches
   never; missing-dir entries never (we only clean the registry).
 - open: resolve worktree (picker if omitted); `--with <cmd>` ⇒ run via
   `sh -c` with cwd = worktree, wait, propagate failure; else editor =
-  config.editor > $VISUAL > $EDITOR (error Config if none set) spawned
-  detached with the path as argument.
+  config.editor > $VISUAL > $EDITOR (error Config if none set). Preflight the
+  executable before reporting success, then spawn detached with the path as
+  an argument.
 - path: resolve worktree, print path. Never a picker (scripting-friendly):
-  if name omitted, print the CURRENT worktree's path.
+  if name is omitted, discover the nearest Git worktree directly without
+  paying for a full registry listing. An explicit `-C` instead scopes
+  containment to that repository's registry.
 - init: print the shell function + `eval` of completions for zsh or bash to
   stdout (see wrapper below).
 - completions: clap_complete::generate to stdout.
@@ -368,27 +377,18 @@ Key behaviors:
 completions differ)
 ```sh
 wtm() {
-  case "$1" in
-    switch|cd|sw)
-      shift
-      local d
-      d="$(command wtm switch --print-path "$@")" || return
-      [ -n "$d" ] && builtin cd "$d" ;;
-    add|new|create)
-      command wtm "$@" || return
-      case " $* " in
-        *" --cd "*)
-          local b="" a
-          for a in "${@:2}"; do case "$a" in -*) ;; *) b="$a"; break ;; esac; done
-          if [ -n "$b" ]; then
-            local d
-            d="$(command wtm path "$b")" && [ -n "$d" ] && builtin cd "$d"
-          fi ;;
-      esac ;;
-    *) command wtm "$@" ;;
-  esac
+  local cdfile; cdfile="$(mktemp -t wtm-cd.XXXXXX)" || return
+  WTM_CD_FILE="$cdfile" command wtm "$@"; local status=$?
+  if [ "$status" -eq 0 ] && [ -s "$cdfile" ]; then
+    local target; target="$(cat "$cdfile")"; target="${target%.}"
+    builtin cd -- "$target" || status=$?
+  fi
+  rm -f "$cdfile"; return $status
 }
 ```
+The binary only accepts a private, regular, non-symlink file inside the
+system temp directory with the `wtm-cd.` prefix. The trailing sentinel keeps
+paths with newlines and non-UTF-8 bytes intact on Unix.
 zsh completions: `eval "$(command wtm completions zsh)"` needs compdef; emit
 the standard pattern (autoload -Uz compinit guard comment + source the
 completion script via a temp file or `eval`). bash: `eval "$(command wtm
@@ -398,7 +398,8 @@ completions bash)"`.
 
 Parse Cli, dispatch to commands::run(cli), map Err to stderr message
 (`error: {err:#}` styled red when stderr color allowed) and exit code 1
-(clap handles usage errors with exit 2 itself). No other logic.
+(clap handles usage errors with exit 2 itself). Interactive picker
+cancellation is a silent success. No other logic.
 
 ## Performance rules
 - Never spawn `git` on a read path.
@@ -406,3 +407,6 @@ Parse Cli, dispatch to commands::run(cli), map Err to stderr message
   registry metadata (plus the cheap HEAD/branch reads).
 - Status via rayon par_iter, one git2 Repository open per worktree.
 - Keep startup lazy: config/template loading only for commands that need it.
+- The ignored release-mode gate builds 64 linked worktrees (65 including
+  main), measures first-load latency against 1 second, and measures the median
+  of 11 warm loads against 500ms.

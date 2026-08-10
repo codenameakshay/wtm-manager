@@ -142,9 +142,10 @@ TUI's `Enter` action can actually `cd` you into a worktree, add an `eval` of
 `wtm init <shell>` to your shell rc file. This installs a small shell
 function named `wtm` that wraps the binary using a temp-file cd mechanism:
 it creates a temp file, exports its path as `$WTM_CD_FILE`, runs the real
-`wtm` binary with your original arguments, and — if the binary wrote a path
-into that file — `cd`s into it afterwards, then cleans the temp file up and
-preserves the binary's exit status. `wtm switch`, `wtm add --cd`, and the
+`wtm` binary with your original arguments, and — only after a successful
+command — reads the byte-safe target and uses `cd --` to enter it. It then
+cleans the private temp file and preserves the command or `cd` exit status.
+`wtm switch`, `wtm add --cd`, and the
 TUI's `Enter` action all write to `$WTM_CD_FILE` when it's set; every other
 subcommand is unaffected. It also wires up completions.
 
@@ -197,7 +198,7 @@ automation (`setup.commands`/`setup.copy`) runs in the fresh worktree:
 
 | Flag | Description |
 | --- | --- |
-| `--from <base>` | Base ref for a new branch. Falls back to `default_base` from config, then `HEAD`. |
+| `--from <base>` | Base ref for a new branch. Must resolve to a commit. If omitted, uses `default_base`, then `HEAD`. |
 | `--path <path>` | Explicit destination path, overriding the path template. |
 | `--cd` | After creating, `cd` into the new worktree (shell wrapper required — see above). |
 | `--open` | Open the new worktree in your editor after creation. |
@@ -284,8 +285,8 @@ none is set and `--with` wasn't given.
 ### `wtm path [name]`
 
 Print a worktree's path and nothing else — no interactive picker, ever, so
-it's safe to use in scripts. If `<name>` is omitted, prints the path of the
-worktree containing your current directory.
+it's safe to use in scripts. If `<name>` is omitted, prints the nearest Git
+worktree root containing your current directory.
 
 ### `wtm tui` (alias: `ui`)
 
@@ -314,9 +315,9 @@ root (errors if one already exists) — see [Configuration](#configuration).
 
 Configuration is layered; each later layer overrides the previous one
 **field-by-field** (setting only `editor` in a repo config does not reset
-`path_template` from an earlier layer). List-valued fields (`setup.commands`,
-`setup.copy`, `prune.protected_branches`) are **replaced**, not merged, by
-whichever layer last sets them.
+`path_template` from an earlier layer). List-valued fields (`setup.copy`,
+`prune.protected_branches`, and trusted `setup.commands`) are **replaced**,
+not merged, by whichever permitted layer last sets them.
 
 Layering order (later wins):
 
@@ -354,19 +355,10 @@ path_template = "../{repo}-worktrees/{branch}"
 # Unset (the built-in default) falls back to the main worktree's HEAD.
 default_base = "origin/main"
 
-# Editor used by `wtm open`. Resolution order at use time is
-# config > $VISUAL > $EDITOR.
-editor = "code"
-
-[setup]
-# Shell commands run via `sh -c`, in order, with cwd set to the new
-# worktree, right after it's created. The first failing command stops the
-# rest (the worktree is kept either way).
-commands = ["npm install"]
-
 # Files/directories copied or symlinked from the main worktree into every
-# new worktree. Existing destination files are never overwritten; missing
-# sources are skipped with a note (unless quiet).
+# new worktree. Sources must be relative paths contained in the main
+# worktree. Symlinks and parent-directory traversal are rejected. Existing
+# destination files are never overwritten; missing sources are skipped.
 [[setup.copy]]
 path = ".env"
 mode = "copy" # "copy" | "symlink" — symlink targets the ABSOLUTE source path
@@ -379,6 +371,19 @@ mode = "symlink"
 # Branches that `wtm prune` and `wtm remove --with-branch` will never
 # delete, and that are never selected as prune candidates.
 protected_branches = ["main", "master", "develop"]
+```
+
+Executable values (`editor` and setup commands) are deliberately rejected in
+the checked-in `.worktree.toml`: cloning or checking out a repository must not
+grant it code execution on your machine. Put trusted, machine-local values in
+`.worktree.local.toml` (and git-ignore it) or the global config instead:
+
+```toml
+# .worktree.local.toml
+editor = "code --wait"
+
+[setup]
+commands = ["npm install"]
 ```
 
 ## Safety model
@@ -394,11 +399,17 @@ protected_branches = ["main", "master", "develop"]
   deleted and never selected as prune candidates, regardless of flags.
 - The main worktree can never be removed or pruned.
 - Removing the worktree that contains your current directory is refused.
+- Explicit/default base refs must resolve to commits; a typo never silently
+  changes merged detection or creates a branch from an unintended `HEAD`.
+- Setup copy paths cannot escape the main worktree, traverse through
+  symlinks, or write through symlinked destination parents.
+- Pruning continues past independent failures, always refreshes Git's
+  registry, and returns a combined failure report.
 
 ## Performance
 
-`wtm list` targets **under ~50ms** for a repository with 10-20 worktrees,
-status included. To hit that:
+`wtm list` is designed for large worktree fleets with status included. To
+keep enumeration responsive:
 
 - Reads never spawn a `git` subprocess — everything goes through `git2`
   directly against the on-disk object/ref database.
@@ -414,22 +425,25 @@ To measure it yourself:
 cargo bench                 # criterion benchmarks, benches/list.rs
 ```
 
-CI enforces a (generous, CI-noise-tolerant) performance gate on every push —
-see `tests/perf_gate.rs` — by building a 15-worktree fixture repo and
-asserting the median of 11 timed runs of the full list-with-status pipeline
-stays under 250ms. Run it locally with:
+CI enforces a release-mode performance gate on every push. The gate builds a
+64-linked-worktree fixture (65 worktrees including main), audits cold-start
+and warm behavior separately, and requires the first full status load to stay
+under 1 second and the median of 11 warm runs to stay under 500ms. These are
+CI-noise-tolerant ceilings, not typical local timings. Run it locally with:
 
 ```sh
-cargo test --release --test perf_gate -- --ignored --nocapture
+cargo test --release --locked --test perf_gate -- --ignored --nocapture
 ```
 
 ## Development
 
 ```sh
-cargo test                  # unit + integration tests
+cargo test --all-targets --all-features --locked
 cargo fmt --all             # format
 cargo fmt --all --check     # check formatting (what CI runs)
-cargo clippy --all-targets -- -D warnings
+cargo clippy --all-targets --all-features --locked -- -D warnings
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features --locked
+cargo audit --file Cargo.lock
 ```
 
 The README's terminal recordings are produced with

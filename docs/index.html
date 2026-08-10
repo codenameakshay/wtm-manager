@@ -78,7 +78,7 @@
     <section class="signal-strip">
       <div class="container signal-grid">
         <div><strong>Registry-first</strong><span>Finds worktrees wherever they live</span></div>
-        <div><strong>Fast by default</strong><span>Status computed in parallel</span></div>
+        <div><strong>64-tree audited</strong><span>Cold and warm release gates in CI</span></div>
         <div><strong>macOS + Linux</strong><span>Apple Silicon, Intel, x86_64, ARM64</span></div>
         <div><strong>MIT / Apache-2.0</strong><span>Open source and yours to use</span></div>
       </div>
@@ -139,13 +139,14 @@
               <img id="demo-image" src="https://raw.githubusercontent.com/codenameakshay/wtm-manager/main/assets/tui.gif" alt="wtm full-screen TUI showing worktrees and status badges">
             </div>
           </div>
-          <div class="demo-sidebar">
-            <p class="demo-sidebar-label">Pick a flow</p>
-            <button class="demo-tab is-active" data-demo="tui"><span>01</span><strong>Browse in the TUI</strong><small>Live status, details, filtering, and keyboard actions.</small></button>
-            <button class="demo-tab" data-demo="list"><span>02</span><strong>Inspect the registry</strong><small>Human-readable tables or stable JSON for automation.</small></button>
-            <button class="demo-tab" data-demo="add"><span>03</span><strong>Create with setup</strong><small>New branch, new worktree, copied env, ready to code.</small></button>
-            <button class="demo-tab" data-demo="switch"><span>04</span><strong>Switch context</strong><small>Jump into a worktree through your shell wrapper.</small></button>
-            <button class="demo-tab" data-demo="prune"><span>05</span><strong>Clean with confidence</strong><small>Preview merged and gone worktrees before pruning.</small></button>
+          <div class="demo-sidebar" aria-label="Demo flows">
+            <p class="demo-sidebar-label" aria-hidden="true">Pick a flow</p>
+            <button class="demo-tab is-active" data-demo="tui" aria-pressed="true"><span>01</span><strong>Browse in the TUI</strong><small>Live status, details, filtering, and keyboard actions.</small></button>
+            <button class="demo-tab" data-demo="list" aria-pressed="false"><span>02</span><strong>Inspect the registry</strong><small>Human-readable tables or stable JSON for automation.</small></button>
+            <button class="demo-tab" data-demo="add" aria-pressed="false"><span>03</span><strong>Create with setup</strong><small>New branch, new worktree, copied env, ready to code.</small></button>
+            <button class="demo-tab" data-demo="switch" aria-pressed="false"><span>04</span><strong>Switch context</strong><small>Jump into a worktree through your shell wrapper.</small></button>
+            <button class="demo-tab" data-demo="prune" aria-pressed="false"><span>05</span><strong>Clean with confidence</strong><small>Preview merged and gone worktrees before pruning.</small></button>
+            <span class="sr-only" id="demo-status" role="status" aria-live="polite"></span>
           </div>
         </div>
       </div>
@@ -221,17 +222,19 @@ wtm prune --merged --gone</code></pre>
           </article>
           <article class="doc-card doc-card-wide">
             <div class="doc-card-heading"><span class="doc-symbol">{ }</span><h3>Configuration</h3></div>
-            <p>Keep shared project defaults in <code>.worktree.toml</code> and machine-specific values in <code>.worktree.local.toml</code>.</p>
+            <p>Keep data-only project defaults in <code>.worktree.toml</code>. Put trusted editor and setup commands in the git-ignored <code>.worktree.local.toml</code>.</p>
             <pre><code>path_template = "../{repo}-worktrees/{branch}"
 default_base = "origin/main"
-editor = "code"
-
-[setup]
-commands = ["npm install"]
 
 [[setup.copy]]
 path = ".env"
-mode = "copy"</code></pre>
+mode = "copy"
+
+# .worktree.local.toml only:
+editor = "code --wait"
+
+[setup]
+commands = ["npm install"]</code></pre>
           </article>
         </div>
 
@@ -240,7 +243,7 @@ mode = "copy"</code></pre>
           <div>
             <p class="eyebrow">Safety model</p>
             <h3>Your local work stays yours.</h3>
-            <p>Dirty worktrees refuse removal unless <code>--force</code> is explicit. The main worktree and protected branches are never selected for cleanup. Branches are only deleted through an explicit remove or merged/gone prune.</p>
+            <p>Dirty worktrees refuse removal unless <code>--force</code> is explicit. The main worktree and protected branches are never selected for cleanup. Shared config cannot supply executable values, setup copies cannot escape the repository, and explicit base refs never fall back silently.</p>
           </div>
         </div>
       </div>
@@ -255,7 +258,7 @@ mode = "copy"</code></pre>
           </div>
           <div class="release-pill">
             <span class="release-dot"></span>
-            <span id="release-status" aria-live="polite">Checking latest release…</span>
+            <span id="release-status" role="status" aria-live="polite">Checking latest release…</span>
             <a id="release-page" href="https://github.com/codenameakshay/wtm-manager/releases" target="_blank" rel="noreferrer">View releases ↗</a>
           </div>
         </div>
@@ -281,7 +284,7 @@ mode = "copy"</code></pre>
             <div class="platform-icon">▣</div><h3>Linux · ARM64</h3><p>For ARM-based Linux systems.</p><a class="download-link" href="https://github.com/codenameakshay/wtm-manager/releases/latest" target="_blank" rel="noreferrer">View latest build <span aria-hidden="true">↗</span></a><small class="asset-meta">Release asset</small>
           </article>
           <article class="download-card download-card-source">
-            <div class="platform-icon">&lt;/&gt;</div><h3>Build from source</h3><p>Use Rust and install directly from GitHub.</p><a class="download-link" href="https://github.com/codenameakshay/wtm-manager#from-source-cargo" target="_blank" rel="noreferrer">Read source install <span aria-hidden="true">↗</span></a><small class="asset-meta">Rust 1.80+</small>
+            <div class="platform-icon">&lt;/&gt;</div><h3>Build from source</h3><p>Use Rust and install directly from GitHub.</p><a class="download-link" href="https://github.com/codenameakshay/wtm-manager#from-source-cargo" target="_blank" rel="noreferrer">Read source install <span aria-hidden="true">↗</span></a><small class="asset-meta">Rust 1.88+</small>
           </article>
         </div>
 

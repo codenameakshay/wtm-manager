@@ -4,6 +4,9 @@ use std::path::PathBuf;
 /// messages and exit codes via `anyhow`.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("operation cancelled")]
+    Cancelled,
+
     #[error("not inside a git repository (searched from {0})")]
     RepoNotFound(PathBuf),
 

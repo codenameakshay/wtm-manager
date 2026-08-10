@@ -5,6 +5,41 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.2] - 2026-08-10
+
+### Security
+
+- Repository-shared `.worktree.toml` files can no longer supply executable
+  editor or setup commands; those values are restricted to global or local
+  configuration.
+- Setup copy paths are contained within the repository and new worktree, and
+  recursive copies reject symlinks instead of following them.
+- The shell directory-change handoff only writes to wrapper-created temporary
+  files without following symlinks.
+
+### Fixed
+
+- Explicit base refs now fail clearly when invalid, the main worktree is never
+  labeled merged, and unavailable status scans are no longer shown as clean.
+- TUI refresh generations prevent stale row/detail results, failures settle
+  loading state, and prune discloses dirty worktrees with an explicit force
+  toggle.
+- Pruning continues independent candidates after recoverable failures and
+  always attempts final registry cleanup.
+- Quiet add/remove suppress Git progress and success text; editor launch
+  validates the command; `add --cd` changes directory only after setup passes.
+- Shell path handoff preserves non-UTF-8 and newline-containing Unix paths.
+
+### Performance
+
+- Release-mode list auditing now measures first load and an eleven-run warm
+  median across 64 linked worktrees.
+
+### Changed
+
+- Updated Ratatui to 0.30 and aligned Crossterm 0.29, removing the vulnerable
+  `lru` and unmaintained `paste` transitive dependencies. The MSRV is now 1.88.
+
 ## [0.2.1] - 2026-07-21
 
 ### Fixed

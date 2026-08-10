@@ -8,6 +8,9 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+permissions:
+  contents: read
+
 jobs:
   test:
     name: test (${{ matrix.os }})
@@ -32,13 +35,43 @@ jobs:
         run: cargo fmt --all --check
 
       - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --all-targets --all-features --locked -- -D warnings
 
       - name: Test
-        run: cargo test
+        run: cargo test --all-targets --all-features --locked
+
+      - name: Documentation
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --no-deps --all-features --locked
 
       - name: Performance gate
-        run: cargo test --release --test perf_gate -- --ignored --nocapture
+        run: cargo test --release --test perf_gate --locked -- --ignored --nocapture
+
+  audit:
+    name: rustsec audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Audit Cargo.lock
+        uses: rustsec/audit-check@v2.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  msrv:
+    name: Rust 1.88 minimum version
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install minimum Rust toolchain
+        uses: dtolnay/rust-toolchain@1.88.0
+
+      - name: Check minimum supported Rust version
+        run: cargo check --all-features --locked
 
   shellcheck:
     name: shellcheck

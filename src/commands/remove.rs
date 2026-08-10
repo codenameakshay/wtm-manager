@@ -1,6 +1,6 @@
 //! `wtm remove` — remove a worktree, with dirty/main/cwd safety checks.
 //!
-//! The safety-checked removal itself lives in [`remove_worktree`] so that
+//! The safety-checked removal itself lives in the private `remove_worktree` core so that
 //! the CLI command and the TUI `d` action share one implementation.
 
 use std::path::Path;
@@ -32,16 +32,20 @@ pub fn run(args: &RemoveArgs, global: &GlobalArgs) -> Result<()> {
 
     remove_worktree(&ctx, &target, args.force, global.quiet)?;
 
-    println!(
-        "Removed worktree '{}' ({})",
-        target.display_name(),
-        target.path.display()
-    );
+    if !global.quiet {
+        println!(
+            "Removed worktree '{}' ({})",
+            target.display_name(),
+            target.path.display()
+        );
+    }
 
     match branch_to_delete {
         Some(branch) => {
             gitcmd::branch_delete(&ctx.main_root, &branch)?;
-            println!("Deleted branch '{branch}'");
+            if !global.quiet {
+                println!("Deleted branch '{branch}'");
+            }
         }
         None if args.with_branch && !global.quiet => {
             eprintln!("note: no branch was checked out; nothing to delete");
@@ -111,7 +115,7 @@ fn contains_cwd(path: &Path) -> bool {
 }
 
 /// Uncommitted changes (including untracked, excluding ignored/submodules)?
-fn is_dirty(path: &Path) -> Result<bool> {
+pub(crate) fn is_dirty(path: &Path) -> Result<bool> {
     let repo = git2::Repository::open(path)?;
     let mut opts = git2::StatusOptions::new();
     opts.include_untracked(true)

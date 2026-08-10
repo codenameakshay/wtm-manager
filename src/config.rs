@@ -123,6 +123,21 @@ pub fn load(repo_root: &Path) -> Result<Config> {
     }
 
     if let Some(layer) = load_layer(&repo_root.join(REPO_CONFIG_FILENAME))? {
+        if layer.editor.is_some() {
+            return Err(Error::Config(format!(
+                "{REPO_CONFIG_FILENAME}: editor cannot be loaded from shared repository config because it is executed as a command; move editor to {LOCAL_CONFIG_FILENAME} or the global config"
+            )));
+        }
+        if layer
+            .setup
+            .as_ref()
+            .and_then(|setup| setup.commands.as_ref())
+            .is_some()
+        {
+            return Err(Error::Config(format!(
+                "{REPO_CONFIG_FILENAME}: setup.commands cannot be loaded from shared repository config; move commands to {LOCAL_CONFIG_FILENAME} or the global config"
+            )));
+        }
         cfg = merge(cfg, layer);
     }
 
@@ -172,7 +187,9 @@ pub fn merge(base: Config, layer: ConfigFile) -> Config {
 /// home directory cannot be resolved.
 pub fn global_config_path() -> Option<PathBuf> {
     if let Some(dir) = std::env::var_os("WTM_CONFIG_DIR") {
-        return Some(PathBuf::from(dir).join("config.toml"));
+        if !dir.is_empty() {
+            return Some(PathBuf::from(dir).join("config.toml"));
+        }
     }
     if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
         if !xdg.is_empty() {
@@ -231,13 +248,9 @@ const SAMPLE_CONFIG: &str = r#"# wtm repository configuration.
 # status, e.g. "origin/main". Falls back to HEAD when unset.
 # default_base = "origin/main"
 
-# Editor used by `wtm open`. Falls back to $VISUAL then $EDITOR when unset.
-# editor = "cursor"
-
-# [setup]
-# Shell commands run (via `sh -c`) in the new worktree after creation, in
-# order. The worktree is left in place even if a command fails.
-# commands = ["mise install", "npm install"]
+# Executable values are intentionally excluded from shared repository config.
+# Put `editor` and [setup].commands in `.worktree.local.toml` or the global
+# config instead.
 
 # Files/directories copied (or symlinked) from the main worktree into every
 # new worktree, e.g. untracked local env files. Existing destination files
@@ -254,6 +267,7 @@ const SAMPLE_CONFIG: &str = r#"# wtm repository configuration.
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsStr;
     use std::sync::Mutex;
 
     /// Serializes tests that mutate `WTM_CONFIG_DIR` so they don't race.
@@ -275,6 +289,29 @@ mod tests {
     impl Drop for EnvGuard {
         fn drop(&mut self) {
             std::env::remove_var("WTM_CONFIG_DIR");
+        }
+    }
+
+    struct ScopedEnvVar {
+        key: &'static str,
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl ScopedEnvVar {
+        fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
+            let previous = std::env::var_os(key);
+            std::env::set_var(key, value);
+            ScopedEnvVar { key, previous }
+        }
+    }
+
+    impl Drop for ScopedEnvVar {
+        fn drop(&mut self) {
+            if let Some(previous) = &self.previous {
+                std::env::set_var(self.key, previous);
+            } else {
+                std::env::remove_var(self.key);
+            }
         }
     }
 
@@ -434,7 +471,7 @@ protected_branches = ["main", "master", "develop"]
         let repo_root = tempfile::tempdir().unwrap();
         std::fs::write(
             repo_root.path().join(REPO_CONFIG_FILENAME),
-            "path_template = \"repo-template/{branch}\"\neditor = \"cursor\"\n",
+            "path_template = \"repo-template/{branch}\"\n",
         )
         .unwrap();
         std::fs::write(
@@ -470,6 +507,82 @@ protected_branches = ["main", "master", "develop"]
         let cfg = load(repo_root.path()).unwrap();
         assert_eq!(cfg.editor, Some("nano".to_string()));
         assert_eq!(cfg.path_template, Config::default().path_template);
+    }
+
+    #[test]
+    fn load_rejects_shared_repo_setup_commands_with_actionable_error() {
+        let _guard = EnvGuard::set(tempfile::tempdir().unwrap().path());
+        let repo_root = tempfile::tempdir().unwrap();
+        std::fs::write(
+            repo_root.path().join(REPO_CONFIG_FILENAME),
+            "[setup]\ncommands = [\"touch shared\"]\n",
+        )
+        .unwrap();
+
+        let err = load(repo_root.path()).unwrap_err();
+        match err {
+            Error::Config(message) => {
+                assert!(message.contains(REPO_CONFIG_FILENAME), "{message}");
+                assert!(message.contains("setup.commands"), "{message}");
+                assert!(message.contains(LOCAL_CONFIG_FILENAME), "{message}");
+            }
+            other => panic!("expected config error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn load_rejects_shared_repo_editor_with_actionable_error() {
+        let global = tempfile::tempdir().unwrap();
+        let _guard = EnvGuard::set(global.path());
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join(REPO_CONFIG_FILENAME),
+            "editor = \"code --wait\"\n",
+        )
+        .unwrap();
+
+        let error = load(tmp.path()).unwrap_err();
+        match error {
+            Error::Config(message) => {
+                assert!(message.contains("editor"), "{message}");
+                assert!(message.contains(LOCAL_CONFIG_FILENAME), "{message}");
+            }
+            other => panic!("expected config error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn load_accepts_setup_commands_from_global_and_repo_local_layers() {
+        let global = tempfile::tempdir().unwrap();
+        std::fs::write(
+            global.path().join("config.toml"),
+            "[setup]\ncommands = [\"from-global\"]\n",
+        )
+        .unwrap();
+        let _guard = EnvGuard::set(global.path());
+
+        let repo_root = tempfile::tempdir().unwrap();
+        std::fs::write(
+            repo_root.path().join(LOCAL_CONFIG_FILENAME),
+            "[setup]\ncommands = [\"from-local\"]\n",
+        )
+        .unwrap();
+
+        let cfg = load(repo_root.path()).unwrap();
+        assert_eq!(cfg.setup.commands, vec!["from-local".to_string()]);
+    }
+
+    #[test]
+    fn empty_wtm_config_dir_falls_back_to_xdg_config_home() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let xdg = tempfile::tempdir().unwrap();
+        let _wtm = ScopedEnvVar::set("WTM_CONFIG_DIR", "");
+        let _xdg = ScopedEnvVar::set("XDG_CONFIG_HOME", xdg.path());
+
+        assert_eq!(
+            global_config_path().unwrap(),
+            xdg.path().join("wtm").join("config.toml")
+        );
     }
 
     #[test]

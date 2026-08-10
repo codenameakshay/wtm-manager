@@ -36,7 +36,7 @@ pub fn use_color(mode: ColorMode) -> bool {
 
 /// Pure decision core for [`ColorMode::Auto`], split out for unit testing.
 fn auto_color(no_color: Option<&OsStr>, stdout_is_tty: bool) -> bool {
-    stdout_is_tty && no_color.map_or(true, |v| v.is_empty())
+    stdout_is_tty && no_color.is_none_or(|v| v.is_empty())
 }
 
 /// Render the human-readable table for `wtm list`.
@@ -123,7 +123,8 @@ fn ahead_behind_cell(info: &WorktreeInfo) -> Cell {
             }
             _ => Cell::new("-"),
         },
-        None => Cell::new("-"),
+        None if info.is_missing => Cell::new("-"),
+        None => Cell::new("unavailable").fg(Color::Red),
     }
 }
 
@@ -131,6 +132,9 @@ fn ahead_behind_cell(info: &WorktreeInfo) -> Cell {
 /// most significant badge (missing > dirty > prunable > locked > merged);
 /// comfy-table styles per cell, not per word.
 fn status_cell(info: &WorktreeInfo) -> Cell {
+    if info.status.is_none() && !info.is_missing {
+        return Cell::new("unavailable").fg(Color::Red);
+    }
     let mut badges: Vec<&str> = Vec::new();
     if let Some(s) = &info.status {
         if s.dirty {

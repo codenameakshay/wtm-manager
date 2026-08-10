@@ -109,9 +109,7 @@ pub(crate) fn pick(items: &[WorktreeInfo], command: &str) -> Result<WorktreeInfo
     match selection {
         Ok(choice) => Ok(items[choice.index].clone()),
         Err(inquire::InquireError::OperationCanceled)
-        | Err(inquire::InquireError::OperationInterrupted) => {
-            Err(Error::Other("selection cancelled".to_string()))
-        }
+        | Err(inquire::InquireError::OperationInterrupted) => Err(Error::Cancelled),
         Err(e) => Err(Error::Other(format!("selection failed: {e}"))),
     }
 }

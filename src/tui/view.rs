@@ -43,7 +43,11 @@ pub(crate) fn draw(f: &mut Frame, app: &App) {
         Overlay::ConfirmRemove { info, force, dirty } => {
             draw_confirm_remove(f, info, *force, *dirty)
         }
-        Overlay::ConfirmPrune { candidates } => draw_confirm_prune(f, candidates),
+        Overlay::ConfirmPrune {
+            candidates,
+            force,
+            unsafe_count,
+        } => draw_confirm_prune(f, candidates, *force, *unsafe_count),
         Overlay::Create {
             branch,
             base,
@@ -350,7 +354,12 @@ fn draw_confirm_remove(f: &mut Frame, info: &WorktreeInfo, force: bool, dirty: b
     );
 }
 
-fn draw_confirm_prune(f: &mut Frame, candidates: &[crate::commands::prune::PruneCandidate]) {
+fn draw_confirm_prune(
+    f: &mut Frame,
+    candidates: &[crate::commands::prune::PruneCandidate],
+    force: bool,
+    unsafe_count: usize,
+) {
     let mut lines = vec![Line::from(format!(
         "Prune {} worktree(s)?",
         candidates.len()
@@ -373,9 +382,20 @@ fn draw_confirm_prune(f: &mut Frame, candidates: &[crate::commands::prune::Prune
             ),
         ]));
     }
+    if unsafe_count > 0 {
+        lines.push(Line::raw(""));
+        lines.push(Line::styled(
+            format!("{unsafe_count} worktree(s) have changes or unavailable status"),
+            Style::new().fg(Color::Red),
+        ));
+        lines.push(Line::from(format!(
+            "force: [{}]",
+            if force { "x" } else { " " }
+        )));
+    }
     lines.push(Line::raw(""));
     lines.push(Line::styled(
-        "enter confirm   esc cancel",
+        "enter confirm   f toggle force   esc cancel",
         Style::new().fg(Color::DarkGray),
     ));
 
@@ -488,6 +508,7 @@ mod tests {
     fn app() -> App {
         let mut app = App::new(Some("origin/main".to_string()), vec!["main".to_string()]);
         app.update(Msg::RowsLoaded {
+            generation: 0,
             rows: vec![
                 info("main", true),
                 info("dirty-feat", false),

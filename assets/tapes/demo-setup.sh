@@ -38,7 +38,7 @@ git config user.name "Ada Lovelace"; git config user.email "ada@example.com"; gi
 mkdir -p src
 printf 'export const app = "acme";\n'        > src/app.js
 printf '# acme\n\nA small web app.\n'          > README.md
-printf 'node_modules\n.env\n'                  > .gitignore
+printf 'node_modules\n.env\n.worktree.local.toml\n' > .gitignore
 printf 'API_URL=https://api.acme.dev\n'        > .env
 git add -A; commit "Initial commit"
 printf 'export const version = "1.0.0";\n'    > src/version.js
@@ -46,19 +46,22 @@ git add -A; commit "Add version module"
 printf 'export function login(){/* ... */}\n' > src/auth.js
 git add -A; commit "Scaffold auth module"
 
-# repo-level wtm config: show setup automation on `wtm add`
+# Shared repo config stays data-only. Executable setup commands belong in the
+# trusted, git-ignored local layer.
 cat > .worktree.toml <<'EOF'
 path_template = "../{repo}-worktrees/{branch}"
 default_base = "main"
-
-[setup]
-commands = ["echo '  ▸ installing dependencies' && echo '  ▸ ready'"]
 
 [[setup.copy]]
 path = ".env"
 mode = "copy"
 EOF
 git add -A; commit "Add wtm config"
+
+cat > .worktree.local.toml <<'EOF'
+[setup]
+commands = ["echo '  ▸ installing dependencies' && echo '  ▸ ready'"]
+EOF
 git branch -M main
 git push -q -u origin main
 
