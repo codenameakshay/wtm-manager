@@ -96,7 +96,7 @@ pub struct AddArgs {
     pub branch: String,
 
     /// Base ref for a newly created branch (overrides the configured
-    /// `default_base`; falls back to HEAD when unresolvable).
+    /// `default_base`; explicit refs must resolve to commits).
     #[arg(long, value_name = "BASE")]
     pub from: Option<String>,
 

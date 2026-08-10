@@ -8,9 +8,9 @@
 //! ```
 //!
 //! The real performance budget documented in `DESIGN.md`/`README.md` is
-//! ~50ms for 10-20 worktrees; this gate asserts a much more generous 250ms
-//! median over 11 timed runs, to absorb CI machine variance without ever
-//! being flaky.
+//! This gate uses 64 linked worktrees, records both cold and warm behavior,
+//! and keeps generous CI budgets so it catches regressions without measuring
+//! runner noise.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -19,17 +19,22 @@ use std::time::{Duration, Instant};
 use tempfile::TempDir;
 use wtm::worktree::{self, ListOptions};
 
-const WORKTREE_COUNT: usize = 15;
+const WORKTREE_COUNT: usize = 64;
 const RUNS: usize = 11;
-const BUDGET: Duration = Duration::from_millis(250);
+const FIRST_LOAD_BUDGET: Duration = Duration::from_secs(1);
+const WARM_MEDIAN_BUDGET: Duration = Duration::from_millis(500);
 
 fn run_git(cwd: &Path, args: &[&str]) {
-    let status = Command::new("git")
+    let output = Command::new("git")
         .current_dir(cwd)
         .args(args)
-        .status()
+        .output()
         .expect("spawn git");
-    assert!(status.success(), "git {args:?} failed in {cwd:?}");
+    assert!(
+        output.status.success(),
+        "git {args:?} failed in {cwd:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 /// Build a fixture repo with an initial commit and `count` linked worktrees,
@@ -80,9 +85,9 @@ fn list_with_status_stays_under_budget() {
         base: None,
     };
 
-    // Warm up once (page in the binary, prime OS file caches) before taking
-    // timed measurements, so the first sample doesn't skew the median.
-    worktree::list(&ctx, &opts).expect("warmup list");
+    let first_start = Instant::now();
+    worktree::list(&ctx, &opts).expect("first list");
+    let first_load = first_start.elapsed();
 
     let mut samples = Vec::with_capacity(RUNS);
     for _ in 0..RUNS {
@@ -94,11 +99,18 @@ fn list_with_status_stays_under_budget() {
     samples.sort();
     let median = samples[samples.len() / 2];
 
-    println!("list-with-status over {RUNS} runs ({WORKTREE_COUNT} worktrees): {samples:?}");
-    println!("median: {median:?} (budget: {BUDGET:?})");
+    println!(
+        "list-with-status over {RUNS} warm runs ({WORKTREE_COUNT} linked worktrees): {samples:?}"
+    );
+    println!("first load: {first_load:?} (budget: {FIRST_LOAD_BUDGET:?})");
+    println!("warm median: {median:?} (budget: {WARM_MEDIAN_BUDGET:?})");
 
     assert!(
-        median < BUDGET,
-        "median list-with-status time {median:?} exceeded the {BUDGET:?} CI budget"
+        first_load < FIRST_LOAD_BUDGET,
+        "first list-with-status time {first_load:?} exceeded the {FIRST_LOAD_BUDGET:?} CI budget"
+    );
+    assert!(
+        median < WARM_MEDIAN_BUDGET,
+        "warm median list-with-status time {median:?} exceeded the {WARM_MEDIAN_BUDGET:?} CI budget"
     );
 }

@@ -6,9 +6,9 @@ use crate::error::Result;
 use crate::repo;
 use crate::worktree;
 
-/// Print the path of the named worktree, or of the worktree containing the
-/// current directory when no name is given (falling back to the main
-/// worktree when the cwd is outside the repo, e.g. with `-C`).
+/// Print the path of the named worktree, or the nearest Git worktree root
+/// containing the current directory when no name is given (falling back to
+/// the explicit repository's main worktree when the cwd is outside it).
 /// Deliberately never a picker.
 pub fn run(args: &PathArgs, global: &GlobalArgs) -> Result<()> {
     // No config needed here; keep startup lazy.
@@ -17,6 +17,19 @@ pub fn run(args: &PathArgs, global: &GlobalArgs) -> Result<()> {
         Some(name) => worktree::find(&ctx, name)?.path,
         None => {
             let cwd = std::env::current_dir()?;
+            if global.repo.is_none() {
+                if let Ok(repo) = git2::Repository::discover(&cwd) {
+                    if let Some(root) = repo.workdir() {
+                        println!(
+                            "{}",
+                            root.canonicalize()
+                                .unwrap_or_else(|_| root.to_path_buf())
+                                .display()
+                        );
+                        return Ok(());
+                    }
+                }
+            }
             match worktree::containing(&ctx, &cwd)? {
                 Some(wt) => wt.path,
                 None => ctx.main_root.clone(),

@@ -9,12 +9,13 @@
 //! - The first paint never blocks on status: the fast (no-status) listing
 //!   renders immediately, while a background thread computes the full
 //!   listing and delivers it over an mpsc channel drained each tick.
-//! - The module is a pure state machine ([`app::App::update`]) plus this
-//!   runtime, which executes [`app::Effect`]s and owns the terminal.
+//! - The module is a pure state machine (`app::App::update`) plus this
+//!   runtime, which executes `app::Effect`s and owns the terminal.
 
 mod app;
 mod view;
 
+use std::collections::VecDeque;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -68,10 +69,11 @@ pub fn run(global: &GlobalArgs) -> Result<()> {
         config.prune.protected_branches.clone(),
     );
     let mut pending = app.update(Msg::RowsLoaded {
+        generation: 0,
         rows,
         with_status: false,
     });
-    pending.push(Effect::LoadRows { with_status: true });
+    pending.push(app.request_rows(true));
 
     install_panic_hook();
     let guard = TerminalGuard::enter()?;
@@ -103,12 +105,12 @@ fn event_loop(
     pending: Vec<Effect>,
 ) -> Result<Option<PathBuf>> {
     let (tx, rx) = mpsc::channel::<Msg>();
-    let mut effects = pending;
+    let mut effects: VecDeque<Effect> = pending.into();
 
     loop {
         // Execute queued effects; immediate outcomes feed straight back into
         // the model and may enqueue more effects.
-        while let Some(effect) = pop_front(&mut effects) {
+        while let Some(effect) = effects.pop_front() {
             match effect {
                 Effect::Quit => return Ok(None),
                 Effect::Switch { path } => return Ok(Some(path)),
@@ -138,14 +140,6 @@ fn event_loop(
     }
 }
 
-fn pop_front(effects: &mut Vec<Effect>) -> Option<Effect> {
-    if effects.is_empty() {
-        None
-    } else {
-        Some(effects.remove(0))
-    }
-}
-
 /// Execute one non-terminal effect. Background loads return `None` (their
 /// result arrives over the channel); synchronous actions return the outcome
 /// message to feed back into the model.
@@ -158,28 +152,39 @@ fn run_effect(
 ) -> Result<Option<Msg>> {
     match effect {
         Effect::Quit | Effect::Switch { .. } => unreachable!("handled by the loop"),
-        Effect::LoadRows { with_status } => {
+        Effect::LoadRows {
+            generation,
+            with_status,
+        } => {
             let ctx = ctx.clone();
             let base = config.default_base.clone();
             let tx = tx.clone();
             std::thread::spawn(move || {
                 let msg = match worktree::list(&ctx, &ListOptions { with_status, base }) {
-                    Ok(rows) => Msg::RowsLoaded { rows, with_status },
-                    Err(e) => Msg::ActionOutcome {
+                    Ok(rows) => Msg::RowsLoaded {
+                        generation,
+                        rows,
+                        with_status,
+                    },
+                    Err(e) => Msg::RowsFailed {
+                        generation,
+                        with_status,
                         text: format!("list failed: {e}"),
-                        error: true,
-                        refresh: false,
                     },
                 };
                 let _ = tx.send(msg);
             });
             Ok(None)
         }
-        Effect::LoadDetails { path } => {
+        Effect::LoadDetails { generation, path } => {
             let tx = tx.clone();
             std::thread::spawn(move || {
                 let details = worktree::details(&path);
-                let _ = tx.send(Msg::Details { path, details });
+                let _ = tx.send(Msg::Details {
+                    generation,
+                    path,
+                    details,
+                });
             });
             Ok(None)
         }
@@ -228,24 +233,19 @@ fn run_effect(
             };
             Ok(Some(msg))
         }
-        Effect::Prune { candidates } => {
-            let msg = match prune::execute(ctx, &candidates, false, false) {
-                Ok(report) => {
-                    let mut text = format!("pruned {} worktree(s)", report.removed);
-                    if !report.skipped.is_empty() {
-                        text.push_str(&format!("; skipped (dirty): {}", report.skipped.join(", ")));
-                    }
-                    Msg::ActionOutcome {
-                        text,
-                        error: false,
-                        refresh: true,
-                    }
-                }
-                Err(e) => Msg::ActionOutcome {
-                    text: format!("prune failed: {e}"),
-                    error: true,
-                    refresh: true,
-                },
+        Effect::Prune { candidates, force } => {
+            let report = prune::execute(ctx, &candidates, force, false);
+            let mut text = format!("pruned {} worktree(s)", report.removed);
+            if !report.skipped.is_empty() {
+                text.push_str(&format!("; skipped (dirty): {}", report.skipped.join(", ")));
+            };
+            if !report.failures.is_empty() {
+                text.push_str(&format!("; failed: {}", report.failures.join("; ")));
+            }
+            let msg = Msg::ActionOutcome {
+                text,
+                error: !report.failures.is_empty(),
+                refresh: true,
             };
             Ok(Some(msg))
         }

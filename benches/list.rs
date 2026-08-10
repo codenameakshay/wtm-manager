@@ -12,15 +12,19 @@ use criterion::{criterion_group, criterion_main, Criterion};
 use tempfile::TempDir;
 use wtm::worktree::{self, ListOptions};
 
-const WORKTREE_COUNT: usize = 15;
+const WORKTREE_COUNT: usize = 64;
 
 fn run_git(cwd: &Path, args: &[&str]) {
-    let status = Command::new("git")
+    let output = Command::new("git")
         .current_dir(cwd)
         .args(args)
-        .status()
+        .output()
         .expect("spawn git");
-    assert!(status.success(), "git {args:?} failed in {cwd:?}");
+    assert!(
+        output.status.success(),
+        "git {args:?} failed in {cwd:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 /// Build a fixture repo with an initial commit and `count` linked worktrees,

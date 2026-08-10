@@ -1,6 +1,6 @@
 //! `wtm add` — create a worktree for an existing or new branch.
 //!
-//! The creation flow itself lives in [`create`] so that the CLI command and
+//! The creation flow itself lives in the private `create` core so that the CLI command and
 //! the TUI create form share one implementation (checks, destination
 //! resolution, git invocation, setup automation).
 
@@ -46,7 +46,7 @@ pub fn run(args: &AddArgs, global: &GlobalArgs) -> Result<()> {
         path_override: args.path.as_deref(),
         cd: args.cd,
         run_setup: !args.no_setup,
-        announce: true,
+        announce: !global.quiet,
         quiet: global.quiet,
         verbose: global.verbose,
     };
@@ -99,13 +99,13 @@ pub(crate) fn create(ctx: &RepoContext, config: &Config, req: &CreateRequest) ->
     }
 
     if branch_exists {
-        gitcmd::worktree_add(&ctx.main_root, &dest, branch)?;
+        gitcmd::worktree_add(&ctx.main_root, &dest, branch, req.quiet)?;
     } else {
         let base = resolve_base(ctx, config, req.base_override, req.quiet)?;
         if req.verbose {
             eprintln!("creating branch '{branch}' from '{base}'");
         }
-        gitcmd::worktree_add_new_branch(&ctx.main_root, &dest, branch, &base)?;
+        gitcmd::worktree_add_new_branch(&ctx.main_root, &dest, branch, &base, req.quiet)?;
     }
 
     // Success line first: the worktree exists now, even if setup fails.
@@ -113,9 +113,13 @@ pub(crate) fn create(ctx: &RepoContext, config: &Config, req: &CreateRequest) ->
         println!("Created worktree '{branch}' at {}", dest.display());
     }
 
+    if req.run_setup {
+        setup::run(config, &ctx.main_root, &dest, req.quiet)?;
+    }
+
     if req.cd {
-        // The shell wrapper installed by `wtm init` performs the actual `cd`
-        // in the parent shell by reading the cd file we write here.
+        // Only request the parent-shell directory change after every setup
+        // step succeeds.
         let wrote = crate::cdfile::request(&dest)?;
         if !wrote && !req.quiet {
             eprintln!(
@@ -123,10 +127,6 @@ pub(crate) fn create(ctx: &RepoContext, config: &Config, req: &CreateRequest) ->
                  `eval \"$(command wtm init zsh)\"` (or bash) to your shell rc"
             );
         }
-    }
-
-    if req.run_setup {
-        setup::run(config, &ctx.main_root, &dest, req.quiet)?;
     }
 
     Ok(dest)
@@ -173,13 +173,13 @@ fn destination(
 }
 
 /// Base ref for a new branch: override > configured `default_base`
-/// (revparsed in the main repo, falling back to HEAD with a stderr note when
-/// it does not resolve) > HEAD.
+/// (revparsed strictly in the main repo) > HEAD. An explicit base that does
+/// not resolve is an error.
 fn resolve_base(
     ctx: &RepoContext,
     config: &Config,
     base_override: Option<&str>,
-    quiet: bool,
+    _quiet: bool,
 ) -> Result<String> {
     let requested = match base_override {
         Some(base) => Some(base),
@@ -189,14 +189,14 @@ fn resolve_base(
         None => Ok("HEAD".to_string()),
         Some(base) => {
             let repo = ctx.open_main()?;
-            if repo.revparse_single(base).is_ok() {
-                Ok(base.to_string())
-            } else {
-                if !quiet {
-                    eprintln!("note: base '{base}' does not resolve; using HEAD instead");
-                }
-                Ok("HEAD".to_string())
-            }
+            repo.revparse_single(base)
+                .and_then(|object| object.peel_to_commit())
+                .map_err(|_| {
+                    Error::Other(format!(
+                        "configured base '{base}' does not resolve to a commit"
+                    ))
+                })?;
+            Ok(base.to_string())
         }
     }
 }

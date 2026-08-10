@@ -48,8 +48,11 @@ function setDemo(name) {
   image.alt = demo.alt;
   document.querySelector("#demo-open").href = demo.image;
   document.querySelectorAll("[data-demo]").forEach((button) => {
-    button.classList.toggle("is-active", button.dataset.demo === name);
+    const active = button.dataset.demo === name;
+    button.classList.toggle("is-active", active);
+    button.setAttribute("aria-pressed", String(active));
   });
+  document.querySelector("#demo-status").textContent = demo.title + " demo selected";
 }
 
 document.querySelectorAll("[data-demo]").forEach((button) => {

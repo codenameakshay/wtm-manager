@@ -17,9 +17,9 @@
 //!   exists.
 //! - **merged**: the branch tip is an ancestor of (or equal to) the resolved
 //!   base tip. The base is resolved once in the MAIN repository from
-//!   [`ListOptions::base`] via revparse, falling back to the main worktree's
-//!   HEAD when unset or unresolvable. A worktree whose branch IS the base
-//!   (shorthand match) is never flagged merged.
+//!   [`ListOptions::base`] via revparse. An explicit base must resolve; only
+//!   an unset base uses the main worktree's HEAD. The main worktree and a
+//!   worktree whose branch IS the base are never flagged merged.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -37,8 +37,8 @@ pub struct ListOptions {
     /// parallel with rayon. When false, `WorktreeInfo.status` is None.
     pub with_status: bool,
     /// Base ref for merged detection, e.g. "origin/main" (config
-    /// default_base). Resolved via revparse in the main repo; falls back to
-    /// the main worktree HEAD when None/unresolvable.
+    /// default_base). Resolved via revparse in the main repo; only `None`
+    /// falls back to the main worktree HEAD.
     pub base: Option<String>,
 }
 
@@ -58,11 +58,16 @@ pub fn list(ctx: &RepoContext, opts: &ListOptions) -> Result<Vec<WorktreeInfo>> 
     }
 
     if opts.with_status {
-        let base = resolve_base(&main_repo, opts.base.as_deref());
+        let base = resolve_base(&main_repo, opts.base.as_deref())?;
         drop(main_repo);
         infos.par_iter_mut().for_each(|info| {
             if !info.is_missing {
-                info.status = compute_status(&info.path, info.branch.as_deref(), base.as_ref());
+                info.status = compute_status(
+                    &info.path,
+                    info.branch.as_deref(),
+                    info.is_main,
+                    base.as_ref(),
+                );
             }
         });
     }
@@ -213,36 +218,45 @@ struct ResolvedBase {
     names: Vec<String>,
 }
 
-/// Resolve the merged-detection base in the MAIN repo: revparse `base` when
-/// given; otherwise (or when unresolvable) the main worktree's HEAD. Returns
-/// None only when even HEAD cannot be resolved (e.g. unborn branch).
-fn resolve_base(repo: &git2::Repository, base: Option<&str>) -> Option<ResolvedBase> {
+/// Resolve the merged-detection base in the MAIN repo. An explicit base is
+/// strict; only an absent base falls back to HEAD.
+fn resolve_base(repo: &git2::Repository, base: Option<&str>) -> Result<Option<ResolvedBase>> {
     if let Some(spec) = base {
-        if let Ok((object, reference)) = repo.revparse_ext(spec) {
-            if let Ok(commit) = object.peel(git2::ObjectType::Commit) {
-                let mut names = vec![spec.to_string()];
-                if let Some(short) = reference.as_ref().and_then(|r| r.shorthand().ok()) {
-                    if short != spec {
-                        names.push(short.to_string());
-                    }
-                }
-                return Some(ResolvedBase {
-                    oid: commit.id(),
-                    names,
-                });
+        let (object, reference) = repo.revparse_ext(spec).map_err(|_| {
+            Error::Other(format!(
+                "configured base '{spec}' does not resolve to a commit"
+            ))
+        })?;
+        let commit = object.peel(git2::ObjectType::Commit).map_err(|_| {
+            Error::Other(format!(
+                "configured base '{spec}' does not resolve to a commit"
+            ))
+        })?;
+        let mut names = vec![spec.to_string()];
+        if let Some(short) = reference.as_ref().and_then(|r| r.shorthand().ok()) {
+            if short != spec {
+                names.push(short.to_string());
             }
         }
+        return Ok(Some(ResolvedBase {
+            oid: commit.id(),
+            names,
+        }));
     }
 
-    let head = repo.head().ok()?;
-    let oid = head.peel_to_commit().ok()?.id();
+    let Some(head) = repo.head().ok() else {
+        return Ok(None);
+    };
+    let Some(oid) = head.peel_to_commit().ok().map(|commit| commit.id()) else {
+        return Ok(None);
+    };
     let mut names = Vec::new();
     if head.is_branch() {
         if let Ok(short) = head.shorthand() {
             names.push(short.to_string());
         }
     }
-    Some(ResolvedBase { oid, names })
+    Ok(Some(ResolvedBase { oid, names }))
 }
 
 /// Compute expensive status for one worktree by opening a fresh repository at
@@ -252,6 +266,7 @@ fn resolve_base(repo: &git2::Repository, base: Option<&str>) -> Option<ResolvedB
 fn compute_status(
     path: &Path,
     branch: Option<&str>,
+    is_main: bool,
     base: Option<&ResolvedBase>,
 ) -> Option<WorktreeStatus> {
     let repo = git2::Repository::open(path).ok()?;
@@ -265,8 +280,10 @@ fn compute_status(
         .exclude_submodules(true);
     let dirty = repo
         .statuses(Some(&mut status_opts))
-        .map(|s| s.iter().next().is_some())
-        .unwrap_or(false);
+        .ok()?
+        .iter()
+        .next()
+        .is_some();
 
     let mut ahead = None;
     let mut behind = None;
@@ -307,6 +324,7 @@ fn compute_status(
     }
 
     let merged = match (tip, base) {
+        (Some(_), Some(_)) if is_main => false,
         (Some(tip_oid), Some(base_ref)) => {
             let is_base_itself =
                 branch.is_some_and(|name| base_ref.names.iter().any(|n| n == name));
@@ -643,7 +661,7 @@ mod tests {
     }
 
     #[test]
-    fn merged_with_explicit_and_unresolvable_base() {
+    fn merged_with_explicit_base_and_rejects_unresolvable_base() {
         let (tmp, ctx) = fixture();
         let done = tmp.path().join("wts").join("done");
         add_worktree(&ctx, &done, "done");
@@ -657,13 +675,36 @@ mod tests {
         assert!(entry(&infos, "done").status.as_ref().unwrap().merged);
         assert!(!entry(&infos, "main").status.as_ref().unwrap().merged);
 
-        // Unresolvable base falls back to main HEAD.
+        // The main worktree remains non-merged when the configured base is
+        // the remote-tracking ref for its local branch.
+        git(
+            &ctx.main_root,
+            &["update-ref", "refs/remotes/origin/main", "HEAD"],
+        );
+        let remote_opts = ListOptions {
+            with_status: true,
+            base: Some("origin/main".to_string()),
+        };
+        let infos = list(&ctx, &remote_opts).unwrap();
+        assert!(!entry(&infos, "main").status.as_ref().unwrap().merged);
+
+        // An explicit unresolvable base is an error rather than a silent
+        // fallback to HEAD.
         let opts = ListOptions {
             with_status: true,
             base: Some("no/such/ref".to_string()),
         };
-        let infos = list(&ctx, &opts).unwrap();
-        assert!(entry(&infos, "done").status.as_ref().unwrap().merged);
+        let err = list(&ctx, &opts).unwrap_err();
+        assert!(err.to_string().contains("no/such/ref"), "{err}");
+    }
+
+    #[test]
+    fn unreadable_worktree_status_is_unavailable() {
+        let (tmp, _ctx) = fixture();
+        let not_a_repo = tmp.path().join("not-a-repository");
+        fs::create_dir(&not_a_repo).unwrap();
+
+        assert!(compute_status(&not_a_repo, Some("main"), false, None).is_none());
     }
 
     #[test]

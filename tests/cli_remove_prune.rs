@@ -181,3 +181,56 @@ fn prune_merged_never_touches_protected_branches() {
         "a protected branch must never be deleted"
     );
 }
+
+#[test]
+fn invalid_configured_base_fails_list_add_and_prune() {
+    let repo = TestRepo::new();
+    repo.write_repo_config("default_base = \"no/such/ref\"\n");
+
+    for args in [
+        vec!["list"],
+        vec!["add", "must-not-exist"],
+        vec!["prune", "--merged"],
+    ] {
+        repo.wtm().args(args).assert().failure().stderr(
+            predicate::str::contains("no/such/ref")
+                .and(predicate::str::contains("does not resolve")),
+        );
+    }
+    assert!(!repo.branch_exists("must-not-exist"));
+}
+
+#[test]
+fn add_rejects_non_commit_base_objects() {
+    let repo = TestRepo::new();
+    repo.wtm()
+        .args(["add", "tree-base", "--from", "HEAD^{tree}"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("does not resolve to a commit"));
+    assert!(!repo.branch_exists("tree-base"));
+}
+
+#[test]
+fn prune_continues_after_candidate_failure() {
+    let repo = TestRepo::new();
+    repo.wtm().args(["add", "locked-merged"]).assert().success();
+    repo.wtm().args(["add", "later-merged"]).assert().success();
+    let locked = canon(&repo.default_worktree_path("locked-merged"));
+    let later = canon(&repo.default_worktree_path("later-merged"));
+
+    repo.git(repo.root(), &["worktree", "lock", locked.to_str().unwrap()]);
+
+    repo.wtm()
+        .args(["prune", "--merged"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("locked-merged").and(predicate::str::contains("failure")));
+
+    assert!(locked.exists(), "locked failing candidate must remain");
+    assert!(
+        !later.exists(),
+        "later independent candidate must still be pruned"
+    );
+    assert!(!repo.branch_exists("later-merged"));
+}

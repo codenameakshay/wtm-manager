@@ -14,6 +14,9 @@ use wtm::output::ColorMode;
 fn main() {
     let cli = Cli::parse();
     if let Err(err) = wtm::commands::dispatch(&cli) {
+        if matches!(err, wtm::error::Error::Cancelled) {
+            return;
+        }
         let message = format!("error: {err}");
         if stderr_color(cli.global.color) {
             eprintln!("{}", message.red());
@@ -32,7 +35,7 @@ fn stderr_color(mode: ColorMode) -> bool {
         ColorMode::Never => false,
         ColorMode::Auto => {
             std::io::stderr().is_terminal()
-                && std::env::var_os("NO_COLOR").map_or(true, |v| v.is_empty())
+                && std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty())
         }
     }
 }
