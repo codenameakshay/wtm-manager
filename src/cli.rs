@@ -11,8 +11,10 @@ use crate::output::ColorMode;
 
 /// A fast, ergonomic Git worktree manager.
 ///
-/// With no subcommand: launches the interactive TUI on a terminal, prints
-/// help otherwise (agents/pipes/CI must never end up in a full-screen UI).
+/// With no subcommand: opens the desktop app on a terminal (falling back to
+/// the interactive TUI when the app is not installed), and prints help
+/// otherwise — agents/pipes/CI must never end up in a full-screen UI or a
+/// window.
 #[derive(Debug, Parser)]
 #[command(name = "wtm", version, about, propagate_version = true)]
 pub struct Cli {
@@ -72,6 +74,10 @@ pub enum Command {
 
     /// Print the absolute path of a worktree (scripting-friendly).
     Path(PathArgs),
+
+    /// Open the wtm desktop app (what bare `wtm` does on a terminal).
+    #[command(visible_alias = "gui")]
+    App,
 
     /// Launch the full-screen interactive TUI.
     #[command(visible_alias = "ui")]

@@ -48,6 +48,71 @@ jobs:
       - name: Performance gate
         run: cargo test --release --test perf_gate --locked -- --ignored --nocapture
 
+  # Guards crates/wtm-gui, the GPUI desktop app. This is a standalone job (no
+  # `needs:` on, or from, `test`) so a broken GUI never blocks the CLI gates
+  # above, and a broken CLI never skips this one — GitHub Actions runs jobs
+  # without a `needs` edge between them concurrently and independently.
+  #
+  # Intentionally NOT continue-on-error: a red check nobody has to look at is
+  # the same as no check. wtm-gui gets a real, blocking gate like everything
+  # else; it's just scoped to its own job/runner so it can't slow down or
+  # fail the Linux-covered CLI matrix (see the `[workspace]` comment in the
+  # root Cargo.toml — default-members deliberately excludes this crate from
+  # every bare `cargo build`/`test`/`clippy` above).
+  gui:
+    name: gui (wtm-gui, macos-latest)
+    # wtm-gui is macOS-first (AppKit/Metal via GPUI), so this only ever needs
+    # to run on macOS; there is no Linux or Windows build to cover yet.
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Distinct key so gpui's ~750-crate dependency tree gets its own
+          # cache entry instead of sharing/evicting the much smaller `test`
+          # job's cache, even though both run on macos-latest.
+          prefix-key: "gui-v1"
+
+      # cargo fmt --all --check in the `test` job above already covers
+      # crates/wtm-gui (fmt --all formats every `[workspace] members` entry
+      # regardless of default-members). This repeats it scoped to just the
+      # package so the `gui` job is a complete, standalone gate on its own —
+      # it doesn't rely on the `test` job having run or passed.
+      - name: Check formatting (wtm-gui)
+        run: cargo fmt -p wtm-gui --check
+
+      # Metal toolchain caveat: gpui normally compiles its Metal shaders at
+      # build time, which needs the `metal` compiler. Xcode 26 moved that
+      # compiler into a separate downloadable component
+      # (`xcodebuild -downloadComponent MetalToolchain`) that GitHub-hosted
+      # macos-latest runners do not preinstall. crates/wtm-gui/Cargo.toml
+      # sidesteps this by building gpui with the `runtime_shaders` feature,
+      # which compiles shaders at app startup instead, so none of the steps
+      # below need the Metal toolchain. If `runtime_shaders` is ever dropped
+      # from that Cargo.toml, add a step here that runs
+      # `xcodebuild -downloadComponent MetalToolchain` before Clippy/Test/
+      # Build, or they will start failing on a fresh runner image.
+      - name: Clippy (wtm-gui)
+        run: cargo clippy -p wtm-gui --all-targets --locked -- -D warnings
+
+      - name: Test (wtm-gui)
+        run: cargo test -p wtm-gui --locked
+
+      # Debug build only — a release build of a ~750-crate dependency tree
+      # would blow the runner's time budget for what this job needs to prove
+      # (that wtm-gui compiles and links). Release builds happen in the
+      # release pipeline (.github/workflows/release-gui.yml), not here.
+      - name: Build (wtm-gui, debug)
+        run: cargo build -p wtm-gui --locked
+
   audit:
     name: rustsec audit
     runs-on: ubuntu-latest

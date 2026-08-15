@@ -1,6 +1,25 @@
 [workspace]
 members = ["cargo:."]
 
+# crates/wtm-gui (the GPUI desktop app, WTM.app) is deliberately NOT a member
+# here. It's `publish = false` and macOS-only, so it isn't a "dist-able"
+# Rust package in dist's sense. Its release artifact (a zipped WTM.app) is
+# built and attached to the same GitHub Release by
+# .github/workflows/release-gui.yml, a small hand-written workflow that
+# triggers via `workflow_run` once this dist-generated pipeline finishes.
+#
+# `[dist.extra-artifacts]` was considered and rejected for this: dist treats
+# extra-artifacts as a *global* artifact (see `add_extra_artifacts` in
+# cargo-dist's tasks.rs), so its `build` command always runs in the
+# `build-global-artifacts` job — which this repo's generated release.yml
+# pins to `ubuntu-22.04` regardless of `targets` below. There's no
+# extra-artifacts-scoped way to force just that one command onto macOS; the
+# only lever is `[dist.github-custom-runners] global = "macos-latest"`,
+# which would move dist's *entire* global job (shell installer generation,
+# manifest stitching, checksums, SBOMs, ...) onto macOS for every release
+# just to accommodate one optional asset. That's a bigger blast radius than
+# this needs, hence the separate workflow instead.
+#
 # Config for 'dist'
 [dist]
 # The preferred dist version to use in CI (Cargo.toml SemVer syntax)

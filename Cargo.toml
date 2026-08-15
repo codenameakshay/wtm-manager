@@ -1,6 +1,16 @@
+# The GUI lives in its own workspace member so the CLI never pays for it.
+# `default-members` keeps bare `cargo build`/`cargo test`/`cargo clippy` (and
+# therefore every existing CI gate, including the Linux one) scoped to the
+# `wtm` package alone — gpui is only compiled when a command explicitly asks
+# for `-p wtm-gui`.
+[workspace]
+members = ["crates/wtm-gui"]
+default-members = ["."]
+resolver = "2"
+
 [package]
 name = "wtm"
-version = "0.2.2"
+version = "0.3.0"
 edition = "2021"
 description = "A fast, ergonomic Git worktree manager"
 repository = "https://github.com/codenameakshay/wtm-manager"

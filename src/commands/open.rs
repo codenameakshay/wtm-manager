@@ -46,7 +46,7 @@ fn run_command_in(cmd: &str, worktree: &Path) -> Result<()> {
 /// Editor resolution order: config `editor` > `$VISUAL` > `$EDITOR`. The
 /// editor value may contain arguments, so it runs through `sh -c` with the
 /// path passed safely as `$0`.
-pub(crate) fn spawn_editor(config: &Config, path: &Path) -> Result<()> {
+pub fn spawn_editor(config: &Config, path: &Path) -> Result<()> {
     let editor = config
         .editor
         .clone()

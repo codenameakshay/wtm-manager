@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Template for WTM.app/Contents/Info.plist.
+
+  `scripts/bundle-mac.sh` copies this file into the bundle and substitutes
+  the placeholders below (`__VERSION__`, `__YEAR__`) with values read from
+  `crates/wtm-gui/Cargo.toml` and the current date, so the version here never
+  drifts out of sync with the crate that actually gets built.
+
+  There is deliberately no `CFBundleDocumentTypes` / `CFBundleTypeExtensions`
+  here: `wtm` (see `src/commands/app.rs`) launches the app with
+  `open -a WTM.app --args <repo-path>`, which hands the path to the process
+  as a plain argv[1] — it does not go through LaunchServices' "open this
+  file" document-opening machinery, so no document/UTI declarations are
+  needed for that to work.
+-->
+<plist version="1.0">
+<dict>
+	<key>CFBundleName</key>
+	<string>wtm</string>
+	<key>CFBundleDisplayName</key>
+	<string>wtm</string>
+	<!--
+	  Must match the `app_id` gpui is given in `crates/wtm-gui/src/main.rs`
+	  (`WindowOptions.app_id`) — that value is what macOS uses to associate
+	  the running process with this bundle (Dock grouping, Activity Monitor,
+	  `open -a` matching by identifier). Keep the two in sync by hand; there
+	  is no build-time link between a Rust string literal and this plist.
+	-->
+	<key>CFBundleIdentifier</key>
+	<string>dev.wtm.app</string>
+	<key>CFBundleExecutable</key>
+	<string>wtm-gui</string>
+	<key>CFBundleIconFile</key>
+	<string>wtm.icns</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<!-- Matches the `????` creator code written to Contents/PkgInfo. -->
+	<key>CFBundleSignature</key>
+	<string>????</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleShortVersionString</key>
+	<string>__VERSION__</string>
+	<key>CFBundleVersion</key>
+	<string>__VERSION__</string>
+	<!--
+	  GPUI (the UI framework, originally built for Zed) targets the Metal 3
+	  and modern AppKit APIs that shipped starting in Monterey; Zed itself
+	  publishes the same 12.0 floor. Older systems would fail to launch the
+	  binary at all rather than degrade gracefully, so it is worth declaring
+	  here even though nothing currently enforces it at build time.
+	-->
+	<key>LSMinimumSystemVersion</key>
+	<string>12.0</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.developer-tools</string>
+	<key>NSHumanReadableCopyright</key>
+	<string>Copyright © __YEAR__ wtm contributors. Licensed under MIT OR Apache-2.0.</string>
+</dict>
+</plist>

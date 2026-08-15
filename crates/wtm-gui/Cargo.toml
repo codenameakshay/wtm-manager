@@ -1,0 +1,44 @@
+[package]
+name = "wtm-gui"
+version = "0.3.0"
+edition = "2021"
+description = "The wtm desktop app: a native Git worktree manager built with GPUI"
+repository = "https://github.com/codenameakshay/wtm-manager"
+license = "MIT OR Apache-2.0"
+rust-version = "1.88"
+publish = false
+
+[[bin]]
+name = "wtm-gui"
+path = "src/main.rs"
+
+[dependencies]
+# All git and worktree logic is reused from the CLI crate; this crate only
+# renders it and routes input.
+wtm = { path = "../.." }
+
+anyhow = "1.0.104"
+# Same pin as the root crate: `list_branches` walks local/remote-tracking
+# branches directly via git2 (cheap reads only — mutations still go through
+# `wtm::gitcmd`/the shared cores).
+git2 = { version = "0.21.0", default-features = false }
+# `runtime_shaders` compiles the Metal shaders at app startup instead of at
+# build time. Xcode 26 moved the `metal` compiler into a separately
+# downloadable component (`xcodebuild -downloadComponent MetalToolchain`), and
+# without it a build-time compile fails outright. Runtime compilation costs a
+# few milliseconds on first window open and keeps the build working on a
+# stock Xcode install. Drop this feature once the toolchain is present
+# everywhere the app is built, including CI.
+gpui = { version = "0.2.2", features = ["runtime_shaders"] }
+# Live refresh: watch each repo's .git directory so worktrees created or
+# switched outside the app show up without a manual reload.
+notify = "8.2.0"
+notify-debouncer-full = "0.7.0"
+# Same pins as the root crate — `prefs.rs` persists `gui.json` next to the
+# CLI's own config/registry files, so the on-disk shape has to round-trip
+# through the same serde versions those use.
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+
+[dev-dependencies]
+tempfile = "3.27.0"

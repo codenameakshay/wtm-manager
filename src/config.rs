@@ -180,30 +180,35 @@ pub fn merge(base: Config, layer: ConfigFile) -> Config {
     cfg
 }
 
+/// Directory holding wtm's user-level state, honoring the `$WTM_CONFIG_DIR`
+/// override, falling back to `$XDG_CONFIG_HOME/wtm`, falling back to
+/// `~/.config/wtm`. `None` only when no override is set and the home
+/// directory cannot be resolved.
+///
+/// `config.toml` lives here, and so does the GUI's repository registry
+/// (see [`crate::registry`]).
+pub fn global_config_dir() -> Option<PathBuf> {
+    if let Some(dir) = std::env::var_os("WTM_CONFIG_DIR") {
+        if !dir.is_empty() {
+            return Some(PathBuf::from(dir));
+        }
+    }
+    if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
+        if !xdg.is_empty() {
+            return Some(PathBuf::from(xdg).join("wtm"));
+        }
+    }
+    let base_dirs = directories::BaseDirs::new()?;
+    Some(base_dirs.home_dir().join(".config").join("wtm"))
+}
+
 /// Path of the global config file, honoring the `$WTM_CONFIG_DIR` override
 /// (`$WTM_CONFIG_DIR/config.toml`), falling back to
 /// `$XDG_CONFIG_HOME/wtm/config.toml`, falling back to
 /// `~/.config/wtm/config.toml`. `None` only when no override is set and the
 /// home directory cannot be resolved.
 pub fn global_config_path() -> Option<PathBuf> {
-    if let Some(dir) = std::env::var_os("WTM_CONFIG_DIR") {
-        if !dir.is_empty() {
-            return Some(PathBuf::from(dir).join("config.toml"));
-        }
-    }
-    if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
-        if !xdg.is_empty() {
-            return Some(PathBuf::from(xdg).join("wtm").join("config.toml"));
-        }
-    }
-    let base_dirs = directories::BaseDirs::new()?;
-    Some(
-        base_dirs
-            .home_dir()
-            .join(".config")
-            .join("wtm")
-            .join("config.toml"),
-    )
+    Some(global_config_dir()?.join("config.toml"))
 }
 
 /// Write a fully commented sample `.worktree.toml` at `repo_root`. Errors if
