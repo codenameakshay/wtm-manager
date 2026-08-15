@@ -5,6 +5,55 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-08-16
+
+### Added
+
+- **Desktop app** (`crates/wtm-gui`, ships as `WTM.app`): a native macOS app
+  built with GPUI (the UI framework behind Zed). Multi-repo sidebar,
+  worktree list with live status, create/remove/prune dialogs, a filesystem
+  watcher that refreshes the list without a manual reload, a detail panel
+  (upstream, path, HEAD, dirty files, recent commits), a ⌘K command palette
+  with fuzzy search over worktrees and actions, type-to-filter,
+  multi-select (shift/⌘-click) with bulk remove, right-click context menus,
+  and a settings sheet (appearance, read-only effective repo config,
+  generated keyboard-shortcut reference). Build it with
+  `scripts/bundle-mac.sh`, or download `WTM-macOS.zip` from a release; it is
+  ad-hoc signed, not notarized, so first launch needs right-click → Open.
+  macOS only for now.
+- **`wtm app`** (alias `gui`): open the desktop app explicitly, erroring
+  (rather than falling back to the TUI) if it isn't installed.
+- **Repository registry** (`~/.config/wtm/repos.json`, `src/registry.rs`):
+  the list of repositories the desktop app's sidebar remembers, most
+  recently opened first. A convenience cache only — worktrees are still
+  always discovered from git's own registry, never from this file — so a
+  corrupt or missing registry degrades to an empty sidebar rather than an
+  error. Not read by the CLI.
+- `setup::run_streaming`: a second entry point into post-create setup
+  automation, alongside the existing `setup::run`, that reports each
+  copy/command step (and captured command output) through a callback
+  instead of inheriting stdout/stderr — for callers with no terminal to
+  inherit into. The desktop app's create-worktree dialog streams its
+  progress log through this.
+
+### Changed
+
+- **Bare `wtm` on a terminal now opens the desktop app** instead of the TUI,
+  falling back to the TUI when the app isn't installed (or, with a warning,
+  when it fails to launch). Piped/non-TTY invocations are unchanged: they
+  still print help and exit `0`. `wtm tui` continues to launch the terminal
+  UI directly regardless of what's installed.
+- `commands::add::{CreateRequest, create}`,
+  `commands::prune::{PruneCandidate, PruneReport, candidates,
+  selection_candidates, execute}`, `commands::remove::{remove_worktree,
+  is_dirty}`, and `commands::open::spawn_editor` are now `pub` (previously
+  crate-private), so the desktop app can call the same cores the CLI and
+  TUI already share instead of reimplementing them.
+- `config::global_config_path` is now built on a new, also-`pub`
+  `config::global_config_dir`, which the repository registry and the
+  desktop app's own `gui.json` preferences file share with the CLI's
+  `config.toml`.
+
 ## [0.2.2] - 2026-08-10
 
 ### Security

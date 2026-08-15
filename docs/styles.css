@@ -208,6 +208,9 @@ code, pre { font-family: var(--mono); }
 .safety-callout .eyebrow { margin-bottom: 7px; color: var(--green); }
 .safety-callout h3 { margin: 0 0 7px; font-size: 18px; }
 .safety-callout p:last-child { max-width: 800px; margin: 0; color: var(--muted); font-size: 13px; }
+.app-note { border-color: rgba(246,203,108,.25); background: rgba(246,203,108,.07); }
+.app-note .safety-mark { background: var(--yellow); color: #241d08; }
+.app-note .eyebrow { color: var(--yellow); }
 
 .download-section { background: linear-gradient(180deg, #15151b 0%, #111115 100%); }
 .release-pill { display: flex; align-items: center; gap: 9px; padding: 11px 13px; border: 1px solid var(--line); border-radius: 10px; color: var(--muted); font-family: var(--mono); font-size: 10px; white-space: nowrap; }

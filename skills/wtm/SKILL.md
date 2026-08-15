@@ -7,7 +7,9 @@ description: Manages Git worktrees with the wtm CLI — installing wtm, creating
 
 `wtm` discovers worktrees straight from git's own registry (works no matter
 where they live on disk), computes status in parallel, and exposes a small,
-scriptable command set plus an optional full-screen TUI.
+scriptable command set plus an optional full-screen TUI and a native desktop
+app — neither of which an agent should ever launch (see the warning in
+[Core usage for agents](#2-core-usage-for-agents) below).
 
 ## 1. Install
 
@@ -67,11 +69,17 @@ to open a new shell (or `source` the rc file) for it to take effect.
 - Always use non-interactive subcommands with explicit arguments and
   `--json`/`--no-status`/`--force` as needed — never rely on the
   interactive picker (it requires a TTY and will hang or fail otherwise).
-- **Never launch `wtm tui` (alias `wtm ui`) or bare `wtm` expecting a UI**
-  when running non-interactively (agent shells, pipes, CI). Bare `wtm`
-  detects the non-TTY context, prints help, and exits 0 — it will not open
-  the TUI, but don't rely on that as a way to "check" anything; just avoid
-  invoking it without a subcommand.
+- **Never invoke bare `wtm`, `wtm tui` (alias `wtm ui`), or `wtm app`
+  (alias `wtm gui`) expecting a UI.** On a terminal, bare `wtm` now opens
+  the native desktop app — falling back to the TUI only when the app isn't
+  installed — which is even more disruptive to an automated caller than the
+  TUI alone used to be. `wtm tui`/`wtm ui` force the terminal UI and
+  `wtm app`/`wtm gui` force the desktop app; neither is safe to run
+  automatically. In a non-TTY context (agent shells, pipes, CI), bare `wtm`
+  still detects that and prints help with exit 0 instead of opening
+  anything — but don't rely on that as a safety net; always use an explicit
+  subcommand (`wtm list --json`, `wtm add`, `wtm path`, …) instead of any of
+  these three.
 - `wtm switch <name>` only changes the calling shell's directory when the
   user's shell wrapper (see above) is installed and active — which is never
   the case inside an agent's own subprocess. From an agent, resolve the

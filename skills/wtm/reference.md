@@ -15,8 +15,11 @@ Apply to every subcommand:
 | `-q, --quiet` | Quiet output (conflicts with `-v`). |
 
 Exit status: `0` on success, non-zero on any error (bad args, git errors,
-refused unsafe operations, etc.). Bare `wtm` with no subcommand: launches
-the TUI on a TTY, prints help and exits `0` otherwise.
+refused unsafe operations, etc.). Bare `wtm` with no subcommand: on a TTY,
+opens the desktop app — falling back to the TUI only when the app isn't
+installed — and in a non-TTY context (agent shells, pipes, CI) prints help
+and exits `0` instead. Agents should never invoke bare `wtm`; always use an
+explicit subcommand.
 
 ## Commands
 
@@ -132,11 +135,22 @@ Print a worktree's path and nothing else — no interactive picker, ever.
 Safe to use from scripts and agents. Omit `name` to print the path of the
 worktree containing the current directory.
 
+### `wtm app` (alias: `gui`)
+
+Open the desktop app explicitly, whatever the terminal context (not gated
+on a TTY, unlike bare `wtm`). Errors with a non-zero exit and an actionable
+message (naming `wtm tui` as the terminal alternative) if the app isn't
+installed, rather than falling back automatically. **Never invoke this from
+an agent** — it opens a GUI window.
+
 ### `wtm tui` (alias: `ui`)
 
-Launch the full-screen interactive TUI. See [TUI](#tui) below. Bare `wtm`
-with no subcommand does the same thing on a TTY; never invoke either form
-in a non-TTY context (agents, pipes, CI) expecting a UI.
+Launch the full-screen interactive TUI directly. See [TUI](#tui) below.
+Bare `wtm` no longer goes straight here: on a TTY it opens the desktop app
+first, falling back to the TUI only when the app isn't installed. Never
+invoke `wtm tui`, `wtm ui`, `wtm app`, `wtm gui`, or bare `wtm` in a
+non-TTY context (agents, pipes, CI) — or from an agent at all — expecting
+a UI.
 
 ### `wtm init <zsh|bash>`
 
@@ -205,7 +219,9 @@ protected_branches = ["main", "master", "develop"]
 
 ## TUI
 
-Invoke with `wtm tui`, `wtm ui`, or bare `wtm` on a TTY. Status (dirty,
+Invoke directly with `wtm tui`/`wtm ui`. On a TTY, bare `wtm` opens the
+desktop app first and only falls back to the TUI when the app isn't
+installed — it no longer goes straight to the TUI. Status (dirty,
 ahead/behind, merged, upstream-gone) loads in the background so launch is
 instant — the list appears immediately and status badges fill in as they
 resolve.
