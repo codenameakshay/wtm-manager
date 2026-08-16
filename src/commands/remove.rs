@@ -63,7 +63,7 @@ pub fn run(args: &RemoveArgs, global: &GlobalArgs) -> Result<()> {
 /// - a registry entry whose directory is already gone is removed with
 ///   `--force` (the only way git drops the stale entry; nothing on disk is
 ///   touched).
-pub(crate) fn remove_worktree(
+pub fn remove_worktree(
     ctx: &RepoContext,
     target: &WorktreeInfo,
     force: bool,
@@ -115,7 +115,7 @@ fn contains_cwd(path: &Path) -> bool {
 }
 
 /// Uncommitted changes (including untracked, excluding ignored/submodules)?
-pub(crate) fn is_dirty(path: &Path) -> Result<bool> {
+pub fn is_dirty(path: &Path) -> Result<bool> {
     let repo = git2::Repository::open(path)?;
     let mut opts = git2::StatusOptions::new();
     opts.include_untracked(true)

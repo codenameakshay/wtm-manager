@@ -5,6 +5,161 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **App: Linux support.** `wtm-gui` now runs on Linux (X11 and Wayland
+  sessions), not just macOS. Install it from a self-contained tarball
+  (`WTM-linux-x86_64.tar.xz`/`WTM-linux-aarch64.tar.xz`, with a bundled
+  `install.sh` and a `.desktop`/icon set for your app launcher) or a `.deb`
+  (`WTM-linux-x86_64.deb`/`WTM-linux-aarch64.deb`) built from
+  `crates/wtm-gui/Cargo.toml`'s new `[package.metadata.deb]` table. Desktop
+  integrations are native rather than macOS shims: Reveal in Finder goes
+  through the freedesktop `FileManager1` D-Bus interface (falling back to
+  `xdg-open`), Open in Terminal honors `$WTM_TERMINAL` and then tries a list
+  of common terminal emulators, and Copy Path uses whichever of
+  `wl-copy`/`xclip`/`xsel` is installed. `wtm`'s CLI-side app launcher
+  (`wtm`/`wtm app`) looks for the installed binary in the matching Linux
+  locations. **Caveat:** this is verified in CI only — it builds, passes its
+  test suite, and passes Clippy on `ubuntu-latest` and `ubuntu-24.04-arm` —
+  it has not yet been run on a real Linux desktop by the maintainer.
+
+## [0.5.0] - 2026-08-16
+
+### Added
+
+- **App: Fetch** (`⌘⇧F`, a toolbar button, and the empty-space context
+  menu). Ahead/behind counts and prune's "upstream gone" detection are only
+  ever as fresh as the last fetch — without this, the app could confidently
+  show a worktree as "20 behind" long after that stopped being true, and
+  wouldn't notice a deleted upstream branch until someone happened to fetch
+  from a terminal. It runs `git fetch --prune` and reloads the list
+  afterward, so those numbers actually change. It shells out to `git`
+  rather than using `git2` directly, specifically so SSH agents, keychains,
+  and `credential.helper` keep working — anything using authenticated
+  transport, not just unauthenticated HTTPS. Needs network access and uses
+  whatever git credentials are already configured for the repository.
+- **App: worktree activity and sorting.** Each row now shows its
+  last-commit age, and the list can be sorted by Name, Recent, or Status
+  from a new control in the list toolbar. The main worktree stays pinned
+  first in every mode. The chosen sort mode is session-only for now — it
+  resets to Name on restart.
+- **App: run a command in a worktree** (`⌘E`). A dialog streams the
+  command's output live, remembers recently-run commands per repository as
+  one-click suggestions, and shows a non-zero exit as a completed run
+  rather than an error. Closing the dialog does not stop the command — it
+  keeps running in the background, and the dialog's footer says so.
+  Recent-command suggestions are session-only and reset on restart.
+- **App: Open on Remote.** Turns a worktree's branch into its
+  GitHub/GitLab/Bitbucket URL and opens it in the system browser. Disabled
+  with a reason when the worktree is a detached HEAD or the repository has
+  no resolvable remote.
+- **App: command palette catch-up.** Fetch, Add Repository, the three
+  detail-panel tabs (Details/Files/Changes), Run Command, and Open on
+  Remote are now all reachable from `⌘K` — they had shortcuts before this
+  but were undiscoverable without one.
+
+## [0.4.0] - 2026-08-16
+
+### Added
+
+- **App: discoverable repository/worktree actions.** A `+` button on the
+  sidebar's Repositories header opens a folder picker to add a repository
+  (also bound to `⌘⇧O`), matched by an entry in the sidebar's empty state
+  and in a new right-click menu on empty list space. The worktree list's
+  toolbar gained New Worktree and Prune buttons, the latter showing a live
+  count of prunable worktrees. Right-click context menus now cover the full
+  action set on worktree rows, sidebar repositories, and empty list space,
+  each item labeled with its keyboard shortcut.
+- **App: mouse-driven multi-select.** A checkbox appears on each worktree
+  row — on hover, or on every row once a multi-selection is active — plus
+  an "N selected" bar with Remove Selected and Clear buttons. Shift-click
+  and `⌘`-click still work exactly as before; the checkbox is another way
+  in, not a replacement.
+- **App: a base-ref picker for New Worktree.** The Base field is now a
+  searchable picker listing local and remote-tracking refs, each tagged
+  `current`/`default`/`worktree`/`remote` — `origin/main` and local `main`
+  show up as separate, selectable entries instead of one deduplicated
+  guess — while still accepting typed free text for a sha or a ref the
+  picker doesn't list.
+- **App: Files and Changes tabs on the detail panel**, beside Details
+  (`⌘1`/`⌘2`/`⌘3`). Files is a lazily-expanding, gitignore-aware tree of the
+  worktree's contents; Changes renders the worktree's uncommitted diff
+  inline, with line-number gutters. The panel widens from 320px to 640px on
+  these two tabs to give a diff room to be readable.
+- `crates/wtm-gui`: a headless integration-test suite (`cargo test -p
+  wtm-gui`), driving the real app through simulated keystrokes and clicks
+  against a real temporary git repository to check flows like create,
+  remove, prune, multi-select, and the command palette end to end.
+
+### Fixed
+
+- **App: Reveal in Finder always failed when the target didn't exist.**
+  Both of `wtm`'s config files are optional and typically absent on a
+  default install, and revealing a path that isn't there used to just
+  fail outright. It now reveals the nearest existing ancestor directory
+  instead.
+- **App: the Settings sheet showed config paths as a bare "…".** A flex
+  column was missing `flex_1`, so the path label had no claim on the row's
+  width and collapsed to nothing next to its button. Paths now render
+  home-relative, with a "Not created" note when the file doesn't exist yet.
+- **App: a fast worktree create could leave the New Worktree dialog stuck
+  showing progress.** A create with little or nothing to set up could
+  finish before the dialog's progress screen noticed — the completion
+  message could go unread — leaving the dialog open with nothing left to
+  wait for. Both the create dialog's progress polling and the text field's
+  cursor blink now use a timer the app reliably wakes up for.
+
+## [0.3.0] - 2026-08-16
+
+### Added
+
+- **Desktop app** (`crates/wtm-gui`, ships as `WTM.app`): a native macOS app
+  built with GPUI (the UI framework behind Zed). Multi-repo sidebar,
+  worktree list with live status, create/remove/prune dialogs, a filesystem
+  watcher that refreshes the list without a manual reload, a detail panel
+  (upstream, path, HEAD, dirty files, recent commits), a ⌘K command palette
+  with fuzzy search over worktrees and actions, type-to-filter,
+  multi-select (shift/⌘-click) with bulk remove, right-click context menus,
+  and a settings sheet (appearance, read-only effective repo config,
+  generated keyboard-shortcut reference). Build it with
+  `scripts/bundle-mac.sh`, or download `WTM-macOS.zip` from a release; it is
+  ad-hoc signed, not notarized, so first launch needs right-click → Open.
+  macOS only for now.
+- **`wtm app`** (alias `gui`): open the desktop app explicitly, erroring
+  (rather than falling back to the TUI) if it isn't installed.
+- **Repository registry** (`~/.config/wtm/repos.json`, `src/registry.rs`):
+  the list of repositories the desktop app's sidebar remembers, most
+  recently opened first. A convenience cache only — worktrees are still
+  always discovered from git's own registry, never from this file — so a
+  corrupt or missing registry degrades to an empty sidebar rather than an
+  error. Not read by the CLI.
+- `setup::run_streaming`: a second entry point into post-create setup
+  automation, alongside the existing `setup::run`, that reports each
+  copy/command step (and captured command output) through a callback
+  instead of inheriting stdout/stderr — for callers with no terminal to
+  inherit into. The desktop app's create-worktree dialog streams its
+  progress log through this.
+
+### Changed
+
+- **Bare `wtm` on a terminal now opens the desktop app** instead of the TUI,
+  falling back to the TUI when the app isn't installed (or, with a warning,
+  when it fails to launch). Piped/non-TTY invocations are unchanged: they
+  still print help and exit `0`. `wtm tui` continues to launch the terminal
+  UI directly regardless of what's installed.
+- `commands::add::{CreateRequest, create}`,
+  `commands::prune::{PruneCandidate, PruneReport, candidates,
+  selection_candidates, execute}`, `commands::remove::{remove_worktree,
+  is_dirty}`, and `commands::open::spawn_editor` are now `pub` (previously
+  crate-private), so the desktop app can call the same cores the CLI and
+  TUI already share instead of reimplementing them.
+- `config::global_config_path` is now built on a new, also-`pub`
+  `config::global_config_dir`, which the repository registry and the
+  desktop app's own `gui.json` preferences file share with the CLI's
+  `config.toml`.
+
 ## [0.2.2] - 2026-08-10
 
 ### Security

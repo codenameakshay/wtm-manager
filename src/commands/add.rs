@@ -1,8 +1,9 @@
 //! `wtm add` — create a worktree for an existing or new branch.
 //!
-//! The creation flow itself lives in the private `create` core so that the CLI command and
-//! the TUI create form share one implementation (checks, destination
-//! resolution, git invocation, setup automation).
+//! The creation flow itself lives in the `create` core so that every
+//! frontend — the CLI command, the TUI create form, and the GUI — shares one
+//! implementation (checks, destination resolution, git invocation, setup
+//! automation).
 
 use std::path::{Path, PathBuf};
 
@@ -10,14 +11,16 @@ use crate::cli::{AddArgs, GlobalArgs};
 use crate::config::Config;
 use crate::error::{Error, Result};
 use crate::repo::RepoContext;
+use crate::setup::SetupEvent;
 use crate::template::{self, TemplateContext};
 use crate::worktree::{self, ListOptions};
 use crate::{gitcmd, setup};
 
 /// Everything [`create`] needs beyond repo/config. The CLI fills this from
-/// `AddArgs`; the TUI fills it from its create form (with `announce`/`cd`
-/// off, since it owns the terminal and never wants stdout output).
-pub(crate) struct CreateRequest<'a> {
+/// `AddArgs`; the TUI and GUI fill it from their create forms (with
+/// `announce`/`cd` off, since they own the terminal/window and never want
+/// stdout output).
+pub struct CreateRequest<'a> {
     /// Branch to check out (created from the base ref when it does not
     /// exist yet).
     pub branch: &'a str,
@@ -62,12 +65,44 @@ pub fn run(args: &AddArgs, global: &GlobalArgs) -> Result<()> {
     Ok(())
 }
 
+/// Create a worktree for `req.branch`, running post-create setup with
+/// inherited stdio (setup command output goes straight to the CLI/TUI's own
+/// stdout/stderr). See [`create_streaming`] for the GUI variant that
+/// captures setup output instead of inheriting it; both share
+/// `create_core` for everything before setup runs.
+pub fn create(ctx: &RepoContext, config: &Config, req: &CreateRequest) -> Result<PathBuf> {
+    let dest = create_core(ctx, config, req)?;
+    if req.run_setup {
+        setup::run(config, &ctx.main_root, &dest, req.quiet)?;
+    }
+    finish_cd(&dest, req)?;
+    Ok(dest)
+}
+
+/// Create a worktree for `req.branch` exactly like [`create`], but run
+/// post-create setup through [`setup::run_streaming`] so its steps and
+/// command output are reported through `sink` instead of inherited — for
+/// callers with no stdio to inherit into (the GUI).
+pub fn create_streaming(
+    ctx: &RepoContext,
+    config: &Config,
+    req: &CreateRequest,
+    sink: &mut dyn FnMut(SetupEvent),
+) -> Result<PathBuf> {
+    let dest = create_core(ctx, config, req)?;
+    if req.run_setup {
+        setup::run_streaming(config, &ctx.main_root, &dest, sink)?;
+    }
+    finish_cd(&dest, req)?;
+    Ok(dest)
+}
+
 /// Shared creation core: branch-in-use pre-check, destination resolution,
-/// branch-exists check, `git worktree add`, optional cd-file write, and
-/// post-create setup. Returns the destination path (which exists after a
-/// successful `git worktree add`, even if setup fails — `Error::Setup`'s
-/// message says exactly that).
-pub(crate) fn create(ctx: &RepoContext, config: &Config, req: &CreateRequest) -> Result<PathBuf> {
+/// branch-exists check, `git worktree add`, and the success announcement.
+/// Returns the destination path (which exists after a successful `git
+/// worktree add`, even if the caller's own subsequent setup step fails —
+/// `Error::Setup`'s message says exactly that).
+fn create_core(ctx: &RepoContext, config: &Config, req: &CreateRequest) -> Result<PathBuf> {
     let branch = req.branch;
     let branch_exists = local_branch_exists(ctx, branch)?;
 
@@ -113,14 +148,14 @@ pub(crate) fn create(ctx: &RepoContext, config: &Config, req: &CreateRequest) ->
         println!("Created worktree '{branch}' at {}", dest.display());
     }
 
-    if req.run_setup {
-        setup::run(config, &ctx.main_root, &dest, req.quiet)?;
-    }
+    Ok(dest)
+}
 
+/// Request the parent-shell directory change (`--cd`), after every setup
+/// step has already succeeded — shared by [`create`] and [`create_streaming`].
+fn finish_cd(dest: &Path, req: &CreateRequest) -> Result<()> {
     if req.cd {
-        // Only request the parent-shell directory change after every setup
-        // step succeeds.
-        let wrote = crate::cdfile::request(&dest)?;
+        let wrote = crate::cdfile::request(dest)?;
         if !wrote && !req.quiet {
             eprintln!(
                 "hint: `--cd` needs the shell wrapper; add \
@@ -128,8 +163,7 @@ pub(crate) fn create(ctx: &RepoContext, config: &Config, req: &CreateRequest) ->
             );
         }
     }
-
-    Ok(dest)
+    Ok(())
 }
 
 /// Does a local branch with this exact name exist?

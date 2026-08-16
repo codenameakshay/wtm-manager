@@ -1,13 +1,28 @@
 //! Post-create automation: copy or symlink files from the main worktree into
 //! a freshly created worktree, then run configured setup commands.
+//!
+//! Two entry points share the copy step (`copy_entry`) and differ only in
+//! how command output reaches the user: [`run`] inherits the child's
+//! stdout/stderr straight into the CLI's own (a terminal, or whatever the
+//! caller redirected them to), while [`run_streaming`] captures both and
+//! reports them line-by-line through a callback for callers with no stdio to
+//! inherit into (the GUI). They are deliberately NOT unified into one
+//! implementation: inheriting stdio keeps the CLI's stdout/stderr streams
+//! separate (so e.g. `wtm add feat > out.txt` still puts the setup command's
+//! stdout in `out.txt`), whereas streaming necessarily merges both into one
+//! sequence of lines — folding that back through `run`'s stderr would
+//! silently change where a setup command's stdout ends up for CLI users.
 
 use std::fs;
 #[cfg(not(unix))]
 use std::fs::OpenOptions;
 #[cfg(not(unix))]
 use std::io;
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Component, Path};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::sync::mpsc;
+use std::thread;
 
 use crate::config::{Config, CopyMode};
 use crate::error::{Error, Result};
@@ -42,6 +57,143 @@ pub fn run(config: &Config, main_root: &Path, worktree: &Path, quiet: bool) -> R
     }
 
     Ok(())
+}
+
+/// One step of post-create setup, reported as it happens by
+/// [`run_streaming`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SetupEvent {
+    CopyStarted {
+        path: String,
+    },
+    CopyFinished {
+        path: String,
+    },
+    CommandStarted {
+        command: String,
+    },
+    /// One line of combined stdout/stderr from the running command, in
+    /// arrival order. Interleaving between the two streams is best-effort
+    /// (they are read on separate threads); ordering within a single stream
+    /// is exact.
+    CommandOutput {
+        line: String,
+    },
+    CommandFinished {
+        command: String,
+        success: bool,
+    },
+}
+
+/// Same steps and semantics as [`run`] — same ordering (copies before
+/// commands), same error type/messages, same behavior on failure — but the
+/// child's stdout and stderr are captured and reported through `sink`
+/// instead of inherited, for callers with no terminal to inherit into.
+///
+/// Copy entries always run quiet (there is nothing useful to `eprintln!` to);
+/// `sink` still gets a `CopyStarted`/`CopyFinished` pair around each one so a
+/// caller can show progress.
+pub fn run_streaming(
+    config: &Config,
+    main_root: &Path,
+    worktree: &Path,
+    sink: &mut dyn FnMut(SetupEvent),
+) -> Result<()> {
+    for entry in &config.setup.copy {
+        sink(SetupEvent::CopyStarted {
+            path: entry.path.clone(),
+        });
+        copy_entry(main_root, worktree, &entry.path, entry.mode, true)?;
+        sink(SetupEvent::CopyFinished {
+            path: entry.path.clone(),
+        });
+    }
+
+    for command in &config.setup.commands {
+        sink(SetupEvent::CommandStarted {
+            command: command.clone(),
+        });
+        run_command_streaming(command, worktree, sink)?;
+    }
+
+    Ok(())
+}
+
+/// Spawn `command` via `sh -c`, cwd = `worktree`, with stdout and stderr
+/// piped and each read on its own thread so a long-running command (e.g. a
+/// build) streams output as it happens instead of only at exit. Both threads
+/// forward lines into one channel; the calling thread drains it into `sink`
+/// as `CommandOutput` events. The channel closes itself once both reader
+/// threads finish (each owns its own `Sender` clone), so the `for line in
+/// rx` loop ends exactly when there is no more output to deliver.
+fn run_command_streaming(
+    command: &str,
+    worktree: &Path,
+    sink: &mut dyn FnMut(SetupEvent),
+) -> Result<()> {
+    let mut child = Command::new("sh")
+        .arg("-c")
+        .arg(command)
+        .current_dir(worktree)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| Error::Setup(format!("`{command}` could not be started: {e}")))?;
+
+    let stdout = child.stdout.take().expect("stdout was piped at spawn");
+    let stderr = child.stderr.take().expect("stderr was piped at spawn");
+    let (tx, rx) = mpsc::channel::<String>();
+    let tx_stderr = tx.clone();
+    let stdout_reader = thread::spawn(move || forward_lines(stdout, tx));
+    let stderr_reader = thread::spawn(move || forward_lines(stderr, tx_stderr));
+
+    for line in rx {
+        sink(SetupEvent::CommandOutput { line });
+    }
+    // Both threads have already dropped their `Sender` (the channel just
+    // closed), so they are done or finishing; this join is not a stall.
+    let _ = stdout_reader.join();
+    let _ = stderr_reader.join();
+
+    let status = child
+        .wait()
+        .map_err(|e| Error::Setup(format!("`{command}` could not be started: {e}")))?;
+    sink(SetupEvent::CommandFinished {
+        command: command.to_string(),
+        success: status.success(),
+    });
+    if !status.success() {
+        return Err(Error::Setup(format!("`{command}` failed ({status})")));
+    }
+    Ok(())
+}
+
+/// Read `reader` line by line (splitting on `\n`, trimming a trailing `\r`),
+/// sending each line to `tx`. Invalid UTF-8 is replaced rather than failing
+/// the read: setup command output is diagnostic text for a human, not a
+/// payload that must round-trip exactly.
+fn forward_lines(reader: impl Read, tx: mpsc::Sender<String>) {
+    let mut reader = BufReader::new(reader);
+    let mut buf = Vec::new();
+    loop {
+        buf.clear();
+        match reader.read_until(b'\n', &mut buf) {
+            Ok(0) => break,
+            Ok(_) => {
+                if buf.last() == Some(&b'\n') {
+                    buf.pop();
+                    if buf.last() == Some(&b'\r') {
+                        buf.pop();
+                    }
+                }
+                if tx.send(String::from_utf8_lossy(&buf).into_owned()).is_err() {
+                    break; // Receiver went away; nothing left to do.
+                }
+            }
+            Err(_) => break,
+        }
+    }
 }
 
 /// Materialize one copy/symlink entry. Missing sources and already-existing
@@ -803,6 +955,116 @@ mod tests {
         assert!(
             !wt.join("should-not-exist.txt").exists(),
             "commands after the failure must not run"
+        );
+    }
+
+    #[test]
+    fn run_streaming_reports_copies_before_commands_and_command_output_lines() {
+        let (_tmp, main, wt) = fixture();
+        fs::write(main.join(".env"), "SECRET=1\n").unwrap();
+        let config = make_config(
+            vec![CopyEntry {
+                path: ".env".to_string(),
+                mode: CopyMode::Copy,
+            }],
+            vec!["printf 'line1\\nline2\\n'".to_string()],
+        );
+
+        let mut events = Vec::new();
+        run_streaming(&config, &main, &wt, &mut |event| events.push(event)).unwrap();
+
+        assert_eq!(fs::read_to_string(wt.join(".env")).unwrap(), "SECRET=1\n");
+        assert_eq!(
+            events,
+            vec![
+                SetupEvent::CopyStarted {
+                    path: ".env".to_string()
+                },
+                SetupEvent::CopyFinished {
+                    path: ".env".to_string()
+                },
+                SetupEvent::CommandStarted {
+                    command: "printf 'line1\\nline2\\n'".to_string()
+                },
+                SetupEvent::CommandOutput {
+                    line: "line1".to_string()
+                },
+                SetupEvent::CommandOutput {
+                    line: "line2".to_string()
+                },
+                SetupEvent::CommandFinished {
+                    command: "printf 'line1\\nline2\\n'".to_string(),
+                    success: true,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn run_streaming_captures_output_from_both_stdout_and_stderr() {
+        let (_tmp, main, wt) = fixture();
+        let config = make_config(
+            vec![],
+            vec!["printf 'out\\n'; printf 'err\\n' >&2".to_string()],
+        );
+
+        let mut events = Vec::new();
+        run_streaming(&config, &main, &wt, &mut |event| events.push(event)).unwrap();
+
+        let mut lines: Vec<String> = events
+            .iter()
+            .filter_map(|event| match event {
+                SetupEvent::CommandOutput { line } => Some(line.clone()),
+                _ => None,
+            })
+            .collect();
+        lines.sort();
+        assert_eq!(lines, vec!["err".to_string(), "out".to_string()]);
+    }
+
+    #[test]
+    fn run_streaming_reports_failure_and_stops_before_running_next_command() {
+        let (_tmp, main, wt) = fixture();
+        let config = make_config(
+            vec![],
+            vec![
+                "printf started".to_string(),
+                "exit 7".to_string(),
+                "printf never > should-not-exist.txt".to_string(),
+            ],
+        );
+
+        let mut events = Vec::new();
+        let err = run_streaming(&config, &main, &wt, &mut |event| events.push(event)).unwrap_err();
+        match err {
+            Error::Setup(msg) => assert!(msg.contains("exit 7"), "{msg}"),
+            other => panic!("expected Setup error, got {other}"),
+        }
+        assert!(
+            !wt.join("should-not-exist.txt").exists(),
+            "commands after the failure must not run"
+        );
+        assert_eq!(
+            events,
+            vec![
+                SetupEvent::CommandStarted {
+                    command: "printf started".to_string()
+                },
+                SetupEvent::CommandOutput {
+                    line: "started".to_string()
+                },
+                SetupEvent::CommandFinished {
+                    command: "printf started".to_string(),
+                    success: true,
+                },
+                SetupEvent::CommandStarted {
+                    command: "exit 7".to_string()
+                },
+                SetupEvent::CommandFinished {
+                    command: "exit 7".to_string(),
+                    success: false,
+                },
+            ]
         );
     }
 }

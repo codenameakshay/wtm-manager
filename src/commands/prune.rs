@@ -2,7 +2,7 @@
 //! merged or upstream-gone branches).
 //!
 //! Candidate selection (`candidates` / `selection_candidates`) and
-//! execution (`execute`) are shared with the TUI, which shows the same
+//! execution (`execute`) are shared with the TUI and GUI, which show the same
 //! would-prune list in a confirm modal before acting.
 
 use crate::cli::{GlobalArgs, PruneArgs};
@@ -15,7 +15,7 @@ use crate::worktree::{self, ListOptions};
 /// One worktree selected for pruning, with why and what to do about its
 /// branch.
 #[derive(Debug, Clone)]
-pub(crate) struct PruneCandidate {
+pub struct PruneCandidate {
     pub info: WorktreeInfo,
     pub reasons: Vec<&'static str>,
     /// Merged/gone candidates get their branch deleted (that is the point of
@@ -25,9 +25,12 @@ pub(crate) struct PruneCandidate {
 
 /// What [`execute`] did: how many worktrees were removed, and which were
 /// skipped because they were dirty (and `force` was off).
-pub(crate) struct PruneReport {
+pub struct PruneReport {
+    /// How many worktrees were actually removed.
     pub removed: usize,
+    /// Display names skipped because they were dirty and `force` was off.
     pub skipped: Vec<String>,
+    /// One message per worktree that failed to prune, naming the worktree.
     pub failures: Vec<String>,
 }
 
@@ -101,8 +104,8 @@ pub fn run(args: &PruneArgs, global: &GlobalArgs) -> Result<()> {
 /// Select prune candidates from a listing: never the main worktree, never a
 /// protected branch; reasons are missing/prunable always, plus merged/gone
 /// when the corresponding flag is set. `verbose` prints a stderr note for
-/// each protected skip (CLI only; the TUI passes false to stay pure).
-pub(crate) fn candidates(
+/// each protected skip (CLI only; the TUI and GUI pass false to stay pure).
+pub fn candidates(
     items: Vec<WorktreeInfo>,
     protected: &[String],
     merged: bool,
@@ -155,13 +158,10 @@ pub(crate) fn candidates(
     selected
 }
 
-/// Candidates from an explicit user selection (TUI multi-select): protected
+/// Candidates from an explicit user selection (TUI/GUI multi-select): protected
 /// branches and the main worktree are still skipped, and branches are never
 /// deleted — the user asked to remove worktrees, not branches.
-pub(crate) fn selection_candidates(
-    items: Vec<WorktreeInfo>,
-    protected: &[String],
-) -> Vec<PruneCandidate> {
+pub fn selection_candidates(items: Vec<WorktreeInfo>, protected: &[String]) -> Vec<PruneCandidate> {
     items
         .into_iter()
         .filter(|info| !info.is_main)
@@ -188,9 +188,9 @@ pub(crate) fn selection_candidates(
 /// Remove every candidate (skipping dirty ones unless `force`, exactly like
 /// `remove`), delete branches where flagged, and finish with
 /// `git worktree prune`. `announce` prints the CLI's per-item stdout lines
-/// and skip warnings; the TUI passes false and reports via the returned
+/// and skip warnings; the TUI and GUI pass false and report via the returned
 /// [`PruneReport`].
-pub(crate) fn execute(
+pub fn execute(
     ctx: &RepoContext,
     candidates: &[PruneCandidate],
     force: bool,

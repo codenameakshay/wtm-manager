@@ -2,6 +2,7 @@
 //! for repository/config resolution and the interactive picker.
 
 pub mod add;
+pub mod app;
 pub mod completions;
 pub mod config_cmd;
 pub mod init;
@@ -34,6 +35,7 @@ pub fn dispatch(cli: &Cli) -> Result<()> {
         Command::Prune(args) => prune::run(args, &cli.global),
         Command::Open(args) => open::run(args, &cli.global),
         Command::Path(args) => path::run(args, &cli.global),
+        Command::App => launch_app(&cli.global),
         Command::Tui => crate::tui::run(&cli.global),
         Command::Init(args) => init::run(args, &cli.global),
         Command::Completions(args) => completions::run(args, &cli.global),
@@ -41,16 +43,51 @@ pub fn dispatch(cli: &Cli) -> Result<()> {
     }
 }
 
-/// Bare `wtm`: on a terminal, launch the TUI; in a pipe/agent/CI context,
-/// print help and exit 0 — never hang and never open a full-screen UI.
+/// Bare `wtm`: on a terminal, open the desktop app — falling back to the TUI
+/// when the app is not installed. In a pipe/agent/CI context, print help and
+/// exit 0: those callers must never get a full-screen UI, and opening a window
+/// out of a script would be just as surprising.
 fn bare(global: &GlobalArgs) -> Result<()> {
-    if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
-        crate::tui::run(global)
-    } else {
+    if !(std::io::stdin().is_terminal() && std::io::stdout().is_terminal()) {
         use clap::CommandFactory;
         Cli::command().print_help()?;
-        Ok(())
+        return Ok(());
     }
+
+    match app::try_launch(global) {
+        Ok(true) => Ok(()),
+        // No app installed: the TUI is the interactive fallback.
+        Ok(false) => crate::tui::run(global),
+        // The app exists but would not start. Say so, then still give the
+        // user something usable rather than nothing.
+        Err(e) => {
+            eprintln!("warning: could not launch the wtm app: {e}");
+            crate::tui::run(global)
+        }
+    }
+}
+
+/// `wtm app`: explicitly open the desktop app, whatever the terminal context.
+fn launch_app(global: &GlobalArgs) -> Result<()> {
+    if app::try_launch(global)? {
+        return Ok(());
+    }
+    // Name the locations `app::locate` actually searches (besides the
+    // `$WTM_APP` override, which is a development/testing escape hatch, not
+    // a real install location worth telling a user about here) -- macOS has
+    // a bundle concept Linux doesn't, and vice versa for the fixed
+    // per-user/system binary directories, so the two platforms get distinct
+    // messages rather than one that is only ever half-true.
+    let message = if cfg!(target_os = "macos") {
+        "the wtm desktop app is not installed (expected WTM.app in /Applications or \
+         ~/Applications, or a `wtm-gui` binary next to `wtm` or on PATH); run `wtm tui` \
+         for the terminal UI"
+    } else {
+        "the wtm desktop app is not installed (expected a `wtm-gui` binary next to `wtm`, \
+         in ~/.local/bin, /usr/local/bin, /usr/bin, or on PATH); run `wtm tui` for the \
+         terminal UI"
+    };
+    Err(Error::Other(message.to_string()))
 }
 
 /// Resolve the repository context (honoring `-C/--repo`) and load the layered

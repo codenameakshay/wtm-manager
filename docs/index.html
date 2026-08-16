@@ -21,6 +21,7 @@
       <nav class="nav-links" aria-label="Primary navigation">
         <a href="#why">Why wtm</a>
         <a href="#demo">Demo</a>
+        <a href="#app">App</a>
         <a href="#docs">Docs</a>
         <a href="#download">Download</a>
         <a href="https://github.com/codenameakshay/wtm-manager" target="_blank" rel="noreferrer">GitHub <span aria-hidden="true">↗</span></a>
@@ -189,6 +190,52 @@ wtm switch feature/login</code></pre>
 wtm prune --merged --gone</code></pre>
             </div>
           </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="app">
+      <div class="container">
+        <div class="section-heading split-heading">
+          <div>
+            <p class="eyebrow">Now on the desktop</p>
+            <h2>A native app for when the terminal isn’t enough.</h2>
+          </div>
+          <p>Built with <a href="https://github.com/zed-industries/zed/tree/main/crates/gpui" target="_blank" rel="noreferrer">GPUI</a>, the UI framework behind Zed. It shares every git and worktree operation with the CLI and TUI — nothing about the CLI itself changes.</p>
+        </div>
+
+        <div class="docs-grid">
+          <article class="doc-card">
+            <div class="doc-card-heading"><span class="doc-symbol">⌘</span><h3>What it does</h3></div>
+            <dl>
+              <div><dt>Sidebar</dt><dd>Every repo you've opened, most recent first.</dd></div>
+              <div><dt>Live status</dt><dd>A filesystem watcher keeps the list current, no reload.</dd></div>
+              <div><dt>Command palette</dt><dd><code>⌘K</code> fuzzy search over worktrees and actions.</dd></div>
+              <div><dt>Everything else</dt><dd>Create, remove, prune, multi-select, detail panel.</dd></div>
+            </dl>
+          </article>
+          <article class="doc-card">
+            <div class="doc-card-heading"><span class="doc-symbol">▸</span><h3>Bare <code>wtm</code> opens it</h3></div>
+            <p>On a terminal, running <code>wtm</code> with no subcommand now opens the desktop app, falling back to the full-screen TUI when the app isn't installed. Piped, scripted, and agent invocations are unaffected: no TTY still means help text and exit&nbsp;0, never a window.</p>
+          </article>
+          <article class="doc-card doc-card-wide">
+            <div class="doc-card-heading"><span class="doc-symbol">&lt;/&gt;</span><h3>Get the app</h3></div>
+            <p>macOS only for now — GPUI supports Linux and Windows too, but this app hasn't been built or tested there.</p>
+            <pre><code># build it yourself
+scripts/bundle-mac.sh
+cp -R target/bundle/WTM.app /Applications/
+
+# or download WTM-macOS.zip from the latest release and unzip it</code></pre>
+          </article>
+        </div>
+
+        <div class="safety-callout app-note">
+          <div class="safety-mark" aria-hidden="true">!</div>
+          <div>
+            <p class="eyebrow">Be aware</p>
+            <h3>It's ad-hoc signed, not notarized by Apple.</h3>
+            <p>There's no Developer ID certificate behind it. The first time you launch it, Gatekeeper will refuse to open it normally — right-click <code>WTM.app</code> and choose <strong>Open</strong>, then confirm, to get past that one-time warning.</p>
+          </div>
         </div>
       </div>
     </section>

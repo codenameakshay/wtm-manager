@@ -48,6 +48,118 @@ jobs:
       - name: Performance gate
         run: cargo test --release --test perf_gate --locked -- --ignored --nocapture
 
+  # Guards crates/wtm-gui, the GPUI desktop app, on every platform it
+  # targets. This is a standalone job (no `needs:` on, or from, `test`) so a
+  # broken GUI never blocks the CLI gates above, and a broken CLI never
+  # skips this one — GitHub Actions runs jobs without a `needs` edge between
+  # them concurrently and independently.
+  #
+  # Intentionally NOT continue-on-error: a red check nobody has to look at is
+  # the same as no check. wtm-gui gets a real, blocking gate like everything
+  # else; it's just scoped to its own job/runner so it can't slow down or
+  # fail the Linux-covered CLI matrix (see the `[workspace]` comment in the
+  # root Cargo.toml — default-members deliberately excludes this crate from
+  # every bare `cargo build`/`test`/`clippy` above).
+  #
+  # One matrix job rather than two separate `gui-macos`/`gui-linux` jobs:
+  # both platforms run the exact same four gates (fmt, clippy, test, build)
+  # against the same package, so a matrix keeps that step list defined once
+  # instead of two copies drifting apart over time. The only real platform
+  # difference — apt packages gpui's Linux backend needs to link against
+  # X11/Wayland/Vulkan, which macOS doesn't need because it uses the
+  # AppKit/Metal SDK already on the runner image — is expressed with a
+  # single `if: matrix.os == 'ubuntu-latest'` step below rather than a
+  # second job body.
+  gui:
+    name: gui (wtm-gui, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # gpui's Linux backend talks to X11/Wayland directly and renders via
+      # Vulkan (its `blade` renderer); the ubuntu-latest runner image ships
+      # none of the headers/libraries that needs. Each package below:
+      #   build-essential, clang, cmake, pkg-config
+      #     - general C/C++ toolchain used by the build scripts of gpui's
+      #       native (non-pure-Rust) dependencies
+      #   libasound2-dev       - ALSA headers, for the audio backend
+      #   libfontconfig-dev    - font discovery/matching on Linux
+      #   libwayland-dev       - Wayland client protocol headers
+      #   libx11-xcb-dev       - X11-via-XCB headers
+      #   libxkbcommon-x11-dev - keyboard handling shared by X11 and Wayland
+      #   libssl-dev           - headers for crates that link OpenSSL
+      #                          directly on Linux instead of using rustls
+      #   libvulkan-dev        - Vulkan headers/loader that gpui's Linux
+      #                          renderer draws through instead of Metal
+      #   libxcb-shape0-dev, libxcb-xfixes0-dev
+      #     - XCB extensions gpui uses for window shaping and
+      #       cursor/clipboard handling under X11
+      #   libgbm-dev           - Generic Buffer Management, needed for
+      #                          EGL/DRM buffer allocation under Wayland
+      - name: Install Linux GUI dependencies
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential clang cmake pkg-config libasound2-dev libfontconfig-dev \
+            libwayland-dev libx11-xcb-dev libxkbcommon-x11-dev libssl-dev libvulkan-dev \
+            libxcb-shape0-dev libxcb-xfixes0-dev libgbm-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Distinct per-OS key so gpui's ~750-crate dependency tree gets
+          # its own cache entry instead of sharing/evicting the much
+          # smaller `test` job's cache, and so the macOS and Linux legs of
+          # this matrix — which pull in entirely different platform
+          # backends (AppKit/Metal vs. X11/Wayland/Vulkan) — don't thrash a
+          # single shared cache entry between them.
+          prefix-key: "gui-v1-${{ matrix.os }}"
+
+      # cargo fmt --all --check in the `test` job above already covers
+      # crates/wtm-gui (fmt --all formats every `[workspace] members` entry
+      # regardless of default-members). This repeats it scoped to just the
+      # package so the `gui` job is a complete, standalone gate on its own —
+      # it doesn't rely on the `test` job having run or passed.
+      - name: Check formatting (wtm-gui)
+        run: cargo fmt -p wtm-gui --check
+
+      # Metal toolchain caveat (macOS only): gpui normally compiles its
+      # Metal shaders at build time, which needs the `metal` compiler.
+      # Xcode 26 moved that compiler into a separate downloadable component
+      # (`xcodebuild -downloadComponent MetalToolchain`) that GitHub-hosted
+      # macos-latest runners do not preinstall. crates/wtm-gui/Cargo.toml
+      # sidesteps this by building gpui with the `runtime_shaders` feature,
+      # which compiles shaders at app startup instead, so none of the steps
+      # below need the Metal toolchain on macOS. (Linux has no equivalent
+      # toolchain gap — gpui compiles shaders for its Vulkan renderer at
+      # startup there regardless.) If `runtime_shaders` is ever dropped from
+      # that Cargo.toml, add a step here (guarded to macOS) that runs
+      # `xcodebuild -downloadComponent MetalToolchain` before Clippy/Test/
+      # Build, or the macOS leg will start failing on a fresh runner image.
+      - name: Clippy (wtm-gui)
+        run: cargo clippy -p wtm-gui --all-targets --locked -- -D warnings
+
+      - name: Test (wtm-gui)
+        run: cargo test -p wtm-gui --locked
+
+      # Debug build only — a release build of a ~750-crate dependency tree
+      # would blow the runner's time budget for what this job needs to prove
+      # (that wtm-gui compiles and links). Release builds happen in the
+      # release pipeline (.github/workflows/release-app.yml), not here.
+      - name: Build (wtm-gui, debug)
+        run: cargo build -p wtm-gui --locked
+
   audit:
     name: rustsec audit
     runs-on: ubuntu-latest

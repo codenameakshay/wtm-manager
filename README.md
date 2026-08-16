@@ -90,7 +90,8 @@ wtm open feature/login             # open a worktree in $EDITOR
 wtm remove hotfix                  # remove a worktree (refuses if dirty)
 wtm prune --merged --gone          # clean up merged / upstream-gone worktrees
 
-wtm tui                            # or just `wtm` on a terminal
+wtm                                 # opens the desktop app on a terminal
+wtm tui                             # or launch the terminal UI directly
 ```
 
 `wtm list` shows the main worktree first, then every linked worktree, with
@@ -100,13 +101,164 @@ status badges filled in for each:
   <img src="assets/list.gif" alt="wtm list, showing ahead/behind, dirty, merged and upstream-gone status badges" width="840">
 </p>
 
+## App
+
+`wtm` also ships a native desktop app, built with
+[GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui) (the UI
+framework behind Zed). On a terminal, bare `wtm` opens it — falling back to
+the [TUI](#tui) when the app isn't installed, and to the TUI (with a warning)
+if the app is installed but fails to launch. `wtm app` (alias `wtm gui`)
+opens it explicitly and errors instead of falling back if it isn't
+installed. Every other subcommand is unchanged, and a piped/non-TTY
+invocation of bare `wtm` — a script, an agent, CI — still just prints help
+and exits `0`; it never opens a window any more than it opens a full-screen
+UI.
+
+<p align="center">
+  <img src="assets/app.png" alt="wtm's main window: a sidebar listing three repositories (one flagged missing), a worktree list with New Worktree/Prune…/Filter controls, a selected row with its multi-select checkbox checked and dirty/20 behind/gone status pills, and a detail panel open on the Details tab showing path, HEAD, upstream, remote, ahead/behind, and recent commits" width="840">
+</p>
+
+**Installing it.** macOS and Linux are both supported now; Windows is not.
+
+**macOS:**
+
+- Build it yourself: `scripts/bundle-mac.sh` assembles `WTM.app` from source
+  (see [`scripts/README.md`](scripts/README.md)). Install with
+  `cp -R target/bundle/WTM.app /Applications/`.
+- Download `WTM-macOS.zip` from the
+  [latest release](https://github.com/codenameakshay/wtm-manager/releases)
+  and unzip it.
+
+Either way, **be aware it is ad-hoc signed, not notarized by Apple** — there
+is no Developer ID certificate behind it. The first time you launch it
+(including a build you made yourself, once it's picked up a quarantine flag
+from a download), Gatekeeper will refuse to open it normally: right-click
+`WTM.app` and choose **Open**, then confirm, to get past that one-time
+warning.
+
+**Linux** (`x86_64` and `aarch64`):
+
+- Download `WTM-linux-x86_64.tar.xz` or `WTM-linux-aarch64.tar.xz` from the
+  [latest release](https://github.com/codenameakshay/wtm-manager/releases),
+  extract it, and run the bundled installer:
+
+  ```sh
+  tar -xJf WTM-linux-x86_64.tar.xz
+  ./wtm-gui-*-linux/install.sh          # into ~/.local, no root required
+  ```
+
+  (`install.sh --system`, run with `sudo`, installs into `/usr/local`
+  instead.) It also installs a `.desktop` entry and icons so the app shows
+  up in your application launcher.
+- Or download `WTM-linux-x86_64.deb`/`WTM-linux-aarch64.deb` and install it
+  with your package manager, e.g. `sudo apt install
+  ./WTM-linux-x86_64.deb`.
+
+Either package needs `libvulkan1` and `libwayland-client0` at runtime — GPUI
+loads both with `dlopen` at startup rather than linking them, so they won't
+show up as missing until the app actually tries to open a window — on top of
+the base libraries most desktop Linux installs already have (`libc6`,
+`libgcc-s1`, `zlib1g`, `libxcb1`, `libxkbcommon0`, `libxkbcommon-x11-0`). The
+`.deb` declares all of these as dependencies, so `apt`/`dpkg` pull them in
+automatically; installing from the tarball, install them yourself if
+they're missing:
+
+```sh
+sudo apt install libvulkan1 libwayland-client0 libxkbcommon-x11-0 \
+  libxcb1 libxkbcommon0 zlib1g libgcc-s1 libc6
+```
+
+**Be honest with yourself about how tested this is.** The Linux build is
+verified in CI — it compiles, passes `wtm-gui`'s test suite, and passes
+Clippy on `ubuntu-latest` (x86_64) and `ubuntu-24.04-arm` (aarch64) — but it
+has **not** been run on a real Linux desktop by the maintainer. Treat it as
+"builds and tests cleanly," not "battle-tested," until that changes. Windows
+remains unsupported: GPUI has a Windows backend, but this app has never been
+built against it.
+
+Once installed, the CLI finds it automatically, checking in order:
+`$WTM_APP` (an explicit path, for development); on macOS,
+`/Applications/WTM.app` then `~/Applications/WTM.app`; a `wtm-gui` binary
+next to the `wtm` binary itself; on Linux, `~/.local/bin/wtm-gui`,
+`/usr/local/bin/wtm-gui`, then `/usr/bin/wtm-gui`; and finally `wtm-gui` on
+`$PATH`.
+
+**Adding a repository.** Click the `+` next to "Repositories" in the
+sidebar, press `⌘⇧O`, or (with no repositories open yet) use the "Add
+Repository…" row in the sidebar's empty state — any of the three opens a
+native folder picker; pick a git repository and it's added to the sidebar
+and opened.
+
+**What it does:** a sidebar of every repository you've opened (most
+recent first), a worktree list with live status — sortable by Name,
+Recent, or Status, each row showing its last-commit age, main always
+pinned first — that stays current via a filesystem watcher without a
+manual reload, create/remove/prune dialogs, a Fetch button/`⌘⇧F` that runs
+`git fetch --prune` and refreshes ahead/behind counts and "upstream gone"
+detection, a detail panel with Details/Files/Changes tabs (upstream, path,
+HEAD, dirty files, recent commits; a gitignore-aware file tree; an inline
+diff of uncommitted changes), a searchable base-ref picker for new
+worktrees (local and remote-tracking refs, tagged `current`/`default`/
+`worktree`/`remote`), running an arbitrary command in a worktree with live
+streamed output and per-repository recent-command suggestions (`⌘E`),
+opening a worktree's branch on its GitHub/GitLab/Bitbucket remote, a ⌘K
+command palette with fuzzy search over worktrees and actions,
+type-to-filter, multi-select (shift/⌘-click or a row checkbox) with bulk
+remove, right-click context menus covering the full action set, and a
+settings sheet. See [`docs/app.md`](docs/app.md) for the full guide.
+
+<p align="center">
+  <img src="assets/app-palette.png" alt="wtm's ⌘K command palette open over the main window, listing Worktrees (main, and other checked-out branches) and Commands (New Worktree, Remove Worktree, Prune…, Reload, Open in Editor, Open in Terminal) each with their keyboard shortcut" width="840">
+</p>
+
+| Shortcut | Action |
+| --- | --- |
+| `⌘Q` | Quit |
+| `⌘R` | Reload |
+| `⌘⇧F` | Fetch |
+| `⏎` | Open in Editor |
+| `↓` | Select Next |
+| `↑` | Select Previous |
+| `⌘B` | Toggle Sidebar |
+| `⌘N` | New Worktree |
+| `⌘⌫` / `⌦` | Remove Worktree |
+| `⌘⇧P` | Prune Worktrees |
+| `⌘C` | Copy Path |
+| `⌘⇧T` | Open in Terminal |
+| `⌘⇧R` | Reveal in Finder |
+| `⎋` | Close Dialog or Menu |
+| `⌘I` | Toggle Detail Panel |
+| `⌘1` | Detail Panel: Details Tab |
+| `⌘2` | Detail Panel: Files Tab |
+| `⌘3` | Detail Panel: Changes Tab |
+| `⌘,` | Settings |
+| `⌘K` | Command Palette |
+| `⌘F` | Filter Worktrees |
+| `⌘⇧O` | Add Repository |
+| `⌘E` | Run Command |
+
+The same table is generated inside the app itself (Settings → Keyboard
+Shortcuts) from the same source, so it can't drift from what's actually
+bound.
+
+**State.** The app keeps two files of its own alongside the CLI's
+`~/.config/wtm/config.toml` (honoring the same `$WTM_CONFIG_DIR`/
+`$XDG_CONFIG_HOME` overrides): `~/.config/wtm/repos.json` (the sidebar's
+repository list) and `~/.config/wtm/gui.json` (appearance, panel visibility,
+window frame, last-opened repo). Neither is read by the CLI. The app never
+writes to `.worktree.toml` or `config.toml` — those stay exactly what the
+[Configuration](#configuration) section below describes, shared read-only
+with the CLI (the settings sheet shows the effective values with a link to
+reveal the actual file).
+
 ## TUI
 
 `wtm tui` (alias `wtm ui`) launches a full-screen interactive interface for
-browsing and managing worktrees. Bare `wtm` with no subcommand does the same
-thing **when run on a terminal**; in a non-TTY context (piped output,
-agents, CI) bare `wtm` prints help and exits `0` instead — it never opens a
-full-screen UI somewhere that can't render one.
+browsing and managing worktrees. It's what bare `wtm` falls back to on a
+terminal when the [desktop app](#app) isn't installed. In a non-TTY context
+(piped output, agents, CI) bare `wtm` prints help and exits `0` regardless —
+it never opens a full-screen UI, or a window, somewhere that can't show
+one.
 
 Status (dirty/ahead/behind/merged/upstream-gone) loads in the background,
 so the worktree list appears instantly and status badges fill in as they
@@ -288,10 +440,18 @@ Print a worktree's path and nothing else — no interactive picker, ever, so
 it's safe to use in scripts. If `<name>` is omitted, prints the nearest Git
 worktree root containing your current directory.
 
+### `wtm app` (alias: `gui`)
+
+Open the desktop app explicitly — see [App](#app) above. Unlike bare `wtm`,
+this errors (naming `wtm tui` as the alternative) rather than falling back
+to the TUI when the app isn't installed, and it isn't gated on running from
+a terminal.
+
 ### `wtm tui` (alias: `ui`)
 
 Launch the full-screen interactive TUI — see [TUI](#tui) above. Bare `wtm`
-does the same on a TTY; elsewhere it prints help.
+opens the app instead on a TTY, falling back to this when the app isn't
+installed; elsewhere it prints help.
 
 ### `wtm init <shell>`
 
