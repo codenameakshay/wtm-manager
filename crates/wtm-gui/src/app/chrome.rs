@@ -45,13 +45,12 @@ impl WtmApp {
                             this.on_new_worktree(&NewWorktree, window, cx);
                         })),
                     )
-                    .child(ui::action_row(
-                        "search",
-                        icons::SEARCH,
-                        "Search",
-                        Some("⌘K"),
-                        &theme,
-                    )),
+                    .child(
+                        ui::action_row("search", icons::SEARCH, "Search", Some("⌘K"), &theme)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.on_open_palette(&OpenPalette, window, cx);
+                            })),
+                    ),
             )
             .child(div().h(px(10.0)).flex_none())
             .child(
@@ -62,7 +61,34 @@ impl WtmApp {
                     .flex()
                     .flex_col()
                     .px(px(8.0))
-                    .child(ui::section_header("Repositories", &theme))
+                    .child(
+                        // `ui::section_header` has no slot for a trailing
+                        // action and `ui.rs` is not owned by this task to add
+                        // one, so its exact height/inset/text styling is
+                        // reproduced here around a real affordance instead —
+                        // the user's own complaint was "how do I add more
+                        // repos (no plus button)?"; this is that button.
+                        div()
+                            .h(px(28.0))
+                            .pl(px(8.0))
+                            .pr(px(4.0))
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .child(
+                                div()
+                                    .text_size(px(12.5))
+                                    .text_color(theme.text_tertiary)
+                                    .child("Repositories"),
+                            )
+                            .child(
+                                ui::icon_button("add-repository", icons::PLUS, &theme).on_click(
+                                    cx.listener(|this, _, window, cx| {
+                                        this.on_add_repository(&AddRepository, window, cx);
+                                    }),
+                                ),
+                            ),
+                    )
                     .child(
                         div()
                             .flex()
@@ -74,11 +100,35 @@ impl WtmApp {
                             .when(self.repos.is_empty(), |this| {
                                 this.child(
                                     div()
+                                        .flex()
+                                        .flex_col()
+                                        .gap(px(6.0))
                                         .px(px(8.0))
                                         .py(px(6.0))
-                                        .text_size(px(12.0))
-                                        .text_color(theme.text_ghost)
-                                        .child("Run `wtm` inside a repository to add it here."),
+                                        .child(
+                                            div()
+                                                .text_size(px(12.0))
+                                                .text_color(theme.text_ghost)
+                                                .child("No repositories yet."),
+                                        )
+                                        .child(
+                                            ui::action_row(
+                                                "add-repository-empty",
+                                                icons::PLUS,
+                                                "Add Repository…",
+                                                Some("⌘⇧O"),
+                                                &theme,
+                                            )
+                                            .on_click(
+                                                cx.listener(|this, _, window, cx| {
+                                                    this.on_add_repository(
+                                                        &AddRepository,
+                                                        window,
+                                                        cx,
+                                                    );
+                                                }),
+                                            ),
+                                        ),
                                 )
                             }),
                     ),
@@ -255,10 +305,21 @@ impl WtmApp {
     }
 
     pub(super) fn render_list(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        // Right-clicking the list's own background — not a row — is a
+        // standard place users look for "do something here"; wiring it up
+        // is worth doing even in the three empty/loading states below,
+        // where "Add Repository…" (or, once a repo is open, "New
+        // Worktree") is often exactly what a user reaching for a right
+        // click here wants.
+        let empty_space_menu = cx.listener(|this, event: &MouseDownEvent, _window, cx| {
+            this.open_empty_space_context_menu(event.position, cx);
+        });
+
         if self.active.is_none() {
             return div()
                 .flex_1()
                 .child(worktree_list::render_no_repo(cx))
+                .on_mouse_down(MouseButton::Right, empty_space_menu)
                 .into_any_element();
         }
         if self.rows.is_empty() && self.loading {
@@ -276,6 +337,7 @@ impl WtmApp {
                 .flex()
                 .items_center()
                 .justify_center()
+                .on_mouse_down(MouseButton::Right, empty_space_menu)
                 .child(
                     div()
                         .text_size(px(13.0))
@@ -288,6 +350,7 @@ impl WtmApp {
             return div()
                 .flex_1()
                 .child(worktree_list::render_empty(cx))
+                .on_mouse_down(MouseButton::Right, empty_space_menu)
                 .into_any_element();
         }
 
@@ -296,6 +359,21 @@ impl WtmApp {
         let shown = visible.len();
         let total = self.rows.len();
         let filter_active = !self.filter_input.read(cx).value().trim().is_empty();
+        // The same baseline `dialogs::PruneState::new()` starts with
+        // (`merged`/`gone` both off), so this count never promises more
+        // than what clicking through to the Prune dialog will actually
+        // show by default.
+        let prunable = self
+            .active
+            .as_ref()
+            .map(|repo| prunable_count(repo, &self.rows))
+            .unwrap_or(0);
+        let prune_label = if prunable > 0 {
+            format!("Prune… ({prunable})")
+        } else {
+            "Prune…".to_string()
+        };
+        let multi_count = self.multi_selected.len();
 
         // A bounded content column: on a wide window, full-width rows strand
         // the status pills a screen away from the branch they describe.
@@ -313,10 +391,12 @@ impl WtmApp {
                     .flex_col()
                     .child(
                         // The count on the left grows to fill the row; the
-                        // filter field and its clear button stay fixed-size
-                        // on the right — a persistent, always-discoverable
-                        // search box rather than one hidden until ⌘F, which
-                        // is the "your call" this task leaves open.
+                        // toolbar buttons, filter field, and its clear
+                        // button stay fixed-size on the right — real,
+                        // labeled affordances for New Worktree and Prune
+                        // rather than actions only a shortcut table names,
+                        // and a persistent, always-discoverable search box
+                        // rather than one hidden until ⌘F.
                         div()
                             .flex()
                             .items_center()
@@ -329,6 +409,33 @@ impl WtmApp {
                                 self.loading,
                                 cx,
                             )))
+                            .child(
+                                toolbar_button(
+                                    "toolbar-new-worktree",
+                                    icons::PLUS,
+                                    "New Worktree",
+                                    &theme,
+                                )
+                                .on_click(cx.listener(
+                                    |this, _, window, cx| {
+                                        this.on_new_worktree(&NewWorktree, window, cx);
+                                    },
+                                )),
+                            )
+                            .child(
+                                // Opens the same confirm-with-toggles dialog
+                                // as the shortcut/menu path always has —
+                                // pruning without a confirmation step would
+                                // be destructive, so this button is a
+                                // discoverable door to that dialog, not a
+                                // way around it. The count in the label is
+                                // what lets a user see there is something to
+                                // clean without opening anything.
+                                toolbar_button("toolbar-prune", icons::TRASH, prune_label, &theme)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.on_prune_repo(&PruneRepo, window, cx);
+                                    })),
+                            )
                             .child(
                                 div()
                                     .w(px(200.0))
@@ -345,45 +452,90 @@ impl WtmApp {
                                 )
                             }),
                     )
+                    .when(multi_count > 1, |this| {
+                        this.child(self.render_selection_bar(multi_count, &theme, cx))
+                    })
                     .child(
                         uniform_list(
                             "worktrees",
                             shown,
                             cx.processor(|this, range: std::ops::Range<usize>, _window, cx| {
                                 let visible = this.visible_row_indices(cx);
+                                let theme = Theme::of(cx);
+                                // "Whenever any multi-selection is active" —
+                                // `multi_selected` is never exactly one
+                                // element (see `apply_selection_set`), so
+                                // this is the same "is this a real,
+                                // 2-or-more multi-selection" test the footer
+                                // chip and the selection bar above use.
+                                let force_checkbox_visible = !this.multi_selected.is_empty();
                                 range
                                     .map(|display_ix| {
                                         let ix = visible[display_ix];
                                         let selected = this.is_row_selected(ix);
-                                        div().px(px(8.0)).pb(px(2.0)).child(
-                                            worktree_list::render_row(
-                                                &this.rows[ix],
+                                        // Unique per row rather than one
+                                        // shared name: `uniform_list`
+                                        // recycles element identities across
+                                        // scroll positions, and a shared
+                                        // group name would make every row's
+                                        // checkbox reveal together the
+                                        // moment any one of them is hovered.
+                                        let group_name = SharedString::from(format!("wt-row-{ix}"));
+                                        div()
+                                            .px(px(8.0))
+                                            .pb(px(2.0))
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(6.0))
+                                            .group(group_name.clone())
+                                            .child(Self::render_row_checkbox(
                                                 ix,
                                                 selected,
-                                                this.awaiting_status,
+                                                force_checkbox_visible,
+                                                group_name,
+                                                &theme,
                                                 cx,
-                                            )
-                                            .on_click(cx.listener(
-                                                move |this, event: &ClickEvent, _, cx| {
-                                                    let modifiers = event.modifiers();
-                                                    if modifiers.shift {
-                                                        this.extend_selection_range(ix, cx);
-                                                    } else if modifiers.platform {
-                                                        this.toggle_row_selection(ix, cx);
-                                                    } else {
-                                                        this.select(ix, cx);
-                                                        // Double click activates,
-                                                        // matching Enter: open it
-                                                        // in the editor. Only for
-                                                        // a plain click — shift/⌘
-                                                        // build a selection, they
-                                                        // never open anything.
-                                                        if event.click_count() >= 2 {
-                                                            this.open_row_in_editor(ix, cx);
-                                                        }
-                                                    }
-                                                },
                                             ))
+                                            .child(
+                                                worktree_list::render_row(
+                                                    &this.rows[ix],
+                                                    ix,
+                                                    selected,
+                                                    this.awaiting_status,
+                                                    cx,
+                                                )
+                                                .flex_1()
+                                                .min_w_0()
+                                                .on_click(cx.listener(
+                                                    move |this, event: &ClickEvent, _, cx| {
+                                                        let modifiers = event.modifiers();
+                                                        if modifiers.shift {
+                                                            this.extend_selection_range(ix, cx);
+                                                        } else if modifiers.platform {
+                                                            this.toggle_row_selection(ix, cx);
+                                                        } else {
+                                                            this.select(ix, cx);
+                                                            // Double click activates,
+                                                            // matching Enter: open it
+                                                            // in the editor. Only for
+                                                            // a plain click — shift/⌘
+                                                            // build a selection, they
+                                                            // never open anything.
+                                                            if event.click_count() >= 2 {
+                                                                this.open_row_in_editor(ix, cx);
+                                                            }
+                                                        }
+                                                    },
+                                                )),
+                                            )
+                                            // On the row's full width (the
+                                            // checkbox gutter included), not
+                                            // just the card, so right-clicking
+                                            // anywhere on the row opens this
+                                            // menu rather than occasionally
+                                            // falling through to the list
+                                            // background's own right-click
+                                            // handler below.
                                             .on_mouse_down(
                                                 MouseButton::Right,
                                                 cx.listener(
@@ -393,19 +545,130 @@ impl WtmApp {
                                                             event.position,
                                                             cx,
                                                         );
+                                                        cx.stop_propagation();
                                                     },
                                                 ),
-                                            ),
-                                        )
+                                            )
                                     })
                                     .collect()
                             }),
                         )
                         .flex_1()
-                        .px(px(8.0)),
+                        .px(px(8.0))
+                        .on_mouse_down(MouseButton::Right, empty_space_menu),
                     ),
             )
             .into_any_element()
+    }
+
+    /// The mouse-discoverable equivalent of a ⌘-click: a small checkbox at
+    /// the left edge of each row that toggles that row's membership in the
+    /// multi-selection (`selection::toggle_row_selection`) without
+    /// disturbing the rest of it. Hidden at rest — `group_name` ties its
+    /// visibility to hovering anywhere on the row it belongs to, via
+    /// `group_hover` — except when `force_visible` (a real multi-selection
+    /// is already active), in which case every row's checkbox stays on
+    /// screen so the whole selection reads at a glance without having to
+    /// hover each row in turn.
+    fn render_row_checkbox(
+        row_ix: usize,
+        checked: bool,
+        force_visible: bool,
+        group_name: SharedString,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        div()
+            .id(("row-checkbox", row_ix))
+            .flex_none()
+            .w(px(15.0))
+            .h(px(15.0))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(px(4.0))
+            .cursor_default()
+            .border_1()
+            .border_color(if checked {
+                theme.accent
+            } else {
+                theme.border_strong
+            })
+            .bg(if checked {
+                theme.accent
+            } else {
+                gpui::transparent_black()
+            })
+            .when(!checked && !force_visible, |this| this.opacity(0.0))
+            .group_hover(group_name, |style| style.opacity(1.0))
+            .when(checked, |this| {
+                this.child(ui::icon(icons::CHECK, 10.0, theme.canvas))
+            })
+            .on_click(cx.listener(move |this, _event: &ClickEvent, _window, cx| {
+                this.toggle_row_selection(row_ix, cx);
+                // The checkbox's whole point is toggling *this* row without
+                // otherwise touching the click — it must not also reach the
+                // card's own `on_click` (a plain-click select) were one ever
+                // added as an ancestor of this element.
+                cx.stop_propagation();
+            }))
+    }
+
+    /// Shown between the toolbar and the list once a real multi-selection
+    /// (2+ rows, by `apply_selection_set`'s own invariant) exists: how many
+    /// rows are selected, and the two things you can do with the whole
+    /// batch at once — the discoverable surface for what a shift/⌘-click,
+    /// or the new row checkboxes, just built. The bulk-remove path itself
+    /// already exists (`RemoveSelected` already branches on a multi-row
+    /// selection); this only wires a visible button to it.
+    fn render_selection_bar(
+        &self,
+        count: usize,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        div()
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap(px(10.0))
+            .px(px(16.0))
+            .pb(px(8.0))
+            .child(ui::meta(icons::CHECK, format!("{count} selected"), theme))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(10.0))
+                    .child(
+                        div()
+                            .text_size(px(11.0))
+                            .text_color(theme.text_ghost)
+                            .child("⇧-click extends · ⌘-click toggles · ⎋ clears"),
+                    )
+                    .child(
+                        ui::button("selection-clear", "Clear", ButtonVariant::Secondary, theme)
+                            // `close_dialog`'s own fallback — nothing else is
+                            // open, so this reaches straight through to
+                            // "collapse the multi-selection", the same thing
+                            // Escape already does; reusing it here keeps
+                            // that behavior defined in exactly one place.
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.close_dialog(window, cx)),
+                            ),
+                    )
+                    .child(
+                        ui::button(
+                            "selection-remove",
+                            "Remove Selected",
+                            ButtonVariant::Danger,
+                            theme,
+                        )
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.on_remove_selected(&RemoveSelected, window, cx);
+                        })),
+                    ),
+            )
     }
 
     /// The footer: the current message on the left, context chips on the
@@ -497,5 +760,133 @@ fn parent_label(path: &std::path::Path) -> String {
             format!("~{}", &parent[home.len()..])
         }
         _ => parent,
+    }
+}
+
+/// Missing/prunable worktrees the active repository has right now, using the
+/// same baseline `dialogs::PruneState::new()` starts with (`merged`/`gone`
+/// both off) — see `render_list`'s use of this next to the toolbar's Prune…
+/// button. A free function over `(repo, rows)` rather than a `&self` method
+/// so it is directly testable against a synthetic repo/rows, the same shape
+/// `crate::dialogs`'s own prune tests already use, rather than only
+/// reachable through a live `WtmApp`.
+fn prunable_count(repo: &OpenRepo, rows: &[WorktreeInfo]) -> usize {
+    data::prune_candidates(repo, rows.to_vec(), false, false).len()
+}
+
+/// A compact icon+label toolbar button. `ui::button` has no icon slot and
+/// `ui.rs` is not owned by this task to add one, so this reuses its exact
+/// visual language instead — the `Secondary` variant's `item_wash`/
+/// `item_selected` wash and `ui::RADIUS`, at the same 28px height — for the
+/// list toolbar's New Worktree / Prune… actions.
+fn toolbar_button(
+    id: impl Into<gpui::ElementId>,
+    icon_path: &'static str,
+    label: impl Into<SharedString>,
+    theme: &Theme,
+) -> Stateful<Div> {
+    div()
+        .id(id.into())
+        .h(px(28.0))
+        .px(px(10.0))
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(px(6.0))
+        .rounded(px(ui::RADIUS))
+        .cursor_default()
+        .bg(theme.item_wash)
+        .hover(|this| this.bg(theme.item_selected))
+        .active(|this| this.bg(theme.item_selected))
+        .child(ui::icon(icon_path, 13.0, theme.text_secondary))
+        .child(
+            div()
+                .text_size(px(12.5))
+                .text_color(theme.text)
+                .child(label.into()),
+        )
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use wtm::config::Config;
+    use wtm::model::WorktreeStatus;
+    use wtm::repo::RepoContext;
+
+    use super::*;
+
+    fn fake_repo(protected_branches: Vec<String>) -> OpenRepo {
+        OpenRepo {
+            ctx: RepoContext {
+                main_root: PathBuf::from("/tmp/repo"),
+                git_dir: PathBuf::from("/tmp/repo/.git"),
+                repo_name: "repo".to_string(),
+            },
+            config: Config {
+                prune: wtm::config::PruneConfig { protected_branches },
+                ..Config::default()
+            },
+        }
+    }
+
+    fn worktree(name: &str, is_main: bool, missing: bool, prunable: bool) -> WorktreeInfo {
+        WorktreeInfo {
+            name: name.to_string(),
+            path: PathBuf::from(format!("/tmp/{name}")),
+            branch: Some(name.to_string()),
+            head: None,
+            is_main,
+            is_missing: missing,
+            is_locked: false,
+            is_prunable: prunable,
+            status: Some(WorktreeStatus {
+                dirty: false,
+                ahead: None,
+                behind: None,
+                upstream_gone: false,
+                merged: false,
+            }),
+        }
+    }
+
+    #[test]
+    fn prunable_count_is_zero_with_nothing_stale() {
+        let repo = fake_repo(vec![]);
+        let rows = vec![
+            worktree("main", true, false, false),
+            worktree("feature", false, false, false),
+        ];
+        assert_eq!(prunable_count(&repo, &rows), 0);
+    }
+
+    #[test]
+    fn prunable_count_matches_missing_and_prunable_rows() {
+        let repo = fake_repo(vec![]);
+        let rows = vec![
+            worktree("main", true, false, false),
+            worktree("gone-dir", false, true, false),
+            worktree("stale", false, false, true),
+            worktree("fine", false, false, false),
+        ];
+        assert_eq!(prunable_count(&repo, &rows), 2);
+    }
+
+    #[test]
+    fn prunable_count_never_counts_the_main_worktree() {
+        // The main worktree can never be missing or prunable in practice,
+        // but `candidates` itself refuses it unconditionally — assert that
+        // guarantee holds through this free function too.
+        let repo = fake_repo(vec![]);
+        let rows = vec![worktree("main", true, true, true)];
+        assert_eq!(prunable_count(&repo, &rows), 0);
+    }
+
+    #[test]
+    fn prunable_count_skips_protected_branches() {
+        let repo = fake_repo(vec!["release".to_string()]);
+        let rows = vec![worktree("release", false, true, true)];
+        assert_eq!(prunable_count(&repo, &rows), 0);
     }
 }

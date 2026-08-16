@@ -107,8 +107,32 @@ impl WtmApp {
             return;
         };
         // Right-clicking a row also selects it, so the menu and the visible
-        // selection never disagree.
-        self.select(row_ix, cx);
+        // selection never disagree — but only when no multi-selection is
+        // already active. Unconditionally collapsing one here (the old
+        // behavior) would make "Add to Selection" below a lie: there would
+        // be nothing left to add to by the time the menu opens. A row
+        // outside the current multi-selection is still just described by
+        // the menu, not folded into it — that is what the "Add to
+        // Selection" item itself is for.
+        if self.multi_selected.is_empty() {
+            self.select(row_ix, cx);
+        }
+
+        // The discoverable, click-target equivalent of a shift/⌘-click,
+        // named for whichever of the three states actually applies right
+        // now rather than a generic "Toggle Selection" a user would have to
+        // click once just to find out what it does.
+        let select_item = if self.multi_selected.contains(&row_ix) {
+            MenuItem::action("toggle-select", "Remove from Selection").icon(icons::CLOSE)
+        } else if !self.multi_selected.is_empty() {
+            MenuItem::action("toggle-select", "Add to Selection")
+                .icon(icons::CHECK)
+                .shortcut("⌘-click")
+        } else {
+            MenuItem::action("toggle-select", "Select")
+                .icon(icons::CHECK)
+                .shortcut("⌘-click")
+        };
 
         let remove_item = if info.is_main {
             MenuItem::action("remove", "Remove…")
@@ -120,17 +144,56 @@ impl WtmApp {
             MenuItem::action("remove", "Remove…")
                 .icon(icons::TRASH)
                 .danger()
+                .shortcut("⌘⌫")
         };
         let items = vec![
-            MenuItem::action("open-editor", "Open in Editor").icon(icons::OPEN_EXTERNAL),
-            MenuItem::action("open-terminal", "Open in Terminal"),
-            MenuItem::action("reveal-finder", "Reveal in Finder"),
-            MenuItem::action("copy-path", "Copy Path").icon(icons::COPY),
+            MenuItem::action("open-editor", "Open in Editor")
+                .icon(icons::OPEN_EXTERNAL)
+                .shortcut("⏎"),
+            MenuItem::action("open-terminal", "Open in Terminal").shortcut("⌘⇧T"),
+            MenuItem::action("reveal-finder", "Reveal in Finder").shortcut("⌘⇧R"),
+            MenuItem::action("copy-path", "Copy Path")
+                .icon(icons::COPY)
+                .shortcut("⌘C"),
+            MenuItem::separator(),
+            select_item,
             MenuItem::separator(),
             remove_item,
         ];
 
         let target = MenuTarget::Worktree(info.path);
+        self.context_menu_target = Some(target.clone());
+        self.context_menu.open(target, position, items);
+        cx.notify();
+    }
+
+    /// Right-clicked the list's own background rather than a row — the
+    /// standard place users look for "do something here", and (per the
+    /// user's own complaint that prompted this task) previously did nothing
+    /// at all. `New Worktree`/`Prune…`/`Reload` need an open repository;
+    /// shown but disabled (with the reason in the shortcut slot, same idiom
+    /// as the worktree row menu's main-worktree `Remove…`) rather than
+    /// hidden, so right-clicking an empty window never looks broken.
+    pub(super) fn open_empty_space_context_menu(
+        &mut self,
+        position: Point<Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.overlay_open() {
+            return;
+        }
+        let has_repo = self.active.is_some();
+        let items = vec![
+            repo_scoped_item(has_repo, "new-worktree", "New Worktree", icons::PLUS, "⌘N"),
+            repo_scoped_item(has_repo, "prune", "Prune…", icons::TRASH, "⌘⇧P"),
+            repo_scoped_item(has_repo, "reload", "Reload", icons::REFRESH, "⌘R"),
+            MenuItem::separator(),
+            MenuItem::action("add-repository", "Add Repository…")
+                .icon(icons::PLUS)
+                .shortcut("⌘⇧O"),
+        ];
+
+        let target = MenuTarget::EmptySpace;
         self.context_menu_target = Some(target.clone());
         self.context_menu.open(target, position, items);
         cx.notify();
@@ -167,13 +230,19 @@ impl WtmApp {
         cx.notify();
     }
 
-    pub(super) fn handle_menu_select(&mut self, id: &str, cx: &mut Context<Self>) {
+    pub(super) fn handle_menu_select(
+        &mut self,
+        id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(target) = self.context_menu_target.take() else {
             return;
         };
         match target {
             MenuTarget::Worktree(path) => self.handle_worktree_menu_action(&path, id, cx),
             MenuTarget::Repo(path) => self.handle_repo_menu_action(&path, id, cx),
+            MenuTarget::EmptySpace => self.handle_empty_space_menu_action(id, window, cx),
         }
     }
 
@@ -183,11 +252,36 @@ impl WtmApp {
             "open-terminal" => self.open_in_terminal_path(path.to_path_buf(), cx),
             "reveal-finder" => self.reveal_path_in_finder(path.to_path_buf(), cx),
             "copy-path" => self.copy_path_to_clipboard(path.to_path_buf(), cx),
+            "toggle-select" => {
+                if let Some(row_ix) = self.rows.iter().position(|row| row.path == path) {
+                    self.toggle_row_selection(row_ix, cx);
+                }
+            }
             "remove" => {
                 if let Some(info) = self.rows.iter().find(|row| row.path == path).cloned() {
                     self.open_remove_dialog_for(info, cx);
                 }
             }
+            _ => {}
+        }
+    }
+
+    /// Dispatch an empty-space menu choice through the exact same `on_*`
+    /// method its real keystroke or toolbar button already calls — same
+    /// "no new behavior, only another way to reach it" discipline
+    /// `dialog_actions::run_palette_command` already follows for the
+    /// palette.
+    fn handle_empty_space_menu_action(
+        &mut self,
+        id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match id {
+            "new-worktree" => self.on_new_worktree(&NewWorktree, window, cx),
+            "prune" => self.on_prune_repo(&PruneRepo, window, cx),
+            "reload" => self.on_reload(&Reload, window, cx),
+            "add-repository" => self.on_add_repository(&AddRepository, window, cx),
             _ => {}
         }
     }
@@ -407,5 +501,84 @@ impl WtmApp {
             .ok();
         })
         .detach();
+    }
+
+    // -------------------------------------------------------------
+    // Add repository
+    // -------------------------------------------------------------
+
+    /// Open a native folder picker and add whatever repository the user
+    /// chooses — the mouse-driven answer to "how do I add more repos (no
+    /// plus button)?": the sidebar's `+` button, its empty state, the
+    /// `⌘⇧O` binding, and the empty-space context menu's "Add
+    /// Repository…" all funnel through this one handler.
+    pub(super) fn on_add_repository(
+        &mut self,
+        _: &AddRepository,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.overlay_open() {
+            return;
+        }
+        let paths = cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some("Add".into()),
+        });
+        cx.spawn(async move |this, cx| {
+            // Three ways this resolves to "nothing to do": the oneshot
+            // channel was dropped (outer `Err`), the platform call itself
+            // failed (inner `Err`), or the user cancelled the picker
+            // (`Ok(None)`) — none of them are errors worth a status
+            // message, they are all just "never mind".
+            let Ok(Ok(Some(paths))) = paths.await else {
+                return;
+            };
+            let Some(path) = paths.into_iter().next() else {
+                return;
+            };
+            this.update(cx, |this, cx| this.finish_add_repository(path, cx))
+                .ok();
+        })
+        .detach();
+    }
+
+    /// Resolve `path` to its repository and add it. `activate_repo` already
+    /// records the repository in the registry (`wtm::registry::remember`,
+    /// called from `begin_activate_repo`) and selects it — exactly the "add
+    /// to the registry, then select it" this affordance promises, reusing
+    /// the same path a sidebar click already takes rather than duplicating
+    /// its registry bookkeeping here.
+    fn finish_add_repository(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        match data::open_repo(&path) {
+            Ok(repo) => self.activate_repo(repo, cx),
+            Err(e) => self.set_status(
+                format!("{} is not a git repository: {e}", path.display()),
+                true,
+            ),
+        }
+        cx.notify();
+    }
+}
+
+/// A menu item for an action that needs an open repository: shown and
+/// carrying its real shortcut when one is open, shown-but-disabled with the
+/// reason in the shortcut slot otherwise — the same idiom the worktree row
+/// menu's main-worktree `Remove…` already uses, so a right-click on an empty
+/// window with nothing open explains itself instead of looking broken.
+fn repo_scoped_item(
+    has_repo: bool,
+    id: &'static str,
+    label: &'static str,
+    icon: &'static str,
+    shortcut: &'static str,
+) -> MenuItem {
+    let item = MenuItem::action(id, label).icon(icon);
+    if has_repo {
+        item.shortcut(shortcut)
+    } else {
+        item.disabled().shortcut("open a repository first")
     }
 }

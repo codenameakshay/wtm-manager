@@ -98,6 +98,7 @@ key_bindings! {
     "cmd-,", app::OpenSettings, Some("WtmApp"), "⌘,", "Settings";
     "cmd-k", app::OpenPalette, Some("WtmApp"), "⌘K", "Command Palette";
     "cmd-f", app::FocusFilter, Some("WtmApp"), "⌘F", "Filter Worktrees";
+    "cmd-shift-o", app::AddRepository, Some("WtmApp"), "⌘⇧O", "Add Repository";
 }
 
 /// The default window size and position, used when no saved frame exists or

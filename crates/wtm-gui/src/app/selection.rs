@@ -112,15 +112,32 @@ impl WtmApp {
     /// ⌘-click: toggle one row's membership in the selection, moving the
     /// anchor to it so a following shift-click extends from here — the
     /// same "last-touched row becomes the anchor" behavior Finder uses.
+    /// This is also what the row checkbox's click handler calls and what
+    /// a worktree row's "Select"/"Add to Selection"/"Remove from
+    /// Selection" context-menu item dispatches to — both discoverable,
+    /// mouse-only stand-ins for this same modifier-click.
     pub(super) fn toggle_row_selection(&mut self, row_ix: usize, cx: &mut Context<Self>) {
         if row_ix >= self.rows.len() {
             return;
         }
-        let mut set: BTreeSet<usize> = self.selected_indices().into_iter().collect();
+        let current = self.selected_indices();
+        let set = Self::toggled_selection(&current, row_ix);
+        self.apply_selection_set(set, row_ix, cx);
+    }
+
+    /// The pure toggle at the heart of `toggle_row_selection` above: flip
+    /// `row_ix`'s membership in `current` without disturbing any other row.
+    /// Split out from `Context`-dependent state (`self.rows`, `cx.notify`)
+    /// so the actual set arithmetic — the "toggle" a checkbox click, a
+    /// ⌘-click, and a context-menu "Add to Selection" all reduce to — is
+    /// directly testable rather than only reachable through a live
+    /// `WtmApp`.
+    fn toggled_selection(current: &[usize], row_ix: usize) -> BTreeSet<usize> {
+        let mut set: BTreeSet<usize> = current.iter().copied().collect();
         if !set.remove(&row_ix) {
             set.insert(row_ix);
         }
-        self.apply_selection_set(set, row_ix, cx);
+        set
     }
 
     /// Shift-click: select every *visible* row between the current anchor
@@ -228,5 +245,39 @@ impl WtmApp {
             None => first,
         };
         self.select(prev, cx);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn toggled_selection_adds_an_unselected_row() {
+        let set = WtmApp::toggled_selection(&[1, 2], 3);
+        assert_eq!(set, BTreeSet::from([1, 2, 3]));
+    }
+
+    #[test]
+    fn toggled_selection_removes_an_already_selected_row() {
+        let set = WtmApp::toggled_selection(&[1, 2, 3], 2);
+        assert_eq!(set, BTreeSet::from([1, 3]));
+    }
+
+    #[test]
+    fn toggled_selection_from_empty_selects_just_that_row() {
+        let set = WtmApp::toggled_selection(&[], 5);
+        assert_eq!(set, BTreeSet::from([5]));
+    }
+
+    #[test]
+    fn toggled_selection_leaves_other_rows_untouched() {
+        // The checkbox's whole promise is "toggle just this row" — make
+        // sure the pure toggle never drops an unrelated member as a side
+        // effect of adding or removing another one.
+        let set = WtmApp::toggled_selection(&[0, 4, 7], 4);
+        assert_eq!(set, BTreeSet::from([0, 7]));
+        let set = WtmApp::toggled_selection(&[0, 7], 4);
+        assert_eq!(set, BTreeSet::from([0, 4, 7]));
     }
 }

@@ -129,6 +129,10 @@ actions!(
         OpenPalette,
         /// Focus the worktree-list filter field.
         FocusFilter,
+        /// Open a native folder picker and add the chosen repository to the
+        /// sidebar — the mouse-driven equivalent of running `wtm` inside it
+        /// from a terminal.
+        AddRepository,
     ]
 );
 
@@ -140,6 +144,9 @@ actions!(
 enum MenuTarget {
     Worktree(PathBuf),
     Repo(PathBuf),
+    /// Right-clicked the list's own background rather than a row — see
+    /// `commands::open_empty_space_context_menu`.
+    EmptySpace,
 }
 
 /// A transient message shown in the status line.
@@ -421,7 +428,7 @@ impl Render for WtmApp {
             self.render_dialog(cx)
         };
         let on_menu_select =
-            cx.listener(|this, id: &str, _window, cx| this.handle_menu_select(id, cx));
+            cx.listener(|this, id: &str, window, cx| this.handle_menu_select(id, window, cx));
         let context_menu = self.context_menu.render(&theme, window, cx, on_menu_select);
 
         div()
@@ -444,6 +451,7 @@ impl Render for WtmApp {
             .on_action(cx.listener(Self::on_open_settings))
             .on_action(cx.listener(Self::on_open_palette))
             .on_action(cx.listener(Self::on_focus_filter))
+            .on_action(cx.listener(Self::on_add_repository))
             .size_full()
             .flex()
             .text_color(theme.text)
