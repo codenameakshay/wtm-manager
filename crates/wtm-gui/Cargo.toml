@@ -42,3 +42,8 @@ serde_json = "1.0.151"
 
 [dev-dependencies]
 tempfile = "3.27.0"
+# Headless integration-test harness only: `TestAppContext`, `#[gpui::test]`,
+# and the input/window simulation helpers. Dev-dependency only (matching the
+# normal dependency's `runtime_shaders` feature) so release builds never pull
+# in test scaffolding — see `crates/wtm-gui/src/app/integration_tests.rs`.
+gpui = { version = "0.2.2", features = ["runtime_shaders", "test-support"] }

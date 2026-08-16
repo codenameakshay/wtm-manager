@@ -140,16 +140,20 @@ pub fn save(prefs: &Prefs) -> Result<(), String> {
     Ok(())
 }
 
+/// Serializes tests (in this module and elsewhere in the crate — see
+/// `crate::app::integration_tests`) that mutate `WTM_CONFIG_DIR`. Env vars
+/// are process-global, so two tests racing on the same var under `cargo
+/// test`'s default parallelism would flake without this — the same pattern
+/// `wtm::config`'s own tests use for the same reason. Declared here rather
+/// than nested in `mod tests` below so the integration test module (a
+/// sibling of this one, not a descendant) can share the exact same lock
+/// instead of racing an unrelated one of its own.
+#[cfg(test)]
+pub(crate) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
-
-    /// Serializes tests that mutate `WTM_CONFIG_DIR`. Env vars are
-    /// process-global, so two tests racing on the same var under `cargo
-    /// test`'s default parallelism would flake without this — the same
-    /// pattern `wtm::config`'s own tests use for the same reason.
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     /// RAII guard: sets `WTM_CONFIG_DIR` under the lock, restores on drop.
     struct EnvGuard {

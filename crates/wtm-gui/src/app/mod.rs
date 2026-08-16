@@ -57,6 +57,8 @@ mod chrome;
 mod commands;
 mod dialog_actions;
 mod dialog_forms;
+#[cfg(test)]
+mod integration_tests;
 mod loading;
 mod selection;
 
@@ -69,7 +71,7 @@ use gpui::prelude::*;
 use gpui::{
     actions, deferred, div, px, uniform_list, AnyElement, App, ClickEvent, Context, Div, Entity,
     FocusHandle, Focusable, KeyDownEvent, MouseButton, MouseDownEvent, Pixels, Point, SharedString,
-    Stateful, Subscription, Timer, Window, WindowAppearance,
+    Stateful, Subscription, Window, WindowAppearance,
 };
 use wtm::commands::prune::{PruneCandidate, PruneReport};
 use wtm::model::WorktreeInfo;

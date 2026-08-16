@@ -496,7 +496,27 @@ impl WtmApp {
                 if finished {
                     break;
                 }
-                Timer::after(Duration::from_millis(16)).await;
+                // `cx.background_executor().timer(..)`, NOT `gpui::Timer`
+                // (a bare re-export of `smol::Timer`): the latter is a raw
+                // wall-clock timer that bypasses gpui's platform dispatcher
+                // entirely, so `TestAppContext`'s `TestDispatcher` — and
+                // therefore `cx.executor().advance_clock(..)` — has no way
+                // to know it exists or make it fire. A `#[gpui::test]` that
+                // completes fast enough (no real git subprocess on the
+                // critical path — e.g. an early validation failure) would
+                // hang waiting on a real 16ms of wall-clock time that
+                // `advance_clock` can never simulate, while a slower one
+                // (one that actually shells out to git) could pass by
+                // accident once real elapsed time happened to clear 16ms
+                // during unrelated work. `background_executor().timer(..)`
+                // schedules through `PlatformDispatcher::dispatch_after`
+                // instead, which both the real platform backend and
+                // `TestDispatcher` implement, making this loop's delay
+                // deterministic and testable exactly like every other
+                // background operation in this file.
+                cx.background_executor()
+                    .timer(Duration::from_millis(16))
+                    .await;
             }
         })
         .detach();

@@ -551,7 +551,15 @@ impl WtmApp {
     /// to the registry, then select it" this affordance promises, reusing
     /// the same path a sidebar click already takes rather than duplicating
     /// its registry bookkeeping here.
-    fn finish_add_repository(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+    ///
+    /// `pub(super)` (rather than private) so `integration_tests` can call it
+    /// directly: gpui 0.2.2's `TestAppContext` has no way to simulate the
+    /// platform's `prompt_for_paths` (unlike `prompt_for_new_path`, which
+    /// `simulate_new_path_selection` drives — see that test module's doc
+    /// comment on `add_repository_resolves_and_activates_chosen_directory`
+    /// for the full explanation), so this is the testable core of "Add
+    /// Repository" reached directly, skipping only the picker itself.
+    pub(super) fn finish_add_repository(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         match data::open_repo(&path) {
             Ok(repo) => self.activate_repo(repo, cx),
             Err(e) => self.set_status(

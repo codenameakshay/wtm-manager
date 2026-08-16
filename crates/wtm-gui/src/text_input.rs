@@ -39,7 +39,7 @@ use gpui::{
     actions, div, fill, point, px, size, App, Bounds, ClipboardItem, Context, CursorStyle,
     ElementId, ElementInputHandler, Entity, EntityInputHandler, EventEmitter, FocusHandle,
     Focusable, GlobalElementId, KeyBinding, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, PaintQuad, Pixels, Point, ShapedLine, SharedString, Style, TextRun, Timer,
+    MouseUpEvent, PaintQuad, Pixels, Point, ShapedLine, SharedString, Style, TextRun,
     UTF16Selection, UnderlineStyle, Window,
 };
 
@@ -183,7 +183,15 @@ impl TextInput {
     /// exits instead of leaking a timer per field that has ever existed).
     fn start_blinking(cx: &mut Context<Self>) {
         cx.spawn(async move |this, cx| loop {
-            Timer::after(CURSOR_BLINK_INTERVAL).await;
+            // `cx.background_executor().timer(..)`, not `gpui::Timer`/
+            // `smol::Timer::after`: the latter is a raw wall-clock timer
+            // that bypasses gpui's platform dispatcher, so nothing in a
+            // `#[gpui::test]`'s `TestDispatcher` — including
+            // `cx.executor().advance_clock(..)` — can see or control it.
+            // See `crate::app::dialog_actions::submit_create_dialog`'s
+            // matching fix for the full explanation (found via a real,
+            // reproducible test failure caused by this exact pattern).
+            cx.background_executor().timer(CURSOR_BLINK_INTERVAL).await;
             let alive = this
                 .update(cx, |this, cx| {
                     this.cursor_visible = !this.cursor_visible;

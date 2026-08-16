@@ -249,6 +249,19 @@ impl WtmApp {
             return;
         };
 
+        // See `crate::watcher::DISABLED_FOR_TESTS`'s doc comment: starting a
+        // real watcher inside a `#[gpui::test]` hangs `run_until_parked`
+        // forever, so `app::integration_tests` flips this once per test and
+        // every flow keeps working exactly as it would with a watcher that
+        // simply failed to start (manual reload still works — see this
+        // method's callers).
+        #[cfg(test)]
+        if crate::watcher::DISABLED_FOR_TESTS.load(std::sync::atomic::Ordering::Relaxed) {
+            self.watcher = None;
+            self.watched = None;
+            return;
+        }
+
         let git_dir = repo.ctx.git_dir.clone();
         let mut worktrees: Vec<PathBuf> = self.rows.iter().map(|row| row.path.clone()).collect();
         worktrees.sort();
