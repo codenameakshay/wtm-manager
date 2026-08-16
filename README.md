@@ -146,21 +146,28 @@ native folder picker; pick a git repository and it's added to the sidebar
 and opened.
 
 **What it does:** a sidebar of every repository you've opened (most
-recent first), a worktree list with live status, create/remove/prune
-dialogs, a filesystem watcher that keeps the list current without a manual
-reload, a detail panel with Details/Files/Changes tabs (upstream, path,
+recent first), a worktree list with live status — sortable by Name,
+Recent, or Status, each row showing its last-commit age, main always
+pinned first — that stays current via a filesystem watcher without a
+manual reload, create/remove/prune dialogs, a Fetch button/`⌘⇧F` that runs
+`git fetch --prune` and refreshes ahead/behind counts and "upstream gone"
+detection, a detail panel with Details/Files/Changes tabs (upstream, path,
 HEAD, dirty files, recent commits; a gitignore-aware file tree; an inline
 diff of uncommitted changes), a searchable base-ref picker for new
 worktrees (local and remote-tracking refs, tagged `current`/`default`/
-`worktree`/`remote`), a ⌘K command palette with fuzzy search over worktrees
-and actions, type-to-filter, multi-select (shift/⌘-click or a row checkbox)
-with bulk remove, right-click context menus covering the full action set,
-and a settings sheet. See [`docs/app.md`](docs/app.md) for the full guide.
+`worktree`/`remote`), running an arbitrary command in a worktree with live
+streamed output and per-repository recent-command suggestions (`⌘E`),
+opening a worktree's branch on its GitHub/GitLab/Bitbucket remote, a ⌘K
+command palette with fuzzy search over worktrees and actions,
+type-to-filter, multi-select (shift/⌘-click or a row checkbox) with bulk
+remove, right-click context menus covering the full action set, and a
+settings sheet. See [`docs/app.md`](docs/app.md) for the full guide.
 
 | Shortcut | Action |
 | --- | --- |
 | `⌘Q` | Quit |
 | `⌘R` | Reload |
+| `⌘⇧F` | Fetch |
 | `⏎` | Open in Editor |
 | `↓` | Select Next |
 | `↑` | Select Previous |
@@ -180,6 +187,7 @@ and a settings sheet. See [`docs/app.md`](docs/app.md) for the full guide.
 | `⌘K` | Command Palette |
 | `⌘F` | Filter Worktrees |
 | `⌘⇧O` | Add Repository |
+| `⌘E` | Run Command |
 
 The same table is generated inside the app itself (Settings → Keyboard
 Shortcuts) from the same source, so it can't drift from what's actually

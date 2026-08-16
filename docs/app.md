@@ -71,6 +71,35 @@ the same baseline candidate rules — nothing merged/gone-specific until you
 open the dialog and turn those toggles on), so there's a reason to click it
 beyond curiosity.
 
+**Activity and sorting.** Each row also shows its last-commit age
+(`data::worktree_activity`, loaded in the background after every listing
+lands) beside its status pills. A three-way segmented control in the
+toolbar — Name, Recent, Status — re-sorts the list (`worktree_list::sort_rows`)
+the moment you click it, no reload needed; the main worktree is pinned
+first in every mode, since it's the repo's anchor, not just another row
+that happens to alphabetize or was touched first. Selection survives a
+re-sort — it's tracked by the worktree's path rather than its row index, so
+the worktree you had selected stays selected even though it moved. The
+chosen sort mode lives only in memory: `prefs.rs` isn't wired up to persist
+it yet, so it resets to Name the next time you open the app.
+
+**Fetch** (a toolbar button, `⌘⇧F`, and the empty-space context menu) runs
+`git fetch --prune` against the repository's default remote — `origin` if
+configured, otherwise whichever remote sorts first alphabetically — then
+reloads the list. It exists because ahead/behind counts and "upstream gone"
+detection are only ever as fresh as the last fetch anyone ran: without it,
+the app could keep showing a worktree as 20 commits behind long after that
+stopped being true, or miss that an upstream branch was deleted until
+someone happened to fetch from a terminal. It shells out to the `git`
+binary rather than going through `git2` directly, specifically so SSH
+agents, keychains, and `credential.helper` keep working for whatever
+transport the remote actually uses. It needs network access and uses
+whatever git credentials are already configured for the repository — the
+same as running `git fetch` yourself would. A second fetch can't start
+while one is already running (the button and the menu item both show that
+state); a failure leaves its message on screen instead of silently
+reloading over it.
+
 ## Create, remove, and prune
 
 **Create** (⌘N) is a two-phase dialog: fill in a branch name (with a
@@ -139,15 +168,56 @@ Both tabs load through the same generation-counter discipline the Details
 tab already used, so a slow listing for a worktree you've since navigated
 away from can't overwrite what's currently on screen.
 
+## Run a command in a worktree
+
+`⌘E`, or "Run Command…" from a worktree's context menu, opens a dialog to
+run an arbitrary shell command inside that worktree — the same thing the
+TUI's `x` binding already did, now reachable from the app. Submitting
+switches the form to a live view streaming the command's output as it
+runs, the same background-task-plus-channel-plus-foreground-drain-loop
+shape the create dialog's setup-command streaming already uses. A
+non-zero exit is shown as a completed run with its exit code, not an
+error — seeing a command fail is often the point of running it. Recently
+run commands are offered as one-click suggestions the next time you open
+the dialog for that repository, filtered as you type.
+
+Closing the dialog does **not** stop the command: it keeps running to
+completion on its own background thread regardless of whether the dialog
+is still open to show its output, exactly like a create dialog's setup
+commands do if that dialog is closed mid-run. The dialog's footer says so
+while a command is in flight, so it's never a silent surprise. If the
+whole app quits while a command is still running, it isn't killed either —
+there is no kill/terminate API for it — so it's orphaned and keeps running
+until it exits on its own.
+
+Recent-command suggestions, like the sort mode above, are session-only:
+they're kept in memory, keyed by repository, and reset the next time you
+open the app.
+
+## Open on Remote
+
+"Open on Remote…", from a worktree's context menu or the command palette,
+resolves the worktree's branch to its remote host and opens it in the
+system browser, from either an SSH or an HTTPS remote URL. GitHub and
+GitLab links land on `/tree/<branch>`, Bitbucket on `/src/<branch>`; any
+other host still resolves to a working link to the repository itself,
+just not a branch-scoped one. It's disabled, with the reason in place of
+a shortcut, when there's nothing to open: a detached HEAD has no branch,
+or the branch's remote (its own upstream, falling back to `origin`) has
+no URL git recognizes. There's no fixed keyboard shortcut for it, since
+which worktree it would act on depends on the current selection — it's
+reachable from the palette and every row's context menu either way.
+
 ## Command palette
 
 ⌘K opens a fuzzy-search overlay over both the open repository's worktrees
 and the app's own actions (New Worktree, Remove Worktree, Prune, Reload,
 Open in Editor/Terminal, Reveal in Finder, Copy Path, Toggle Sidebar/Detail
-Panel, Settings). The scorer favors matches at word boundaries — the start
-of the string, or right after `/`, `-`, `_`, `.`, a space, or a
-lowercase-to-uppercase transition — so a query like `mwg` lands on the
-initials of `migrate`/`wtm`/`gpui` in a branch like
+Panel, Settings, Fetch, Add Repository, Detail Panel: Details/Files/Changes
+Tab, Run Command, Open on Remote). The scorer favors matches at word
+boundaries — the start of the string, or right after `/`, `-`, `_`, `.`, a
+space, or a lowercase-to-uppercase transition — so a query like `mwg`
+lands on the initials of `migrate`/`wtm`/`gpui` in a branch like
 `migrate-wtm-to-gpui-app` rather than on some earlier, less meaningful
 triple of letters. Plain Enter (or a plain click) selects a worktree result
 and closes the palette; ⌘+Enter (or a ⌘-click) additionally opens it in your
@@ -185,16 +255,19 @@ document.
 
 Right-clicking a worktree row selects it (unless a multi-selection is
 already active, in which case the row is only described, not folded into
-it) and opens Open in Editor (⏎), Open in Terminal (⌘⇧T), Reveal in Finder
-(⌘⇧R), Copy Path (⌘C), a selection toggle labeled Select/Add to
-Selection/Remove from Selection depending on the row's current state, and
-Remove… (⌘⌫) — disabled, with "main worktree" in its shortcut slot, on the
-main worktree.
+it) and opens Open in Editor (⏎), Run Command… (⌘E), Open in Terminal
+(⌘⇧T), Open on Remote… (disabled with a reason instead of missing when
+there's nothing to open — see above), Reveal in Finder (⌘⇧R), Copy Path
+(⌘C), a selection toggle labeled Select/Add to Selection/Remove from
+Selection depending on the row's current state, and Remove… (⌘⌫) —
+disabled, with "main worktree" in its shortcut slot, on the main worktree.
 
 Right-clicking the list's own empty space (not a row) opens New Worktree
-(⌘N), Prune… (⌘⇧P), and Reload (⌘R) — shown but disabled when no repository
-is open, rather than hidden, so an empty window's right-click never looks
-broken — plus Add Repository… (⌘⇧O), which works either way.
+(⌘N), Fetch (⌘⇧F) — disabled with "fetching…" while one is already running,
+same as the toolbar button — Prune… (⌘⇧P), and Reload (⌘R) — shown but
+disabled when no repository is open, rather than hidden, so an empty
+window's right-click never looks broken — plus Add Repository… (⌘⇧O),
+which works either way.
 
 Right-clicking a sidebar repository opens it and offers Open, Reveal in
 Finder, Copy Path, and Remove from Sidebar — the last one only forgets the
@@ -257,8 +330,12 @@ up in `git worktree list`, removing one checks it leaves disk, removing the
 main worktree checks it's refused. Coverage includes startup, create
 (including the base-ref picker), remove, prune, multi-select (both
 shift/⌘-click and the bulk-remove path), filtering, the command palette, the
-detail panel's Files/Changes tabs, adding a repository, and Escape's
-layered close/collapse behavior.
+detail panel's Files/Changes tabs, adding a repository, sort-mode changes
+(including that selection survives a re-sort by path, not index), Fetch
+(its in-flight guard and a failure when offline), the Run Command dialog
+(a successful run, a failing one presented as a completed run rather than
+an error, and recent-command suggestions), and Escape's layered
+close/collapse behavior.
 
 Two things are deliberately not covered, and the suite says so rather than
 faking it:

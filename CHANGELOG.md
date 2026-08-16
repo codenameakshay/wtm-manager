@@ -5,6 +5,41 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-08-16
+
+### Added
+
+- **App: Fetch** (`⌘⇧F`, a toolbar button, and the empty-space context
+  menu). Ahead/behind counts and prune's "upstream gone" detection are only
+  ever as fresh as the last fetch — without this, the app could confidently
+  show a worktree as "20 behind" long after that stopped being true, and
+  wouldn't notice a deleted upstream branch until someone happened to fetch
+  from a terminal. It runs `git fetch --prune` and reloads the list
+  afterward, so those numbers actually change. It shells out to `git`
+  rather than using `git2` directly, specifically so SSH agents, keychains,
+  and `credential.helper` keep working — anything using authenticated
+  transport, not just unauthenticated HTTPS. Needs network access and uses
+  whatever git credentials are already configured for the repository.
+- **App: worktree activity and sorting.** Each row now shows its
+  last-commit age, and the list can be sorted by Name, Recent, or Status
+  from a new control in the list toolbar. The main worktree stays pinned
+  first in every mode. The chosen sort mode is session-only for now — it
+  resets to Name on restart.
+- **App: run a command in a worktree** (`⌘E`). A dialog streams the
+  command's output live, remembers recently-run commands per repository as
+  one-click suggestions, and shows a non-zero exit as a completed run
+  rather than an error. Closing the dialog does not stop the command — it
+  keeps running in the background, and the dialog's footer says so.
+  Recent-command suggestions are session-only and reset on restart.
+- **App: Open on Remote.** Turns a worktree's branch into its
+  GitHub/GitLab/Bitbucket URL and opens it in the system browser. Disabled
+  with a reason when the worktree is a detached HEAD or the repository has
+  no resolvable remote.
+- **App: command palette catch-up.** Fetch, Add Repository, the three
+  detail-panel tabs (Details/Files/Changes), Run Command, and Open on
+  Remote are now all reachable from `⌘K` — they had shortcuts before this
+  but were undiscoverable without one.
+
 ## [0.4.0] - 2026-08-16
 
 ### Added
