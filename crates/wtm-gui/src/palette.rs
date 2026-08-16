@@ -199,6 +199,13 @@ pub enum CommandId {
     ToggleSidebar,
     ToggleDetailPanel,
     Settings,
+    FetchRemote,
+    AddRepository,
+    ShowDetailsTab,
+    ShowFilesTab,
+    ShowChangesTab,
+    RunCommand,
+    OpenRemote,
 }
 
 #[derive(Clone, Copy)]
@@ -209,7 +216,10 @@ pub struct CommandSpec {
     /// `main.rs`'s `key_bindings!` table — kept as a separate literal
     /// rather than looked up from `REGISTERED_BINDINGS` by label text,
     /// since a string-matched lookup would be its own, subtler source of
-    /// drift if a label ever changed on one side and not the other.
+    /// drift if a label ever changed on one side and not the other. Empty
+    /// (`""`) for a command with no keyboard binding at all (e.g.
+    /// `OpenRemote`) — `render_entry` skips the shortcut chip entirely in
+    /// that case rather than showing an empty one.
     pub shortcut: &'static str,
     pub icon: &'static str,
 }
@@ -286,6 +296,52 @@ pub const COMMANDS: &[CommandSpec] = &[
         label: "Settings",
         shortcut: "⌘,",
         icon: icons::SETTINGS,
+    },
+    CommandSpec {
+        id: CommandId::FetchRemote,
+        label: "Fetch",
+        shortcut: "⌘⇧F",
+        icon: icons::REFRESH,
+    },
+    CommandSpec {
+        id: CommandId::AddRepository,
+        label: "Add Repository…",
+        shortcut: "⌘⇧O",
+        icon: icons::PLUS,
+    },
+    CommandSpec {
+        id: CommandId::ShowDetailsTab,
+        label: "Detail Panel: Details Tab",
+        shortcut: "⌘1",
+        icon: icons::PANEL_LEFT,
+    },
+    CommandSpec {
+        id: CommandId::ShowFilesTab,
+        label: "Detail Panel: Files Tab",
+        shortcut: "⌘2",
+        icon: icons::FOLDER,
+    },
+    CommandSpec {
+        id: CommandId::ShowChangesTab,
+        label: "Detail Panel: Changes Tab",
+        shortcut: "⌘3",
+        icon: icons::GIT_BRANCH,
+    },
+    CommandSpec {
+        id: CommandId::RunCommand,
+        label: "Run Command…",
+        shortcut: "⌘E",
+        icon: icons::CHECK,
+    },
+    CommandSpec {
+        id: CommandId::OpenRemote,
+        label: "Open on Remote…",
+        // No keyboard binding — see `app::commands::open_remote_menu_item`'s
+        // doc comment on why this action's availability depends on the
+        // selected worktree's branch/remote and so isn't a good fit for a
+        // fixed, always-on global shortcut.
+        shortcut: "",
+        icon: icons::OPEN_EXTERNAL,
     },
 ];
 
@@ -499,7 +555,9 @@ fn render_entry(
             spec.icon,
             spec.label,
             indices.as_slice(),
-            Some(SharedString::from(spec.shortcut)),
+            // Empty means "no keyboard binding" — see `CommandSpec::shortcut`'s
+            // doc comment — so no chip is shown at all rather than an empty one.
+            (!spec.shortcut.is_empty()).then(|| SharedString::from(spec.shortcut)),
         ),
     };
 

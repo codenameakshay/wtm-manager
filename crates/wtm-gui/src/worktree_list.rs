@@ -9,6 +9,9 @@
 //! Nothing here touches git: rows are [`WorktreeInfo`] values loaded by
 //! [`crate::data`].
 
+use std::collections::HashMap;
+use std::path::PathBuf;
+
 use gpui::prelude::*;
 use gpui::{div, px, App, Div, Stateful};
 use wtm::model::WorktreeInfo;
@@ -17,13 +20,132 @@ use crate::assets::icons;
 use crate::theme::Theme;
 use crate::ui;
 
+/// How the worktree list orders its rows, selectable via the list
+/// toolbar's sort control (`app::chrome::render_sort_control`). Kept only
+/// for the current session — `WtmApp::sort_mode`'s own doc explains why it
+/// isn't persisted to `prefs.rs` yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SortMode {
+    /// Main worktree first, then every other row alphabetically by branch
+    /// (case-insensitive) — the list's original ordering.
+    #[default]
+    Name,
+    /// Main worktree first, then most-recently-committed-to first.
+    Recent,
+    /// Main worktree first, then whichever rows most need attention:
+    /// dirty, then ahead/behind an upstream, then clean.
+    Status,
+}
+
+impl SortMode {
+    /// Every mode, in the order the toolbar's segmented control shows them.
+    pub const ALL: [SortMode; 3] = [SortMode::Name, SortMode::Recent, SortMode::Status];
+}
+
+/// Label for `mode` in the toolbar's sort control.
+pub fn sort_mode_label(mode: SortMode) -> &'static str {
+    match mode {
+        SortMode::Name => "Name",
+        SortMode::Recent => "Recent",
+        SortMode::Status => "Status",
+    }
+}
+
+/// Sort `rows` per `mode`, in place.
+///
+/// The main worktree is always pinned first, in every mode: it is the
+/// repository's anchor — what nearly every other worktree branches from,
+/// and the one row every repo-scoped action (Prune, the config file
+/// Settings can reveal) implicitly concerns — not just another row that
+/// happens to alphabetize first or was committed to most recently. Burying
+/// it under a feature branch touched five minutes ago would make the one
+/// row users most reliably orient around the *least* discoverable one, in
+/// exactly the mode (`Recent`) where that would happen most often.
+///
+/// `activity` (HEAD commit unix-time by worktree path, from
+/// `data::worktree_activity`) drives `Recent`'s ordering only; `Status`
+/// reads a row's own `status` field, `Name` neither. Any of those can be
+/// incomplete (activity still loading, status not yet computed) — a row
+/// missing the active mode's key sorts after every row that has one,
+/// never into some arbitrary position, so a partially-loaded list reads as
+/// "the unknowns are at the bottom" rather than looking scrambled.
+pub fn sort_rows(rows: &mut [WorktreeInfo], mode: SortMode, activity: &HashMap<PathBuf, i64>) {
+    rows.sort_by(|a, b| {
+        // Main pinned first, in every mode — see this function's doc. At
+        // most one row is ever `is_main`, so this ordering is always
+        // well-defined (never two rows both claiming to sort first).
+        match (a.is_main, b.is_main) {
+            (true, false) => return std::cmp::Ordering::Less,
+            (false, true) => return std::cmp::Ordering::Greater,
+            _ => {}
+        }
+        match mode {
+            SortMode::Name => name_key(a).cmp(&name_key(b)),
+            SortMode::Recent => recent_key(a, activity)
+                .cmp(&recent_key(b, activity))
+                .then_with(|| name_key(a).cmp(&name_key(b))),
+            SortMode::Status => status_key(a)
+                .cmp(&status_key(b))
+                .then_with(|| name_key(a).cmp(&name_key(b))),
+        }
+    });
+}
+
+/// Case-insensitive branch/display name — `Name`'s own primary key, and
+/// the tie-break every other mode falls back to so two rows with an
+/// otherwise-equal key still land in a stable, predictable order.
+fn name_key(info: &WorktreeInfo) -> String {
+    info.display_name().to_lowercase()
+}
+
+/// `Recent`'s sort key: a worktree with known activity always sorts before
+/// one without (the `bool` component), and within "known" a later
+/// (more recent) timestamp sorts first — `Reverse` turns the ordinary
+/// ascending comparison `sort_by` performs into "largest first" without a
+/// second, separately-reasoned comparator.
+fn recent_key(
+    info: &WorktreeInfo,
+    activity: &HashMap<PathBuf, i64>,
+) -> (bool, std::cmp::Reverse<i64>) {
+    match activity.get(&info.path) {
+        Some(&t) => (false, std::cmp::Reverse(t)),
+        None => (true, std::cmp::Reverse(i64::MIN)),
+    }
+}
+
+/// `Status`'s sort key: needs-attention rows first. `dirty` outranks
+/// ahead/behind (uncommitted work is more at risk of being lost than a
+/// commit that simply hasn't been pushed/pulled yet), which outranks a
+/// clean-or-unknown row. Unknown status (not yet computed) is folded into
+/// the same bucket as clean rather than treated as urgent — claiming a row
+/// needs attention before its status has even been computed would be a
+/// guess, not a fact.
+fn status_key(info: &WorktreeInfo) -> u8 {
+    match &info.status {
+        Some(status) if status.dirty => 0,
+        Some(status)
+            if status.ahead.is_some_and(|n| n > 0) || status.behind.is_some_and(|n| n > 0) =>
+        {
+            1
+        }
+        _ => 2,
+    }
+}
+
 /// One worktree card. Returns a stateful element so the caller can attach
 /// click handling without this module knowing about the app's state.
+///
+/// `age`, when known, is `data::relative_age` of the worktree's HEAD
+/// commit — shown muted at the far right of the meta line, right of the
+/// existing path/status/HEAD info. `None` (unknown activity: still
+/// loading, or no resolvable HEAD) renders nothing rather than a
+/// placeholder — an empty space reads better than a guess.
 pub fn render_row(
     info: &WorktreeInfo,
     row_ix: usize,
     selected: bool,
     awaiting_status: bool,
+    age: Option<String>,
     cx: &App,
 ) -> Stateful<Div> {
     let theme = Theme::of(cx);
@@ -78,6 +200,9 @@ pub fn render_row(
                 .children(status_pills(info, awaiting_status, &theme))
                 .when_some(info.head.clone(), |this, head| {
                     this.child(div().flex_none().text_color(theme.text_ghost).child(head))
+                })
+                .when_some(age, |this, age| {
+                    this.child(div().flex_none().text_color(theme.text_ghost).child(age))
                 }),
         )
 }
@@ -207,5 +332,150 @@ fn display_path(info: &WorktreeInfo) -> String {
             format!("~{}", &path[home.len()..])
         }
         _ => path,
+    }
+}
+
+#[cfg(test)]
+mod sort_tests {
+    use wtm::model::WorktreeStatus;
+
+    use super::*;
+
+    /// A worktree with a given name/main-ness and, optionally, a status.
+    /// `path` is always `/tmp/<name>` — unique per name, which is all
+    /// `sort_rows`'s `activity` lookup (keyed by path) needs.
+    fn wt(name: &str, is_main: bool, status: Option<WorktreeStatus>) -> WorktreeInfo {
+        WorktreeInfo {
+            name: name.to_string(),
+            path: PathBuf::from(format!("/tmp/{name}")),
+            branch: Some(name.to_string()),
+            head: None,
+            is_main,
+            is_missing: false,
+            is_locked: false,
+            is_prunable: false,
+            status,
+        }
+    }
+
+    fn clean() -> WorktreeStatus {
+        WorktreeStatus {
+            dirty: false,
+            ahead: None,
+            behind: None,
+            upstream_gone: false,
+            merged: false,
+        }
+    }
+
+    fn dirty() -> WorktreeStatus {
+        WorktreeStatus {
+            dirty: true,
+            ..clean()
+        }
+    }
+
+    fn behind(n: usize) -> WorktreeStatus {
+        WorktreeStatus {
+            behind: Some(n),
+            ..clean()
+        }
+    }
+
+    fn names(rows: &[WorktreeInfo]) -> Vec<&str> {
+        rows.iter().map(|r| r.display_name()).collect()
+    }
+
+    #[test]
+    fn name_mode_pins_main_first_then_sorts_alphabetically_case_insensitively() {
+        let mut rows = vec![
+            wt("zebra", false, None),
+            wt("main", true, None),
+            wt("Apple", false, None),
+            wt("banana", false, None),
+        ];
+        sort_rows(&mut rows, SortMode::Name, &HashMap::new());
+        assert_eq!(names(&rows), vec!["main", "Apple", "banana", "zebra"]);
+    }
+
+    #[test]
+    fn recent_mode_pins_main_first_then_orders_by_most_recent_commit() {
+        let mut rows = vec![
+            wt("old", false, None),
+            wt("main", true, None),
+            wt("new", false, None),
+            wt("mid", false, None),
+        ];
+        let activity: HashMap<PathBuf, i64> = HashMap::from([
+            (PathBuf::from("/tmp/old"), 100),
+            (PathBuf::from("/tmp/new"), 300),
+            (PathBuf::from("/tmp/mid"), 200),
+        ]);
+        sort_rows(&mut rows, SortMode::Recent, &activity);
+        assert_eq!(names(&rows), vec!["main", "new", "mid", "old"]);
+    }
+
+    #[test]
+    fn recent_mode_puts_unknown_activity_after_every_known_row() {
+        let mut rows = vec![
+            wt("no-data", false, None),
+            wt("main", true, None),
+            wt("has-data", false, None),
+        ];
+        let activity: HashMap<PathBuf, i64> = HashMap::from([(PathBuf::from("/tmp/has-data"), 42)]);
+        sort_rows(&mut rows, SortMode::Recent, &activity);
+        assert_eq!(names(&rows), vec!["main", "has-data", "no-data"]);
+    }
+
+    #[test]
+    fn status_mode_pins_main_first_then_dirty_then_ahead_behind_then_clean() {
+        let mut rows = vec![
+            wt("clean-one", false, Some(clean())),
+            wt("main", true, Some(dirty())), // even a dirty main worktree stays first
+            wt("stale", false, Some(behind(3))),
+            wt("wip", false, Some(dirty())),
+            wt("unknown", false, None),
+        ];
+        sort_rows(&mut rows, SortMode::Status, &HashMap::new());
+        assert_eq!(
+            names(&rows),
+            vec!["main", "wip", "stale", "clean-one", "unknown"]
+        );
+    }
+
+    #[test]
+    fn status_mode_treats_unknown_status_the_same_as_clean_not_as_urgent() {
+        let mut rows = vec![
+            wt("main", true, None),
+            wt("unknown", false, None),
+            wt("dirty-one", false, Some(dirty())),
+        ];
+        sort_rows(&mut rows, SortMode::Status, &HashMap::new());
+        // `unknown` must not jump ahead of a genuinely dirty row just
+        // because its status hasn't been computed yet.
+        assert_eq!(names(&rows), vec!["main", "dirty-one", "unknown"]);
+    }
+
+    #[test]
+    fn every_mode_keeps_the_main_worktree_first_regardless_of_its_own_data() {
+        // Main is alphabetically last, least recently active, and dirty —
+        // the worst case for every other key — and must still stay first.
+        let make = || {
+            vec![
+                wt("aardvark", false, Some(clean())),
+                wt("zzz-main", true, Some(dirty())),
+            ]
+        };
+        let activity: HashMap<PathBuf, i64> =
+            HashMap::from([(PathBuf::from("/tmp/aardvark"), 1_000_000)]);
+
+        for mode in SortMode::ALL {
+            let mut rows = make();
+            sort_rows(&mut rows, mode, &activity);
+            assert_eq!(
+                rows[0].name, "zzz-main",
+                "main must sort first under {mode:?}"
+            );
+        }
     }
 }

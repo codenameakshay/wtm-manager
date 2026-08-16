@@ -34,11 +34,13 @@
 //! constructor, and the `Render`/`Focusable` impls that assemble a frame
 //! out of the pieces below. Everything else lives in a sibling module:
 //! - `loading` — repository activation, the two-pass reload, the
-//!   filesystem watcher, and detail-panel data loading.
-//! - `selection` — single- and multi-row selection and the type-to-filter
-//!   field.
+//!   filesystem watcher, worktree-activity loading, and detail-panel data
+//!   loading.
+//! - `selection` — single- and multi-row selection, the type-to-filter
+//!   field, and re-sorting `rows` in place when the sort mode changes
+//!   without losing the selection across the reorder.
 //! - `commands` — the simpler action handlers: open/copy/terminal/reveal,
-//!   context menus, the settings sheet, and preference persistence.
+//!   fetch, context menus, the settings sheet, and preference persistence.
 //! - `dialog_actions` — the Create/Remove/Prune dialogs' lifecycle and
 //!   background operations, the command palette, and bulk remove.
 //! - `dialog_forms` — the Create/Remove/Prune/bulk-remove dialogs' actual
@@ -90,12 +92,13 @@ use crate::diff_view::{self, ChangesState};
 use crate::file_browser::{self, FileBrowserState, SelectedFileDiff};
 use crate::palette::{self, PaletteState};
 use crate::prefs::{self, Appearance, Prefs};
+use crate::run_panel::{self, RunCommandState};
 use crate::settings;
 use crate::text_input::{InputEvent, TextInput};
 use crate::theme::{self, Theme};
 use crate::ui::{self, ButtonVariant};
 use crate::watcher::RepoWatcher;
-use crate::worktree_list;
+use crate::worktree_list::{self, SortMode};
 
 actions!(
     wtm,
@@ -143,6 +146,15 @@ actions!(
         ShowFilesTab,
         /// Show the detail panel's Changes tab (every uncommitted diff).
         ShowChangesTab,
+        /// Fetch the active repository's default remote (`git fetch
+        /// --prune`), refreshing ahead/behind counts and "upstream gone"
+        /// detection.
+        FetchRemote,
+        /// Open the "Run Command" dialog for the selected worktree.
+        RunCommand,
+        /// Open the selected worktree's branch on its remote host (GitHub/
+        /// GitLab/Bitbucket) in the system browser.
+        OpenRemote,
     ]
 );
 
@@ -199,6 +211,24 @@ pub struct WtmApp {
     /// pills can show "unknown" instead of implying "clean".
     awaiting_status: bool,
     status: Option<StatusMessage>,
+    /// How `rows` is ordered — see [`SortMode`]. Session-only: `prefs.rs` is
+    /// not owned by this task, so there is nowhere to persist this across a
+    /// restart yet. Adding a `Prefs` field for it (and loading/saving it the
+    /// way `sidebar_visible`/`detail_panel_visible` already are) is a
+    /// follow-up for whoever does own that file.
+    sort_mode: SortMode,
+    /// HEAD commit unix-time per worktree path, for `Recent`-mode sorting
+    /// and each row's age display — loaded in the background after every
+    /// listing lands (see `loading::spawn_activity_load`), guarded by
+    /// `generation` the same way `rows` itself is. A worktree missing from
+    /// this map (still loading, or no resolvable HEAD) shows no age rather
+    /// than a guess — see `worktree_list::render_row`.
+    activity: HashMap<PathBuf, i64>,
+    /// A `git fetch` is currently running — the in-flight guard `FetchRemote`
+    /// checks before starting another one, since a second concurrent fetch
+    /// against the same repository is at best wasted work. Cleared in
+    /// `apply_fetch_result` regardless of outcome.
+    fetching: bool,
     sidebar_visible: bool,
     /// Bumped on every load so a slow response for a repository the user has
     /// already navigated away from is discarded instead of overwriting the
@@ -295,6 +325,17 @@ pub struct WtmApp {
     /// The bulk-remove confirmation overlay, mutually exclusive with the
     /// above the same way — see [`BulkRemoveState`].
     bulk_remove: Option<BulkRemoveState>,
+    /// The "Run Command" dialog, mutually exclusive with the above the same
+    /// way — see [`crate::run_panel::RunCommandState`]'s module doc for why
+    /// this is its own field rather than a fourth `dialogs::Dialog` variant.
+    run_command: Option<RunCommandState>,
+    /// Commands recently run via the Run Command dialog, most-recent-first,
+    /// keyed by repository (its main worktree root, `OpenRepo::path()`) so a
+    /// build/test command typed in one repo doesn't clutter another's
+    /// suggestions. Session-only: `prefs.rs` is not owned by this task, so
+    /// there is nowhere to persist this across a restart yet — a follow-up
+    /// for whoever owns that file next.
+    recent_commands: HashMap<PathBuf, Vec<String>>,
 }
 
 impl WtmApp {
@@ -323,6 +364,9 @@ impl WtmApp {
             selected: None,
             awaiting_status: true,
             status: None,
+            sort_mode: SortMode::default(),
+            activity: HashMap::new(),
+            fetching: false,
             sidebar_visible: prefs.sidebar_visible,
             generation: 0,
             loading: false,
@@ -350,6 +394,8 @@ impl WtmApp {
             multi_selected: BTreeSet::new(),
             palette: None,
             bulk_remove: None,
+            run_command: None,
+            recent_commands: HashMap::new(),
         };
 
         if let Some(repo) = initial {
@@ -396,13 +442,19 @@ impl WtmApp {
             || self.context_menu.is_open()
             || self.palette.is_some()
             || self.bulk_remove.is_some()
+            || self.run_command.is_some()
     }
 }
 
 /// The scrim behind every dialog: click anywhere outside the card to close
-/// it. Shared across all three dialogs so "click outside to dismiss" is one
-/// behavior, not three copies of it.
-fn render_modal_backdrop(cx: &mut Context<WtmApp>) -> Stateful<Div> {
+/// it. Shared across all three `dialogs::Dialog` variants, the bulk-remove
+/// confirmation, and (from `crate::run_panel`, outside this module) the Run
+/// Command dialog, so "click outside to dismiss" is one behavior, not
+/// several copies of it. `pub(crate)`, not private, specifically so
+/// `run_panel::render` — which cannot be a `dialog_forms.rs`-style method on
+/// `WtmApp` since that file is outside this task's ownership — can reuse it
+/// too.
+pub(crate) fn render_modal_backdrop(cx: &mut Context<WtmApp>) -> Stateful<Div> {
     ui::modal_backdrop()
         .id("dialog-backdrop")
         .on_click(cx.listener(|this, _, window, cx| this.close_dialog(window, cx)))
@@ -465,6 +517,8 @@ impl Render for WtmApp {
             Some(self.render_palette(&theme, cx))
         } else if self.bulk_remove.is_some() {
             Some(self.render_bulk_remove_dialog(&theme, cx))
+        } else if self.run_command.is_some() {
+            Some(self.render_run_command_dialog(&theme, cx))
         } else {
             self.render_dialog(cx)
         };
@@ -496,6 +550,9 @@ impl Render for WtmApp {
             .on_action(cx.listener(Self::on_show_details_tab))
             .on_action(cx.listener(Self::on_show_files_tab))
             .on_action(cx.listener(Self::on_show_changes_tab))
+            .on_action(cx.listener(Self::on_fetch_remote))
+            .on_action(cx.listener(Self::on_run_command))
+            .on_action(cx.listener(Self::on_open_remote))
             .size_full()
             .flex()
             .text_color(theme.text)

@@ -8,7 +8,10 @@
 //! foreground.
 
 use std::collections::{HashMap, HashSet};
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
+use std::thread;
 
 use wtm::commands::{add, open, prune, remove};
 use wtm::config::{self, Config};
@@ -1043,6 +1046,478 @@ fn delta_status(status: git2::Delta) -> FileStatus {
     }
 }
 
+// ---------------------------------------------------------------------
+// Fetch
+// ---------------------------------------------------------------------
+
+/// Result of a [`fetch`] run: which remote it hit, how many refs it moved,
+/// and the raw text to show in the UI.
+// Consumed by a "Fetch" toolbar action, not wired up yet.
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FetchOutcome {
+    pub remote: String,
+    pub updated_refs: usize,
+    pub output: String,
+}
+
+/// Run `git fetch --prune` against `remote` (or the default remote when
+/// `None`), updating this repo's remote-tracking refs.
+///
+/// Ahead/behind counts are computed against those refs, and prune's
+/// "upstream gone" detection depends on them too — both are only ever as
+/// honest as the last fetch, so this is what refreshes them.
+///
+/// Shells out to the `git` binary rather than using git2's own fetch. git2
+/// would need credential callbacks re-implemented by hand: SSH agent
+/// forwarding, macOS Keychain, `credential.helper` config. Get any of that
+/// wrong (easy to do) and fetch breaks for anyone whose remote isn't a plain
+/// unauthenticated HTTPS URL — in practice most SSH-keyed GitHub/GitLab
+/// users. The system `git` binary already has all of that working
+/// correctly; shelling out reuses it instead of reimplementing it worse.
+///
+/// `--prune` so branches deleted on the remote actually disappear from
+/// remote-tracking refs here too — that's what makes `wtm prune`'s "upstream
+/// gone" detection trustworthy instead of stale.
+// Consumed by a "Fetch" toolbar action, not wired up yet.
+#[allow(dead_code)]
+pub fn fetch(repo: &OpenRepo, remote: Option<&str>) -> Result<FetchOutcome, String> {
+    let remote_name = match remote {
+        Some(r) => r.to_string(),
+        None => default_remote_name(&repo.ctx)?,
+    };
+
+    let output = std::process::Command::new("git")
+        .args(["fetch", "--prune", &remote_name])
+        .current_dir(&repo.ctx.main_root)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|e| format!("could not start `git fetch`: {e}"))?;
+
+    // git's own progress/ref-update reporting all goes to stderr; stdout is
+    // normally empty. Combine both so nothing is silently dropped regardless
+    // of which stream a particular git version or transport happens to use.
+    let mut combined = String::from_utf8_lossy(&output.stdout).into_owned();
+    combined.push_str(&String::from_utf8_lossy(&output.stderr));
+
+    if !output.status.success() {
+        let trimmed = combined.trim();
+        return Err(if trimmed.is_empty() {
+            format!("git fetch exited with {}", output.status)
+        } else {
+            trimmed.to_string()
+        });
+    }
+
+    Ok(FetchOutcome {
+        updated_refs: count_updated_refs(&combined),
+        remote: remote_name,
+        output: combined,
+    })
+}
+
+/// The remote `fetch` uses when the caller doesn't name one: `origin` if
+/// configured, else whichever remote sorts first alphabetically (a
+/// deterministic choice among equals); an error naming the problem when
+/// there are none.
+fn default_remote_name(ctx: &RepoContext) -> Result<String, String> {
+    let git_repo = ctx.open_main().map_err(|e| e.to_string())?;
+    let mut names: Vec<String> = git_repo
+        .remotes()
+        .map_err(|e| e.to_string())?
+        .iter()
+        // Each entry is `Result<Option<&str>, Error>`: `Err` for a git-level
+        // read failure, `Ok(None)` for a non-UTF-8 name. Neither is
+        // something a remote picker can act on, so both are dropped rather
+        // than failing the whole listing over one oddly named remote.
+        .filter_map(|entry| entry.ok().flatten())
+        .map(str::to_owned)
+        .collect();
+    if names.iter().any(|n| n == "origin") {
+        return Ok("origin".to_string());
+    }
+    names.sort();
+    names
+        .into_iter()
+        .next()
+        .ok_or_else(|| "this repository has no configured remotes".to_string())
+}
+
+/// Count how many refs `git fetch`'s output reports as touched. Every line
+/// git prints for an updated, new, or deleted ref ends in ` -> <local-ref>`
+/// (e.g. `   1234abc..5678def  main       -> origin/main`,
+/// ` * [new branch]      feat       -> origin/feat`,
+/// ` - [deleted]         (none)     -> origin/old`); progress lines and the
+/// leading `From <url>` line never take that shape. Not bulletproof against
+/// a ref name that happens to contain the literal substring ` -> `, but good
+/// enough for a UI count — and reporting 0 when nothing matches is the
+/// honest answer rather than a guess.
+fn count_updated_refs(output: &str) -> usize {
+    output.lines().filter(|line| line.contains(" -> ")).count()
+}
+
+// ---------------------------------------------------------------------
+// Worktree activity
+// ---------------------------------------------------------------------
+
+/// Unix seconds of the HEAD commit for each given worktree path. A worktree
+/// that can't be opened or has no resolvable HEAD (unborn, corrupted, or
+/// simply gone from disk since the caller listed it) is left out of the map
+/// entirely rather than erroring the whole batch — one bad worktree
+/// shouldn't blank out staleness for the rest of the table.
+///
+/// Cheap enough to call for every row on every listing: per path this is one
+/// `git2::Repository::open`, one HEAD lookup, and one commit-object read —
+/// no history walk and no status computation (that's `worktree::list`'s
+/// `with_status`, a much more expensive pass). Same order of cost as
+/// `stat`-ing a file, repeated once per worktree rather than per commit.
+// Consumed by the worktree list's staleness column and sort-by-activity,
+// not wired up yet.
+#[allow(dead_code)]
+pub fn worktree_activity(paths: &[PathBuf]) -> HashMap<PathBuf, i64> {
+    let mut activity = HashMap::with_capacity(paths.len());
+    for path in paths {
+        let Ok(repo) = git2::Repository::open(path) else {
+            continue;
+        };
+        let Ok(head) = repo.head() else {
+            continue; // Unborn HEAD (no commits yet), or the worktree is gone.
+        };
+        let Ok(commit) = head.peel_to_commit() else {
+            continue;
+        };
+        activity.insert(path.clone(), commit.time().seconds());
+    }
+    activity
+}
+
+/// Format `unix_secs` relative to `now`: "just now", "5m", "3h", "2d", "3w",
+/// "5mo", "2y". Same thresholds and rounding as `detail_panel`'s (private)
+/// `relative_time` — duplicated here rather than shared because that
+/// formatter is private to its module and this crate has no shared
+/// "formatting" module yet to hoist it into.
+///
+/// `now < unix_secs` (a future timestamp — clock skew, or a commit made on a
+/// machine with a fast clock) is not special-cased: the elapsed time comes
+/// out negative, which is less than every threshold below, so it falls into
+/// the same "just now" bucket as a genuinely recent commit rather than
+/// printing a negative duration or panicking.
+// Consumed by the worktree list's staleness column, not wired up yet.
+#[allow(dead_code)]
+pub fn relative_age(unix_secs: i64, now: i64) -> String {
+    let delta = now.saturating_sub(unix_secs);
+    if delta < 60 {
+        return "just now".to_string();
+    }
+
+    const MINUTE: i64 = 60;
+    const HOUR: i64 = 60 * MINUTE;
+    const DAY: i64 = 24 * HOUR;
+    const WEEK: i64 = 7 * DAY;
+    const MONTH: i64 = 30 * DAY;
+    const YEAR: i64 = 365 * DAY;
+
+    if delta < HOUR {
+        format!("{}m", delta / MINUTE)
+    } else if delta < DAY {
+        format!("{}h", delta / HOUR)
+    } else if delta < WEEK {
+        format!("{}d", delta / DAY)
+    } else if delta < MONTH {
+        format!("{}w", delta / WEEK)
+    } else if delta < YEAR {
+        format!("{}mo", delta / MONTH)
+    } else {
+        format!("{}y", delta / YEAR)
+    }
+}
+
+// ---------------------------------------------------------------------
+// Run a command in a worktree
+// ---------------------------------------------------------------------
+
+/// One step of a [`run_command_streaming`] run, reported as it happens.
+// Consumed by a "run command in worktree" dialog mirroring the TUI's
+// `RunCommand` effect, not wired up yet.
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CommandEvent {
+    Started {
+        command: String,
+    },
+    /// One line of combined stdout/stderr, in arrival order. Interleaving
+    /// between the two streams is best-effort (they're read on separate
+    /// threads); ordering within a single stream is exact.
+    Output {
+        line: String,
+    },
+    Finished {
+        success: bool,
+        code: Option<i32>,
+    },
+}
+
+/// Run `command` via `sh -c` with cwd = `worktree`, reporting each line of
+/// output as it arrives instead of buffering until exit — the TUI does the
+/// same thing for its `RunCommand` effect, just without streaming (it has a
+/// terminal to inherit stdio into; the app doesn't). The shape here mirrors
+/// `wtm::setup::run_streaming`'s own command runner: stdout and stderr are
+/// each read on their own thread into one channel, and `stdin` is null so a
+/// command that tries to prompt for input hits a closed pipe instead of
+/// hanging forever waiting on a terminal that isn't there.
+///
+/// A non-zero exit is reported as `Finished { success: false, code }`, NOT
+/// as `Err` — `Err` is reserved for "the command could not be started at
+/// all" (e.g. `sh` itself is missing). Folding "ran and failed" into `Err`
+/// would make a perfectly ordinary outcome — a failing test suite, a lint
+/// error, a `grep` that found nothing — look identical to the app itself
+/// being broken, to both callers matching on `Result` and to any
+/// error-toast UI built on top of this.
+// Consumed by a "run command in worktree" dialog mirroring the TUI's
+// `RunCommand` effect, not wired up yet.
+#[allow(dead_code)]
+pub fn run_command_streaming(
+    worktree: &Path,
+    command: &str,
+    sink: &mut dyn FnMut(CommandEvent),
+) -> Result<(), String> {
+    sink(CommandEvent::Started {
+        command: command.to_string(),
+    });
+
+    let mut child = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(command)
+        .current_dir(worktree)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("`{command}` could not be started: {e}"))?;
+
+    let stdout = child.stdout.take().expect("stdout was piped at spawn");
+    let stderr = child.stderr.take().expect("stderr was piped at spawn");
+    let (tx, rx) = mpsc::channel::<String>();
+    let tx_stderr = tx.clone();
+    let stdout_reader = thread::spawn(move || forward_command_lines(stdout, tx));
+    let stderr_reader = thread::spawn(move || forward_command_lines(stderr, tx_stderr));
+
+    for line in rx {
+        sink(CommandEvent::Output { line });
+    }
+    // Both reader threads have already dropped their `Sender` (the channel
+    // just closed on its own), so they are done or finishing — this join is
+    // not a stall.
+    let _ = stdout_reader.join();
+    let _ = stderr_reader.join();
+
+    let status = child
+        .wait()
+        .map_err(|e| format!("`{command}` could not be waited on: {e}"))?;
+    sink(CommandEvent::Finished {
+        success: status.success(),
+        code: status.code(),
+    });
+    Ok(())
+}
+
+/// Read `reader` line by line (splitting on `\n`, trimming a trailing `\r`),
+/// sending each line to `tx`. Invalid UTF-8 is replaced rather than failing
+/// the read: command output is diagnostic text for a human, not a payload
+/// that must round-trip exactly. Mirrors `wtm::setup`'s private
+/// `forward_lines` helper, duplicated here since that one isn't visible
+/// outside its module.
+fn forward_command_lines(reader: impl Read, tx: mpsc::Sender<String>) {
+    let mut reader = BufReader::new(reader);
+    let mut buf = Vec::new();
+    loop {
+        buf.clear();
+        match reader.read_until(b'\n', &mut buf) {
+            Ok(0) => break,
+            Ok(_) => {
+                if buf.last() == Some(&b'\n') {
+                    buf.pop();
+                    if buf.last() == Some(&b'\r') {
+                        buf.pop();
+                    }
+                }
+                if tx.send(String::from_utf8_lossy(&buf).into_owned()).is_err() {
+                    break; // Receiver went away; nothing left to do.
+                }
+            }
+            Err(_) => break,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------
+// Open the branch on its remote host
+// ---------------------------------------------------------------------
+
+/// A browsable URL for `branch` on the worktree's remote, if one can be
+/// derived: `branch`'s own upstream remote when it has one, else `origin`,
+/// converted from its SSH or HTTPS form into an `https://` base and pointed
+/// at the branch. `None` when the repo has no remote at all, or the remote
+/// URL isn't in a recognized SSH/HTTPS shape.
+///
+/// Thin git-facing wrapper: [`resolve_remote_url`] reads the raw remote URL
+/// via git2, [`build_remote_branch_url`] (pure, unit tested directly) does
+/// the actual conversion.
+// Consumed by an "Open on GitHub/GitLab/Bitbucket" action, not wired up yet.
+#[allow(dead_code)]
+pub fn remote_branch_url(repo: &OpenRepo, branch: &str) -> Option<String> {
+    let git_repo = repo.ctx.open_main().ok()?;
+    let raw_url = resolve_remote_url(&git_repo, branch);
+    build_remote_branch_url(raw_url.as_deref(), branch)
+}
+
+/// The URL of `branch`'s own upstream remote (`branch.<branch>.remote`) if
+/// it has one and that remote still exists in `git_repo`; otherwise
+/// `origin`'s URL; otherwise `None` (no remote at all, or the resolved
+/// remote's URL isn't set).
+fn resolve_remote_url(git_repo: &git2::Repository, branch: &str) -> Option<String> {
+    let upstream_remote = git_repo
+        .branch_upstream_remote(&format!("refs/heads/{branch}"))
+        .ok()
+        .and_then(|buf| buf.as_str().ok().map(str::to_owned));
+
+    let remote = upstream_remote
+        .and_then(|name| git_repo.find_remote(&name).ok())
+        .or_else(|| git_repo.find_remote("origin").ok())?;
+    remote.url().ok().map(str::to_owned)
+}
+
+/// Pure core of [`remote_branch_url`]: given the raw remote URL (`None` when
+/// there is no remote) and the branch name, produce a browsable URL.
+/// Unit tested directly over a table of inputs since it needs no repository
+/// at all.
+fn build_remote_branch_url(raw_url: Option<&str>, branch: &str) -> Option<String> {
+    let base = remote_url_to_https_base(raw_url?)?;
+    Some(branch_url_for_host(&base, branch))
+}
+
+/// Convert an SSH or HTTPS git remote URL into an `https://host/owner/repo`
+/// base (no trailing slash, no `.git` suffix). Handles the scp-like SSH form
+/// (`git@github.com:owner/repo.git`), the explicit `ssh://` form
+/// (`ssh://git@host/owner/repo.git`), and `https://`/`http://` forms.
+/// `None` for anything else (e.g. a local filesystem path) — there is no
+/// sane host to build a browsable URL from.
+fn remote_url_to_https_base(url: &str) -> Option<String> {
+    let url = url.trim();
+
+    if let Some(rest) = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+    {
+        let (host, path) = rest.split_once('/')?;
+        return build_https_base(host, path);
+    }
+    if let Some(rest) = url.strip_prefix("ssh://") {
+        let rest = rest
+            .split_once('@')
+            .map_or(rest, |(_, host_and_path)| host_and_path);
+        let (host_and_port, path) = rest.split_once('/')?;
+        let host = host_and_port
+            .split_once(':')
+            .map_or(host_and_port, |(h, _)| h);
+        return build_https_base(host, path);
+    }
+    // scp-like syntax: `[user@]host:path`. Only treated as such when there's
+    // no `/` before the `:` — otherwise an already-handled `scheme://` URL,
+    // or some unrelated string with a colon in it, could be misread as this
+    // form.
+    let (user_host, path) = url.split_once(':')?;
+    if user_host.contains('/') || path.is_empty() {
+        return None;
+    }
+    let host = user_host.split_once('@').map_or(user_host, |(_, h)| h);
+    build_https_base(host, path)
+}
+
+/// Join a host and a `owner/repo[.git]` path into an `https://` base,
+/// stripping a trailing `.git` and any stray leading/trailing slashes.
+/// `None` if either half is empty once trimmed.
+fn build_https_base(host: &str, path: &str) -> Option<String> {
+    let path = path.trim_matches('/');
+    let path = path.strip_suffix(".git").unwrap_or(path);
+    if host.is_empty() || path.is_empty() {
+        return None;
+    }
+    Some(format!("https://{host}/{path}"))
+}
+
+/// Append the host-appropriate branch path onto `base` (an
+/// `https://host/owner/repo` URL from [`remote_url_to_https_base`]).
+/// GitHub and GitLab both browse a branch at `/tree/<branch>`; Bitbucket at
+/// `/src/<branch>`. Matching is by exact host, not a suffix/substring check,
+/// so a self-hosted look-alike (e.g. `git.mycompany.com`) doesn't get
+/// guessed into a GitLab-shaped link that might not exist there — it falls
+/// back to `base` unchanged, which at least works.
+fn branch_url_for_host(base: &str, branch: &str) -> String {
+    let host = base
+        .strip_prefix("https://")
+        .and_then(|rest| rest.split('/').next());
+    let encoded_branch = encode_branch_path(branch);
+    match host {
+        Some("github.com") | Some("gitlab.com") => format!("{base}/tree/{encoded_branch}"),
+        Some("bitbucket.org") => format!("{base}/src/{encoded_branch}"),
+        _ => base.to_string(),
+    }
+}
+
+/// Percent-encode `branch` for use as a URL path, one `/`-separated segment
+/// at a time: the `/` itself is preserved as a path separator (a branch
+/// like `feature/x` should still browse as two path segments, not one
+/// encoded blob — GitHub/GitLab both resolve it that way), while everything
+/// else outside the URL-safe unreserved set (letters, digits, `-`, `.`, `_`,
+/// `~`) is percent-encoded — notably `+`, which some URL consumers would
+/// otherwise decode as a space.
+fn encode_branch_path(branch: &str) -> String {
+    branch
+        .split('/')
+        .map(encode_path_segment)
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+fn encode_path_segment(segment: &str) -> String {
+    let mut out = String::with_capacity(segment.len());
+    for byte in segment.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                out.push(byte as char);
+            }
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
+}
+
+/// Open `url` in the system's default browser: `open <url>` on macOS,
+/// `xdg-open <url>` elsewhere. Does not decide *when* to open anything —
+/// launching a browser is a UI decision made on user action, not something
+/// the data layer initiates on its own.
+// Consumed by an "Open on GitHub/GitLab/Bitbucket" action, not wired up yet.
+#[allow(dead_code)]
+pub fn open_url(url: &str) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    let tool = "open";
+    #[cfg(not(target_os = "macos"))]
+    let tool = "xdg-open";
+
+    std::process::Command::new(tool)
+        .arg(url)
+        .status()
+        .map_err(|e| format!("could not launch {tool}: {e}"))
+        .and_then(|status| {
+            if status.success() {
+                Ok(())
+            } else {
+                Err(format!("{tool} exited with {status}"))
+            }
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1427,5 +1902,302 @@ mod tests {
         assert!(big_file.truncated);
         let total_lines: usize = big_file.hunks.iter().map(|h| h.lines.len()).sum();
         assert_eq!(total_lines, MAX_DIFF_LINES_PER_FILE);
+    }
+
+    // ---------------- Task 5: fetch ----------------
+
+    #[test]
+    fn count_updated_refs_counts_arrow_lines_only() {
+        let output = "\
+From github.com:owner/repo
+   1234abc..5678def  main       -> origin/main
+ * [new branch]      feat       -> origin/feat
+ - [deleted]         (none)     -> origin/old
+Fetching origin
+";
+        assert_eq!(count_updated_refs(output), 3);
+    }
+
+    #[test]
+    fn count_updated_refs_is_honestly_zero_when_nothing_changed() {
+        assert_eq!(count_updated_refs("From github.com:owner/repo\n"), 0);
+        assert_eq!(count_updated_refs(""), 0);
+    }
+
+    #[test]
+    fn default_remote_name_prefers_origin() {
+        let (_tmp, main) = fixture();
+        git(
+            &main,
+            &[
+                "remote",
+                "add",
+                "zzz-other",
+                "https://example.invalid/z.git",
+            ],
+        );
+        git(
+            &main,
+            &["remote", "add", "origin", "https://example.invalid/o.git"],
+        );
+
+        let ctx = repo::discover(Some(&main)).unwrap();
+        assert_eq!(default_remote_name(&ctx).unwrap(), "origin");
+    }
+
+    #[test]
+    fn default_remote_name_falls_back_to_first_alphabetically() {
+        let (_tmp, main) = fixture();
+        git(
+            &main,
+            &["remote", "add", "zzz", "https://example.invalid/z.git"],
+        );
+        git(
+            &main,
+            &["remote", "add", "aaa", "https://example.invalid/a.git"],
+        );
+
+        let ctx = repo::discover(Some(&main)).unwrap();
+        assert_eq!(default_remote_name(&ctx).unwrap(), "aaa");
+    }
+
+    #[test]
+    fn default_remote_name_errors_clearly_with_no_remotes() {
+        let (_tmp, main) = fixture();
+        let ctx = repo::discover(Some(&main)).unwrap();
+        let err = default_remote_name(&ctx).unwrap_err();
+        assert!(err.contains("no configured remotes"), "{err}");
+    }
+
+    // ---------------- Task 6: worktree_activity / relative_age ----------------
+
+    #[test]
+    fn worktree_activity_reports_head_commit_time_and_skips_missing_paths() {
+        let (_tmp, main) = fixture();
+        let missing = main.parent().unwrap().join("does-not-exist");
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+
+        let activity = worktree_activity(&[main.clone(), missing.clone()]);
+        assert!(!activity.contains_key(&missing));
+        let commit_time = *activity.get(&main).expect("main worktree must be present");
+        // The fixture's commit was just made; allow generous slack for slow
+        // CI clocks rather than asserting an exact timestamp.
+        assert!(
+            (now - commit_time).abs() < 300,
+            "commit_time={commit_time} now={now}"
+        );
+    }
+
+    const NOW: i64 = 1_700_000_000;
+
+    #[test]
+    fn relative_age_zero_delta_is_just_now() {
+        assert_eq!(relative_age(NOW, NOW), "just now");
+    }
+
+    #[test]
+    fn relative_age_future_timestamp_clamps_to_just_now() {
+        // Clock skew: the commit's timestamp is ahead of `now`. Must not
+        // panic or print a negative duration.
+        assert_eq!(relative_age(NOW + 3600, NOW), "just now");
+        assert_eq!(relative_age(i64::MAX, NOW), "just now");
+    }
+
+    #[test]
+    fn relative_age_seconds_are_just_now() {
+        assert_eq!(relative_age(NOW - 1, NOW), "just now");
+        assert_eq!(relative_age(NOW - 59, NOW), "just now");
+    }
+
+    #[test]
+    fn relative_age_minute_boundary() {
+        assert_eq!(relative_age(NOW - 60, NOW), "1m");
+        assert_eq!(relative_age(NOW - 3599, NOW), "59m");
+    }
+
+    #[test]
+    fn relative_age_hour_boundary() {
+        assert_eq!(relative_age(NOW - 3600, NOW), "1h");
+        assert_eq!(relative_age(NOW - 86399, NOW), "23h");
+    }
+
+    #[test]
+    fn relative_age_day_boundary() {
+        assert_eq!(relative_age(NOW - 86400, NOW), "1d");
+        assert_eq!(relative_age(NOW - (7 * 86400 - 1), NOW), "6d");
+    }
+
+    #[test]
+    fn relative_age_week_boundary() {
+        assert_eq!(relative_age(NOW - 7 * 86400, NOW), "1w");
+        assert_eq!(relative_age(NOW - (30 * 86400 - 1), NOW), "4w");
+    }
+
+    #[test]
+    fn relative_age_month_boundary() {
+        assert_eq!(relative_age(NOW - 30 * 86400, NOW), "1mo");
+        assert_eq!(relative_age(NOW - (365 * 86400 - 1), NOW), "12mo");
+    }
+
+    #[test]
+    fn relative_age_year_boundary() {
+        assert_eq!(relative_age(NOW - 365 * 86400, NOW), "1y");
+        assert_eq!(relative_age(NOW - 2 * 365 * 86400, NOW), "2y");
+    }
+
+    // ---------------- Task 7: run_command_streaming ----------------
+
+    #[test]
+    fn run_command_streaming_reports_output_and_success() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut events = Vec::new();
+        run_command_streaming(tmp.path(), "printf 'hello\\n'", &mut |e| events.push(e)).unwrap();
+
+        assert_eq!(
+            events,
+            vec![
+                CommandEvent::Started {
+                    command: "printf 'hello\\n'".to_string()
+                },
+                CommandEvent::Output {
+                    line: "hello".to_string()
+                },
+                CommandEvent::Finished {
+                    success: true,
+                    code: Some(0),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn run_command_streaming_reports_nonzero_exit_as_finished_not_err() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut events = Vec::new();
+        run_command_streaming(tmp.path(), "echo hello && exit 3", &mut |e| events.push(e))
+            .expect("a failing command is not an Err — only a failed spawn is");
+
+        assert_eq!(
+            events,
+            vec![
+                CommandEvent::Started {
+                    command: "echo hello && exit 3".to_string()
+                },
+                CommandEvent::Output {
+                    line: "hello".to_string()
+                },
+                CommandEvent::Finished {
+                    success: false,
+                    code: Some(3),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn run_command_streaming_runs_in_the_given_cwd() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("marker.txt"), "x").unwrap();
+        let mut events = Vec::new();
+        run_command_streaming(tmp.path(), "ls marker.txt", &mut |e| events.push(e)).unwrap();
+
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, CommandEvent::Output { line } if line == "marker.txt")));
+    }
+
+    // ---------------- Task 8: remote_branch_url ----------------
+
+    #[test]
+    fn build_remote_branch_url_over_a_table_of_inputs() {
+        let cases: &[(Option<&str>, &str, Option<&str>)] = &[
+            // scp-like SSH form.
+            (
+                Some("git@github.com:owner/repo.git"),
+                "main",
+                Some("https://github.com/owner/repo/tree/main"),
+            ),
+            // explicit ssh:// form.
+            (
+                Some("ssh://git@github.com/owner/repo.git"),
+                "main",
+                Some("https://github.com/owner/repo/tree/main"),
+            ),
+            // https with .git suffix.
+            (
+                Some("https://github.com/owner/repo.git"),
+                "main",
+                Some("https://github.com/owner/repo/tree/main"),
+            ),
+            // https without .git suffix.
+            (
+                Some("https://github.com/owner/repo"),
+                "main",
+                Some("https://github.com/owner/repo/tree/main"),
+            ),
+            // gitlab.com uses /tree/ too.
+            (
+                Some("git@gitlab.com:owner/repo.git"),
+                "main",
+                Some("https://gitlab.com/owner/repo/tree/main"),
+            ),
+            // bitbucket uses /src/.
+            (
+                Some("git@bitbucket.org:owner/repo.git"),
+                "main",
+                Some("https://bitbucket.org/owner/repo/src/main"),
+            ),
+            // self-hosted / unrecognized host -> base URL, no guessed path.
+            (
+                Some("git@git.mycompany.internal:team/proj.git"),
+                "main",
+                Some("https://git.mycompany.internal/team/proj"),
+            ),
+            // branch containing a slash and a `+` -> percent-encoded per
+            // segment, slash preserved as a path separator.
+            (
+                Some("https://github.com/owner/repo.git"),
+                "feature/a+b",
+                Some("https://github.com/owner/repo/tree/feature/a%2Bb"),
+            ),
+            // no remote at all.
+            (None, "main", None),
+            // not a recognized SSH/HTTPS shape.
+            (Some("/local/path/to/repo"), "main", None),
+        ];
+
+        for (raw_url, branch, expected) in cases {
+            let actual = build_remote_branch_url(*raw_url, branch);
+            assert_eq!(
+                actual.as_deref(),
+                *expected,
+                "raw_url={raw_url:?} branch={branch}"
+            );
+        }
+    }
+
+    #[test]
+    fn remote_branch_url_against_a_real_repo() {
+        let (_tmp, main) = fixture();
+        git(
+            &main,
+            &[
+                "remote",
+                "add",
+                "origin",
+                "git@github.com:codenameakshay/wtm-manager.git",
+            ],
+        );
+
+        let repo = test_repo(&main);
+        let url = remote_branch_url(&repo, "main").unwrap();
+        assert_eq!(
+            url,
+            "https://github.com/codenameakshay/wtm-manager/tree/main"
+        );
     }
 }

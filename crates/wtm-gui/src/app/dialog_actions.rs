@@ -155,7 +155,18 @@ impl WtmApp {
         let closed_settings = std::mem::take(&mut self.settings_open);
         let closed_palette = self.palette.take().is_some();
         let closed_bulk_remove = self.bulk_remove.take().is_some();
-        if closed_dialog || closed_settings || closed_palette || closed_bulk_remove {
+        // Taking `run_command` here does not stop whatever command is still
+        // running in the background — see `crate::run_panel`'s module doc
+        // ("The child process outlives a closed dialog") for the full
+        // explanation of what that means and why it's the same tradeoff the
+        // create dialog already makes for its own setup commands.
+        let closed_run_command = self.run_command.take().is_some();
+        if closed_dialog
+            || closed_settings
+            || closed_palette
+            || closed_bulk_remove
+            || closed_run_command
+        {
             window.focus(&self.focus_handle);
             cx.notify();
             return;
@@ -904,6 +915,17 @@ impl WtmApp {
                 self.on_toggle_detail_panel(&ToggleDetailPanel, window, cx)
             }
             palette::CommandId::Settings => self.on_open_settings(&OpenSettings, window, cx),
+            palette::CommandId::FetchRemote => self.on_fetch_remote(&FetchRemote, window, cx),
+            palette::CommandId::AddRepository => self.on_add_repository(&AddRepository, window, cx),
+            palette::CommandId::ShowDetailsTab => {
+                self.on_show_details_tab(&ShowDetailsTab, window, cx)
+            }
+            palette::CommandId::ShowFilesTab => self.on_show_files_tab(&ShowFilesTab, window, cx),
+            palette::CommandId::ShowChangesTab => {
+                self.on_show_changes_tab(&ShowChangesTab, window, cx)
+            }
+            palette::CommandId::RunCommand => self.on_run_command(&RunCommand, window, cx),
+            palette::CommandId::OpenRemote => self.on_open_remote(&OpenRemote, window, cx),
         }
     }
 
@@ -1035,5 +1057,216 @@ impl WtmApp {
         self.set_status(parts.join(" · "), has_failures);
         self.reload(cx);
         cx.notify();
+    }
+
+    // -------------------------------------------------------------
+    // Run command dialog
+    // -------------------------------------------------------------
+
+    /// ⌘E: open the Run Command dialog for the selected worktree. A no-op
+    /// with nothing selected, the same guard `on_copy_path`/
+    /// `on_open_in_terminal` already use for a single-target action.
+    pub(super) fn on_run_command(
+        &mut self,
+        _: &RunCommand,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(ix) = self.selected else {
+            return;
+        };
+        let Some(info) = self.rows.get(ix).cloned() else {
+            return;
+        };
+        self.open_run_command_dialog(info, window, cx);
+    }
+
+    /// Open the Run Command dialog for `info`. Shared by `on_run_command`
+    /// (which resolves `info` from `self.selected`) and a worktree row's
+    /// context menu (which already has one) — the same split
+    /// `open_remove_dialog_for` uses for the Remove dialog.
+    pub(super) fn open_run_command_dialog(
+        &mut self,
+        info: WorktreeInfo,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.overlay_open() {
+            return;
+        }
+        let state = RunCommandState::new(info, window, cx);
+        let input_focus = state.command_input.focus_handle(cx);
+        self.run_command = Some(state);
+        window.focus(&input_focus);
+        cx.notify();
+    }
+
+    /// Fill the command field from a recent-command suggestion click.
+    /// Ignores the click if the dialog closed (or moved to the running
+    /// phase) in the meantime — the same guard `select_branch_in_create`
+    /// uses.
+    pub(crate) fn select_recent_command(
+        &mut self,
+        command: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(state) = &self.run_command else {
+            return;
+        };
+        if !matches!(state.phase, run_panel::RunPhase::Form) {
+            return;
+        }
+        let input = state.command_input.clone();
+        input.update(cx, |input, cx| input.set_value(command, window, cx));
+    }
+
+    /// Submit the command form: switch to the running phase and kick off
+    /// the background run. Wired as both the Run button's click and the
+    /// command field's `Submit` reaction (Enter).
+    ///
+    /// Crosses the background/foreground boundary the same way
+    /// `submit_create_dialog` does for the create dialog's own streaming
+    /// progress view — see that method's doc comment (and
+    /// `crate::run_panel`'s module doc) for why this uses an mpsc channel
+    /// plus a foreground drain loop rather than calling back into `self`
+    /// straight from `data::run_command_streaming`'s sink (which runs on a
+    /// background thread and cannot touch `this`), and why the drain loop's
+    /// poll delay must be `cx.background_executor().timer(..)`, never
+    /// `gpui::Timer`.
+    pub(crate) fn submit_run_command(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(state) = &mut self.run_command else {
+            return;
+        };
+        if !matches!(state.phase, run_panel::RunPhase::Form) {
+            return;
+        }
+        let command = state.command_input.read(cx).value().trim().to_string();
+        if command.is_empty() {
+            return;
+        }
+        let worktree_path = state.target.path.clone();
+
+        state.start_running(command.clone());
+        // The form's command field is unmounted the moment the running
+        // phase replaces it, taking its focus with it — hand focus back to
+        // the root explicitly, the same reasoning
+        // `submit_create_dialog` documents for the identical situation.
+        window.focus(&self.focus_handle);
+        cx.notify();
+
+        if let Some(repo_key) = self.active.as_ref().map(|r| r.path().to_path_buf()) {
+            let recent = self.recent_commands.entry(repo_key).or_default();
+            run_panel::record_recent_command(recent, command.clone(), run_panel::MAX_RECENT_STORED);
+        }
+
+        let (tx, rx) = mpsc::channel::<run_panel::RunStreamMsg>();
+        let tx_done = tx.clone();
+        cx.background_spawn({
+            let command = command.clone();
+            async move {
+                let mut sink = move |event: data::CommandEvent| {
+                    let _ = tx.send(run_panel::RunStreamMsg::Event(event));
+                };
+                let result = data::run_command_streaming(&worktree_path, &command, &mut sink);
+                let _ = tx_done.send(run_panel::RunStreamMsg::Done(result));
+            }
+        })
+        .detach();
+
+        cx.spawn(async move |this, cx| {
+            loop {
+                let mut batch = Vec::new();
+                let mut finished = false;
+                while let Ok(msg) = rx.try_recv() {
+                    let is_done = matches!(msg, run_panel::RunStreamMsg::Done(_));
+                    batch.push(msg);
+                    if is_done {
+                        finished = true;
+                        break;
+                    }
+                }
+                if !batch.is_empty() {
+                    let alive = this
+                        .update(cx, |this, cx| this.apply_run_command_stream(batch, cx))
+                        .is_ok();
+                    if !alive {
+                        return;
+                    }
+                }
+                if finished {
+                    break;
+                }
+                // `cx.background_executor().timer(..)`, NOT `gpui::Timer` —
+                // see `submit_create_dialog`'s matching comment for the full
+                // explanation of why the latter is invisible to
+                // `TestDispatcher`/`advance_clock`.
+                cx.background_executor()
+                    .timer(Duration::from_millis(16))
+                    .await;
+            }
+        })
+        .detach();
+    }
+
+    /// Apply a batch of streamed events to the running view. A no-op if the
+    /// dialog was closed (or a new run started) since the batch was
+    /// captured — the background command itself is not cancelled by closing
+    /// the dialog, but nothing updates for it once no `Running` phase is
+    /// there to receive it. See `crate::run_panel`'s module doc for what
+    /// that means for the child process.
+    fn apply_run_command_stream(
+        &mut self,
+        batch: Vec<run_panel::RunStreamMsg>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(state) = &mut self.run_command else {
+            return;
+        };
+        let run_panel::RunPhase::Running(progress) = &mut state.phase else {
+            return;
+        };
+
+        for msg in batch {
+            match msg {
+                run_panel::RunStreamMsg::Event(data::CommandEvent::Started { .. }) => {}
+                run_panel::RunStreamMsg::Event(data::CommandEvent::Output { line }) => {
+                    progress.push_line(line);
+                }
+                run_panel::RunStreamMsg::Event(data::CommandEvent::Finished { success, code }) => {
+                    progress.outcome = Some(run_panel::RunOutcome::Finished { success, code });
+                }
+                run_panel::RunStreamMsg::Done(Ok(())) => {}
+                run_panel::RunStreamMsg::Done(Err(e)) => {
+                    // Only reachable when the command could never be
+                    // started at all (`data::run_command_streaming`'s one
+                    // real `Err` case) — if `Finished` already landed, this
+                    // `Done` is just the ordinary `Ok(())` tail, never an
+                    // `Err`, so this branch cannot overwrite a real outcome.
+                    if progress.outcome.is_none() {
+                        progress.outcome = Some(run_panel::RunOutcome::StartFailed(e));
+                    }
+                }
+            }
+        }
+
+        cx.notify();
+    }
+
+    pub(super) fn render_run_command_dialog(
+        &self,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let Some(state) = &self.run_command else {
+            return div().into_any_element();
+        };
+        let recent: &[String] = self
+            .active
+            .as_ref()
+            .and_then(|repo| self.recent_commands.get(repo.path()))
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        run_panel::render(state, recent, theme, cx)
     }
 }

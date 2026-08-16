@@ -423,6 +423,30 @@ impl WtmApp {
                                 )),
                             )
                             .child(
+                                // Label and appearance both change while a
+                                // fetch is running, but the real guard
+                                // against a second concurrent `git fetch` is
+                                // `on_fetch_remote`'s own `self.fetching`
+                                // check — this is only the visible half of
+                                // that promise.
+                                toolbar_button(
+                                    "toolbar-fetch",
+                                    icons::REFRESH,
+                                    if self.fetching {
+                                        "Fetching…"
+                                    } else {
+                                        "Fetch"
+                                    },
+                                    &theme,
+                                )
+                                .when(self.fetching, |this| this.opacity(0.6))
+                                .on_click(cx.listener(
+                                    |this, _, window, cx| {
+                                        this.on_fetch_remote(&FetchRemote, window, cx);
+                                    },
+                                )),
+                            )
+                            .child(
                                 // Opens the same confirm-with-toggles dialog
                                 // as the shortcut/menu path always has —
                                 // pruning without a confirmation step would
@@ -436,6 +460,7 @@ impl WtmApp {
                                         this.on_prune_repo(&PruneRepo, window, cx);
                                     })),
                             )
+                            .child(self.render_sort_control(&theme, cx))
                             .child(
                                 div()
                                     .w(px(200.0))
@@ -462,6 +487,14 @@ impl WtmApp {
                             cx.processor(|this, range: std::ops::Range<usize>, _window, cx| {
                                 let visible = this.visible_row_indices(cx);
                                 let theme = Theme::of(cx);
+                                // Computed once per visible range rather
+                                // than once per row: every row's age is
+                                // relative to the same "now", and a fresh
+                                // syscall per row would be pure waste.
+                                let now = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .map(|d| d.as_secs() as i64)
+                                    .unwrap_or(0);
                                 // "Whenever any multi-selection is active" —
                                 // `multi_selected` is never exactly one
                                 // element (see `apply_selection_set`), so
@@ -473,6 +506,10 @@ impl WtmApp {
                                     .map(|display_ix| {
                                         let ix = visible[display_ix];
                                         let selected = this.is_row_selected(ix);
+                                        let age = this
+                                            .activity
+                                            .get(&this.rows[ix].path)
+                                            .map(|&t| data::relative_age(t, now));
                                         // Unique per row rather than one
                                         // shared name: `uniform_list`
                                         // recycles element identities across
@@ -502,6 +539,7 @@ impl WtmApp {
                                                     ix,
                                                     selected,
                                                     this.awaiting_status,
+                                                    age,
                                                     cx,
                                                 )
                                                 .flex_1()
@@ -559,6 +597,51 @@ impl WtmApp {
                     ),
             )
             .into_any_element()
+    }
+
+    /// The list toolbar's sort-mode switch: a compact three-way segmented
+    /// control (Name / Recent / Status) reusing `render_detail_tab`'s
+    /// active/inactive visual language at a smaller size. Clicking a
+    /// segment goes through `selection::set_sort_mode`, which re-sorts
+    /// immediately and keeps the current selection on the same worktree —
+    /// this control itself has nothing to do about that, or about the main
+    /// worktree staying pinned first (both are `worktree_list::sort_rows`'s
+    /// own guarantees).
+    fn render_sort_control(&self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap(px(2.0))
+            .p(px(2.0))
+            .rounded(px(ui::RADIUS))
+            .bg(theme.item_wash)
+            .children(
+                worktree_list::SortMode::ALL
+                    .into_iter()
+                    .enumerate()
+                    .map(|(idx, mode)| {
+                        let active = self.sort_mode == mode;
+                        div()
+                            .id(("sort-mode", idx))
+                            .px(px(8.0))
+                            .h(px(24.0))
+                            .flex()
+                            .items_center()
+                            .rounded(px(ui::RADIUS))
+                            .cursor_default()
+                            .text_size(px(12.0))
+                            .when(active, |d| d.bg(theme.item_selected).text_color(theme.text))
+                            .when(!active, |d| {
+                                d.text_color(theme.text_tertiary)
+                                    .hover(|s| s.bg(theme.item_selected))
+                            })
+                            .child(worktree_list::sort_mode_label(mode))
+                            .on_click(cx.listener(move |this, _, _window, cx| {
+                                this.set_sort_mode(mode, cx);
+                            }))
+                    }),
+            )
     }
 
     /// The mouse-discoverable equivalent of a ⌘-click: a small checkbox at

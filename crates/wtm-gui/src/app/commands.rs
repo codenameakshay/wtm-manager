@@ -94,6 +94,84 @@ impl WtmApp {
     }
 
     // -------------------------------------------------------------
+    // Fetch
+    // -------------------------------------------------------------
+
+    /// Fetch the active repository's default remote in the background: the
+    /// ⌘⇧F binding, the list toolbar's Fetch button, and the empty-space
+    /// context menu's "Fetch" item all funnel through this one handler.
+    ///
+    /// Ahead/behind counts and prune's "upstream gone" detection are only
+    /// ever as fresh as the last fetch (see `data::fetch`'s own doc) — that
+    /// is why a successful fetch reloads the listing immediately in
+    /// `apply_fetch_result`, rather than leaving the user to notice the
+    /// pills are stale.
+    pub(super) fn on_fetch_remote(
+        &mut self,
+        _: &FetchRemote,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.overlay_open() || self.fetching {
+            // `self.fetching` is the real guard: every trigger for this
+            // action funnels through this one method, so checking it here
+            // — not just disabling the toolbar button's appearance — is
+            // what actually makes a second concurrent `git fetch` against
+            // the same repository impossible rather than merely
+            // discouraged.
+            return;
+        }
+        let Some(repo) = self.active.clone() else {
+            return;
+        };
+
+        self.fetching = true;
+        cx.notify();
+
+        cx.spawn(async move |this, cx| {
+            let outcome = cx
+                .background_spawn(async move { data::fetch(&repo, None) })
+                .await;
+            this.update(cx, |this, cx| this.apply_fetch_result(outcome, cx))
+                .ok();
+        })
+        .detach();
+    }
+
+    /// Report a finished fetch and, on success, reload the listing.
+    ///
+    /// On failure the message stays: `set_status(.., true)` is exactly what
+    /// `apply_rows` promises never to clear on its own (see that method's
+    /// doc comment) — a failed fetch never reloads on this path, but the
+    /// same guarantee also protects the error from being wiped by anything
+    /// else that reloads afterward (a manual ⌘R, the filesystem watcher).
+    fn apply_fetch_result(
+        &mut self,
+        result: Result<data::FetchOutcome, String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.fetching = false;
+        match result {
+            Ok(outcome) => {
+                let message = if outcome.updated_refs > 0 {
+                    format!(
+                        "fetched {} · {} ref{} updated",
+                        outcome.remote,
+                        outcome.updated_refs,
+                        if outcome.updated_refs == 1 { "" } else { "s" }
+                    )
+                } else {
+                    format!("fetched {} · already up to date", outcome.remote)
+                };
+                self.set_status(message, false);
+                self.reload(cx);
+            }
+            Err(e) => self.set_status(format!("fetch failed: {e}"), true),
+        }
+        cx.notify();
+    }
+
+    // -------------------------------------------------------------
     // Context menus
     // -------------------------------------------------------------
 
@@ -150,7 +228,9 @@ impl WtmApp {
             MenuItem::action("open-editor", "Open in Editor")
                 .icon(icons::OPEN_EXTERNAL)
                 .shortcut("⏎"),
+            MenuItem::action("run-command", "Run Command…").shortcut("⌘E"),
             MenuItem::action("open-terminal", "Open in Terminal").shortcut("⌘⇧T"),
+            self.open_remote_menu_item(&info),
             MenuItem::action("reveal-finder", "Reveal in Finder").shortcut("⌘⇧R"),
             MenuItem::action("copy-path", "Copy Path")
                 .icon(icons::COPY)
@@ -183,8 +263,28 @@ impl WtmApp {
             return;
         }
         let has_repo = self.active.is_some();
+        // Not just `repo_scoped_item(has_repo, ..)`: Fetch has a second way
+        // to be unavailable (already running) that none of the other
+        // repo-scoped items do, so it needs its own disabled-reason text
+        // rather than that helper's single `has_repo` check.
+        let fetch_item = if !has_repo {
+            MenuItem::action("fetch", "Fetch")
+                .icon(icons::REFRESH)
+                .disabled()
+                .shortcut("open a repository first")
+        } else if self.fetching {
+            MenuItem::action("fetch", "Fetch")
+                .icon(icons::REFRESH)
+                .disabled()
+                .shortcut("fetching…")
+        } else {
+            MenuItem::action("fetch", "Fetch")
+                .icon(icons::REFRESH)
+                .shortcut("⌘⇧F")
+        };
         let items = vec![
             repo_scoped_item(has_repo, "new-worktree", "New Worktree", icons::PLUS, "⌘N"),
+            fetch_item,
             repo_scoped_item(has_repo, "prune", "Prune…", icons::TRASH, "⌘⇧P"),
             repo_scoped_item(has_repo, "reload", "Reload", icons::REFRESH, "⌘R"),
             MenuItem::separator(),
@@ -240,16 +340,32 @@ impl WtmApp {
             return;
         };
         match target {
-            MenuTarget::Worktree(path) => self.handle_worktree_menu_action(&path, id, cx),
+            MenuTarget::Worktree(path) => self.handle_worktree_menu_action(&path, id, window, cx),
             MenuTarget::Repo(path) => self.handle_repo_menu_action(&path, id, cx),
             MenuTarget::EmptySpace => self.handle_empty_space_menu_action(id, window, cx),
         }
     }
 
-    fn handle_worktree_menu_action(&mut self, path: &Path, id: &str, cx: &mut Context<Self>) {
+    fn handle_worktree_menu_action(
+        &mut self,
+        path: &Path,
+        id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         match id {
             "open-editor" => self.open_path_in_editor(path.to_path_buf(), cx),
+            "run-command" => {
+                if let Some(info) = self.rows.iter().find(|row| row.path == path).cloned() {
+                    self.open_run_command_dialog(info, window, cx);
+                }
+            }
             "open-terminal" => self.open_in_terminal_path(path.to_path_buf(), cx),
+            "open-remote" => {
+                if let Some(info) = self.rows.iter().find(|row| row.path == path).cloned() {
+                    self.open_remote_for(info, cx);
+                }
+            }
             "reveal-finder" => self.reveal_path_in_finder(path.to_path_buf(), cx),
             "copy-path" => self.copy_path_to_clipboard(path.to_path_buf(), cx),
             "toggle-select" => {
@@ -279,6 +395,7 @@ impl WtmApp {
     ) {
         match id {
             "new-worktree" => self.on_new_worktree(&NewWorktree, window, cx),
+            "fetch" => self.on_fetch_remote(&FetchRemote, window, cx),
             "prune" => self.on_prune_repo(&PruneRepo, window, cx),
             "reload" => self.on_reload(&Reload, window, cx),
             "add-repository" => self.on_add_repository(&AddRepository, window, cx),
@@ -310,6 +427,101 @@ impl WtmApp {
             }
         }
         cx.notify();
+    }
+
+    // -------------------------------------------------------------
+    // Open on Remote
+    // -------------------------------------------------------------
+
+    /// Build the worktree row menu's "Open on Remote…" item: enabled with
+    /// its real shortcut (none — this action's availability depends on the
+    /// selected worktree, so it has no fixed global keybinding) when
+    /// `data::remote_branch_url` can resolve a browsable URL for this
+    /// worktree's branch, disabled with the reason otherwise — never
+    /// present-but-broken.
+    ///
+    /// Resolves the URL synchronously, directly in this (already
+    /// synchronous, one-off, click-triggered) menu-building call, rather
+    /// than through `cx.background_spawn`: unlike `data::list_branches`/
+    /// `list_refs` (which walk every branch in the repository),
+    /// `remote_branch_url` is at most two `git2` lookups plus string
+    /// parsing — no loop over the ref set — and this app's context menus
+    /// have no "loading…" state to show while an item's availability is
+    /// still being determined. `select_repo` already makes the same
+    /// "small, synchronous git read directly in a click handler" tradeoff
+    /// for `data::open_repo` (full repo discovery + config parsing, more
+    /// work than this), so this follows existing precedent rather than
+    /// setting a new one.
+    fn open_remote_menu_item(&self, info: &WorktreeInfo) -> MenuItem {
+        let base = MenuItem::action("open-remote", "Open on Remote…").icon(icons::OPEN_EXTERNAL);
+        let Some(repo) = self.active.as_ref() else {
+            return base.disabled().shortcut("open a repository first");
+        };
+        let url = info
+            .branch
+            .as_deref()
+            .and_then(|branch| data::remote_branch_url(repo, branch));
+        match open_remote_disabled_reason(info.branch.is_some(), url.as_deref()) {
+            Some(reason) => base.disabled().shortcut(reason),
+            None => base,
+        }
+    }
+
+    /// ⌘? (no binding today — see `open_remote_menu_item`'s doc comment)
+    /// and the "Open on Remote…" command in the palette: open the selected
+    /// worktree's branch on its remote host. A no-op with nothing selected,
+    /// matching every other single-target action's guard in this file.
+    pub(super) fn on_open_remote(
+        &mut self,
+        _: &OpenRemote,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(ix) = self.selected else {
+            return;
+        };
+        let Some(info) = self.rows.get(ix).cloned() else {
+            return;
+        };
+        self.open_remote_for(info, cx);
+    }
+
+    /// Resolve `info`'s branch to a remote URL and open it in the system
+    /// browser. Shared by `on_open_remote` and the worktree row's context
+    /// menu item. Unlike `open_remote_menu_item`'s synchronous check above,
+    /// `data::open_url` (which forks a subprocess) runs through
+    /// `cx.background_spawn`, the same as `open_in_terminal_path`/
+    /// `reveal_path_in_finder` already do for their own subprocess calls.
+    pub(super) fn open_remote_for(&mut self, info: WorktreeInfo, cx: &mut Context<Self>) {
+        let Some(repo) = self.active.clone() else {
+            return;
+        };
+        let Some(branch) = info.branch.clone() else {
+            self.set_status(
+                "this worktree has no branch (detached HEAD) — nothing to open",
+                true,
+            );
+            cx.notify();
+            return;
+        };
+        let Some(url) = data::remote_branch_url(&repo, &branch) else {
+            self.set_status(format!("no remote is configured for '{branch}'"), true);
+            cx.notify();
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_spawn(async move { data::open_url(&url) })
+                .await;
+            this.update(cx, |this, cx| {
+                if let Err(e) = result {
+                    this.set_status(format!("could not open browser: {e}"), true);
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     pub(super) fn open_row_in_editor(&mut self, row_ix: usize, cx: &mut Context<Self>) {
@@ -588,5 +800,65 @@ fn repo_scoped_item(
         item.shortcut(shortcut)
     } else {
         item.disabled().shortcut("open a repository first")
+    }
+}
+
+/// The reason "Open on Remote…" is disabled, if it is — pulled out as its
+/// own pure function (no git, no `MenuItem`, no `WtmApp`) so it is directly
+/// unit testable without a real repository or worktree. `open_remote_menu_item`
+/// is the thin, otherwise-untested glue that feeds this `info.branch.is_some()`
+/// and `data::remote_branch_url`'s result and turns the answer into a real
+/// `MenuItem`.
+///
+/// `has_branch` false means a detached HEAD (nothing to open at all);
+/// `resolved_url` is `None` when `remote_branch_url` found no usable
+/// remote — see that function's own doc comment for the two cases it
+/// returns `None` for (no configured remote, or a remote URL shape it does
+/// not recognize).
+fn open_remote_disabled_reason(
+    has_branch: bool,
+    resolved_url: Option<&str>,
+) -> Option<&'static str> {
+    if !has_branch {
+        return Some("detached HEAD has no branch");
+    }
+    if resolved_url.is_none() {
+        return Some("no remote configured");
+    }
+    None
+}
+
+#[cfg(test)]
+mod open_remote_tests {
+    use super::open_remote_disabled_reason;
+
+    #[test]
+    fn detached_head_is_disabled_with_its_own_reason() {
+        assert_eq!(
+            open_remote_disabled_reason(false, None),
+            Some("detached HEAD has no branch")
+        );
+        // Even a (nonsensical) resolved URL cannot rescue a detached HEAD —
+        // "no branch to open" takes priority.
+        assert_eq!(
+            open_remote_disabled_reason(false, Some("https://example.com")),
+            Some("detached HEAD has no branch")
+        );
+    }
+
+    #[test]
+    fn a_branch_with_no_resolvable_remote_is_disabled() {
+        assert_eq!(
+            open_remote_disabled_reason(true, None),
+            Some("no remote configured")
+        );
+    }
+
+    #[test]
+    fn a_branch_with_a_resolved_url_is_enabled() {
+        assert_eq!(
+            open_remote_disabled_reason(true, Some("https://github.com/owner/repo/tree/main")),
+            None
+        );
     }
 }

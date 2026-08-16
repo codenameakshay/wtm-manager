@@ -173,6 +173,11 @@ impl WtmApp {
         match result {
             Ok(rows) => {
                 self.rows = rows;
+                // Every listing is shown in the currently active sort mode,
+                // not whatever order the backend happened to return — this
+                // must run before the selection logic below, which resolves
+                // indices against the final row order.
+                worktree_list::sort_rows(&mut self.rows, self.sort_mode, &self.activity);
                 // A pending selection (set right after a create) wins over
                 // the ordinary "keep the previous index in range" rule —
                 // but only once: `take()` consumes it so a later manual
@@ -197,6 +202,7 @@ impl WtmApp {
                 self.clamp_selection_to_filter(cx);
                 self.sync_watcher(cx);
                 self.load_details_for_selection(cx);
+                self.spawn_activity_load(generation, cx);
                 // A right-click menu open for a worktree row that a
                 // background refresh just removed (the worktree was deleted
                 // or pruned outside the app) would otherwise keep offering
@@ -223,6 +229,55 @@ impl WtmApp {
             }
         }
         cx.notify();
+    }
+
+    // -------------------------------------------------------------
+    // Worktree activity (staleness / Recent-mode sorting)
+    // -------------------------------------------------------------
+
+    /// Kick off `data::worktree_activity` for the rows just applied, in the
+    /// background — this is exactly the kind of git2-touching call the
+    /// module doc forbids on the UI thread. Guarded by `generation`, the
+    /// same counter `apply_rows` itself was just called with, so a slow
+    /// activity load for a repository or listing the user has since
+    /// navigated away from can never land on a newer one — see
+    /// `apply_activity`.
+    fn spawn_activity_load(&mut self, generation: u64, cx: &mut Context<Self>) {
+        if self.rows.is_empty() {
+            // Nothing to look up. Leaving a stale `activity` map around is
+            // harmless (the next repo's rows won't match its paths and
+            // `begin_activate_repo` clearing it is not this method's job),
+            // but there is also nothing useful to spawn a task for.
+            return;
+        }
+        let paths: Vec<PathBuf> = self.rows.iter().map(|row| row.path.clone()).collect();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_spawn(async move { data::worktree_activity(&paths) })
+                .await;
+            this.update(cx, |this, cx| this.apply_activity(generation, result, cx))
+                .ok();
+        })
+        .detach();
+    }
+
+    /// Apply a finished `worktree_activity` load, ignoring one superseded by
+    /// a newer listing — same `generation`-guard shape as `apply_rows`
+    /// itself. Age only ever affects display (a row's meta line) and
+    /// `Recent`-mode ordering, so landing this re-sorts and re-translates
+    /// the selection (`resort_preserving_selection`, in `selection.rs`)
+    /// rather than re-running the whole `apply_rows` pipeline.
+    fn apply_activity(
+        &mut self,
+        generation: u64,
+        result: HashMap<PathBuf, i64>,
+        cx: &mut Context<Self>,
+    ) {
+        if generation != self.generation {
+            return;
+        }
+        self.activity = result;
+        self.resort_preserving_selection(cx);
     }
 
     // -------------------------------------------------------------

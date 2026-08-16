@@ -246,6 +246,68 @@ impl WtmApp {
         };
         self.select(prev, cx);
     }
+
+    // -------------------------------------------------------------
+    // Sorting
+    // -------------------------------------------------------------
+
+    /// Change the active sort mode and re-sort `rows` immediately — not
+    /// waiting for the next reload — so the toolbar's sort control feels
+    /// instantaneous. A no-op when `mode` already matches: re-sorting an
+    /// already-correctly-ordered list would still walk every row and (via
+    /// `resort_preserving_selection`) force a repaint for nothing.
+    pub(super) fn set_sort_mode(&mut self, mode: SortMode, cx: &mut Context<Self>) {
+        if self.sort_mode == mode {
+            return;
+        }
+        self.sort_mode = mode;
+        self.resort_preserving_selection(cx);
+    }
+
+    /// Re-sort `self.rows` per the current `sort_mode`, translating the
+    /// selection across the reorder by worktree *path* rather than index.
+    ///
+    /// Selection is stored as indices into `rows` (`selected`,
+    /// `multi_selected`) purely as a compact way to reference "one of the
+    /// currently-listed rows" — those indices were never a stable identity,
+    /// and nothing before this method needed them to be, because the only
+    /// thing that used to reorder `rows` wholesale was a fresh listing
+    /// (`apply_rows`), which already treats the row set as having possibly
+    /// changed underneath the old indices entirely (a worktree removed,
+    /// another added) and falls back to "keep the same index if still in
+    /// range, else clamp" rather than trying to track identity.
+    ///
+    /// A sort-mode change (or a `Recent`-mode re-sort once activity data
+    /// lands — see `loading::apply_activity`) is different: it reorders the
+    /// *exact same* rows the user was already looking at, so "the worktree
+    /// I had selected is still selected" is a real, checkable promise here
+    /// in a way it isn't for an arbitrary reload. That is why this looks
+    /// the selection back up by `path` (a worktree's actual identity) after
+    /// sorting, instead of leaving the old indices to now point at whatever
+    /// row happens to have landed there. If a looked-up path is no longer
+    /// present (only possible if `rows` itself changed between capturing
+    /// and restoring, which no caller of this method does), that entry is
+    /// simply dropped rather than guessed at.
+    pub(super) fn resort_preserving_selection(&mut self, cx: &mut Context<Self>) {
+        let anchor_path = self
+            .selected
+            .and_then(|ix| self.rows.get(ix))
+            .map(|row| row.path.clone());
+        let multi_paths: Vec<PathBuf> = self
+            .multi_selected
+            .iter()
+            .filter_map(|&ix| self.rows.get(ix).map(|row| row.path.clone()))
+            .collect();
+
+        worktree_list::sort_rows(&mut self.rows, self.sort_mode, &self.activity);
+
+        self.selected = anchor_path.and_then(|path| self.rows.iter().position(|r| r.path == path));
+        self.multi_selected = multi_paths
+            .iter()
+            .filter_map(|path| self.rows.iter().position(|r| &r.path == path))
+            .collect();
+        cx.notify();
+    }
 }
 
 #[cfg(test)]

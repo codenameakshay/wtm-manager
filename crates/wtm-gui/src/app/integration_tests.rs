@@ -195,6 +195,37 @@ fn git(dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
+/// Run a fixture-setup git command with an explicit author/committer date,
+/// otherwise identical to `git` above. Used only where a test needs a
+/// *known, controlled* commit time (`worktree_activity`/`Recent`-sort
+/// tests) — an ordinary commit's real wall-clock time is fine everywhere
+/// else, but two commits made microseconds apart in a fast test run can
+/// land in the same second, which would make an ordering assertion flaky.
+fn git_with_date(dir: &Path, args: &[&str], epoch_secs: i64) -> String {
+    let date = format!("{epoch_secs} +0000");
+    let out = StdCommand::new("git")
+        .args(["-c", "commit.gpgsign=false"])
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_AUTHOR_NAME", "wtm-gui test")
+        .env("GIT_AUTHOR_EMAIL", "wtm-gui@example.invalid")
+        .env("GIT_COMMITTER_NAME", "wtm-gui test")
+        .env("GIT_COMMITTER_EMAIL", "wtm-gui@example.invalid")
+        .env("GIT_AUTHOR_DATE", &date)
+        .env("GIT_COMMITTER_DATE", &date)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .output()
+        .expect("failed to run git");
+    assert!(
+        out.status.success(),
+        "git {args:?} failed:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
 /// A real, throwaway git repository plus an isolated `WTM_CONFIG_DIR`, torn
 /// down together when dropped. Never touches a developer's real
 /// repositories or `~/.config/wtm` — see this module's doc comment.
@@ -310,6 +341,28 @@ impl Fixture {
 
     fn write_untracked(&self, dir: &Path, name: &str, contents: &str) {
         std::fs::write(dir.join(name), contents).expect("write untracked file");
+    }
+
+    /// Add a linked worktree on a new branch whose one commit (beyond the
+    /// shared tip every fresh worktree otherwise starts at) is stamped at
+    /// `epoch_secs` via [`git_with_date`] — for `Recent`-sort tests, which
+    /// need a *known* ordering of commit times, not just "whichever commit
+    /// happened to run first." Clean until the caller writes something
+    /// else into it.
+    fn add_worktree_with_commit_at(&self, branch: &str, epoch_secs: i64) -> PathBuf {
+        let path = self.worktree_path(branch);
+        git(
+            &self.root,
+            &["worktree", "add", path.to_str().unwrap(), "-b", branch],
+        );
+        std::fs::write(path.join(format!("{branch}.txt")), "content\n").unwrap();
+        git(&path, &["add", "."]);
+        git_with_date(
+            &path,
+            &["commit", "-m", &format!("advance {branch}")],
+            epoch_secs,
+        );
+        path
     }
 
     fn branch_exists(&self, name: &str) -> bool {
@@ -1464,5 +1517,440 @@ fn escape_clears_multi_selection_without_closing_anything(cx: &mut TestAppContex
         );
         assert!(app.dialog.is_none());
         assert_eq!(app.rows.len(), 2, "nothing must be removed by an Escape");
+    });
+}
+
+// ---------------------------------------------------------------------
+// 18. Sorting
+// ---------------------------------------------------------------------
+
+/// Read every row's display name, in listing order — the shape every
+/// sort-order assertion below checks.
+fn row_names(app: &WtmApp) -> Vec<String> {
+    app.rows
+        .iter()
+        .map(|r| r.display_name().to_string())
+        .collect()
+}
+
+#[gpui::test]
+fn sort_modes_order_rows_correctly_with_main_always_pinned_first(cx: &mut TestAppContext) {
+    let fx = Fixture::new(); // main (clean) + feature-x (dirty, same tip/time as main)
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    // `clean-one` shares main's tip (no advance) -- same commit, same time,
+    // clean. `old`/`newest` get their own commits stamped far enough from
+    // "now" (and from each other) that ordinary test-run jitter can never
+    // put them out of the intended order.
+    fx.add_worktree("clean-one");
+    fx.add_worktree_with_commit_at("old", now - 50_000);
+    fx.add_worktree_with_commit_at("newest", now + 50_000);
+
+    let repo = fx.open();
+    let (view, cx) = open_app(cx, Some(repo));
+    cx.run_until_parked();
+
+    view.read_with(cx, |app, _| {
+        assert_eq!(
+            app.activity.len(),
+            5, // main, feature-x, clean-one, old, newest
+            "every row's HEAD commit time must have loaded in the background"
+        );
+    });
+
+    // Name: the default mode already -- main first, then alphabetical
+    // (case-insensitive).
+    view.read_with(cx, |app, _| {
+        assert_eq!(app.sort_mode, SortMode::Name);
+        assert_eq!(
+            row_names(app),
+            vec!["main", "clean-one", "feature-x", "newest", "old"]
+        );
+    });
+
+    // Recent: main first, then most-recently-committed first. `clean-one`
+    // and `feature-x` share the exact same tip as main (neither was
+    // advanced), so they tie on commit time and fall back to alphabetical
+    // order -- "clean-one" before "feature-x".
+    view.update_in(cx, |app, _window, cx| {
+        app.set_sort_mode(SortMode::Recent, cx)
+    });
+    view.read_with(cx, |app, _| {
+        assert_eq!(
+            row_names(app),
+            vec!["main", "newest", "clean-one", "feature-x", "old"]
+        );
+    });
+
+    // Status: main first, then dirty (`feature-x`) ahead of every clean
+    // row, alphabetical within that clean tier. No row here has an
+    // upstream configured, so the ahead/behind tier is empty -- covered
+    // instead by `worktree_list`'s own pure `sort_rows` unit tests.
+    view.update_in(cx, |app, _window, cx| {
+        app.set_sort_mode(SortMode::Status, cx)
+    });
+    view.read_with(cx, |app, _| {
+        assert_eq!(
+            row_names(app),
+            vec!["main", "feature-x", "clean-one", "newest", "old"]
+        );
+    });
+}
+
+#[gpui::test]
+fn selection_survives_a_sort_mode_change_by_path_not_index(cx: &mut TestAppContext) {
+    let fx = Fixture::new();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    fx.add_worktree_with_commit_at("old", now - 50_000);
+    fx.add_worktree_with_commit_at("newest", now + 50_000);
+    let repo = fx.open();
+    let (view, cx) = open_app(cx, Some(repo));
+    cx.run_until_parked();
+
+    // Rows are (Name mode, the default): main, feature-x, newest, old --
+    // "newest" sorts third alphabetically among the three non-main rows.
+    // Under Recent mode it sorts second (right after main, being the most
+    // recent commit of all) -- a different index, which is exactly the
+    // case this test needs.
+    let (newest_ix_before, newest_path) = view.read_with(cx, |app, _| {
+        let ix = app
+            .rows
+            .iter()
+            .position(|r| r.display_name() == "newest")
+            .unwrap();
+        (ix, app.rows[ix].path.clone())
+    });
+    view.update_in(cx, |app, _window, cx| app.select(newest_ix_before, cx));
+    view.read_with(cx, |app, _| {
+        assert_eq!(app.selected, Some(newest_ix_before))
+    });
+
+    // Re-sort to Recent: "newest" moves toward the front of the list (right
+    // behind the pinned main worktree), so its index necessarily changes.
+    // It must remain the selected worktree regardless.
+    view.update_in(cx, |app, _window, cx| {
+        app.set_sort_mode(SortMode::Recent, cx)
+    });
+
+    view.read_with(cx, |app, _| {
+        let new_ix = app
+            .selected
+            .expect("still something selected after the re-sort");
+        assert_ne!(
+            new_ix, newest_ix_before,
+            "the index changing is the whole point of this test"
+        );
+        assert_eq!(
+            app.rows[new_ix].path, newest_path,
+            "the SAME worktree, by path, must still be selected"
+        );
+    });
+}
+
+#[gpui::test]
+fn multi_selection_survives_a_sort_mode_change_by_path_not_index(cx: &mut TestAppContext) {
+    let fx = Fixture::new();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    fx.add_worktree_with_commit_at("old", now - 50_000);
+    fx.add_worktree_with_commit_at("newest", now + 50_000);
+    let repo = fx.open();
+    let (view, cx) = open_app(cx, Some(repo));
+    cx.run_until_parked();
+
+    let (old_ix, newest_ix) = view.read_with(cx, |app, _| {
+        (
+            app.rows
+                .iter()
+                .position(|r| r.display_name() == "old")
+                .unwrap(),
+            app.rows
+                .iter()
+                .position(|r| r.display_name() == "newest")
+                .unwrap(),
+        )
+    });
+    let (old_path, newest_path) = view.read_with(cx, |app, _| {
+        (
+            app.rows[old_ix].path.clone(),
+            app.rows[newest_ix].path.clone(),
+        )
+    });
+
+    // `select` then `toggle` (not two toggles) for a deterministic
+    // baseline regardless of which row happened to be selected by default
+    // -- see the same pattern's comment in
+    // `bulk_remove_applies_to_selection_and_protects_main`.
+    view.update_in(cx, |app, _window, cx| app.select(old_ix, cx));
+    view.update_in(cx, |app, _window, cx| {
+        app.toggle_row_selection(newest_ix, cx)
+    });
+    view.read_with(cx, |app, _| assert_eq!(app.multi_selected.len(), 2));
+
+    view.update_in(cx, |app, _window, cx| {
+        app.set_sort_mode(SortMode::Recent, cx)
+    });
+
+    view.read_with(cx, |app, _| {
+        let selected_paths: BTreeSet<PathBuf> = app
+            .multi_selected
+            .iter()
+            .map(|&ix| app.rows[ix].path.clone())
+            .collect();
+        assert_eq!(
+            selected_paths,
+            BTreeSet::from([old_path.clone(), newest_path.clone()]),
+            "both originally-selected worktrees must still be selected, by path, \
+             even though the re-sort moved them to different indices"
+        );
+    });
+}
+
+// ---------------------------------------------------------------------
+// 19. Fetch
+// ---------------------------------------------------------------------
+
+#[gpui::test]
+fn fetch_keybinding_dispatches_and_reports_failure_offline(cx: &mut TestAppContext) {
+    // No test fixture in this file ever runs `git remote add` -- every
+    // repository `Fixture` builds has zero configured remotes. That makes
+    // `data::fetch`'s `default_remote_name` fail *before* it ever
+    // constructs a `git fetch` command (see `data.rs`), so dispatching the
+    // real ⌘⇧F binding here exercises the real production path end to end
+    // — action dispatch, the background spawn, `apply_fetch_result` —
+    // without the test ever touching the network, deterministically.
+    let fx = Fixture::new();
+    let repo = fx.open();
+    let (view, cx) = open_app(cx, Some(repo));
+    cx.run_until_parked();
+
+    view.read_with(cx, |app, _| {
+        assert!(!app.fetching);
+        assert!(app.status.is_none());
+    });
+
+    cx.simulate_keystrokes("cmd-shift-f");
+
+    view.read_with(cx, |app, _| {
+        assert!(!app.fetching, "the guard clears once the fetch settles");
+        let status = app
+            .status
+            .as_ref()
+            .expect("⌘⇧F must report an outcome in the status line");
+        assert!(status.error, "no configured remote is a real failure");
+        assert!(status.text.contains("fetch failed"), "{}", status.text);
+    });
+}
+
+#[gpui::test]
+fn fetch_in_flight_guard_blocks_a_second_concurrent_trigger(cx: &mut TestAppContext) {
+    let fx = Fixture::new();
+    let repo = fx.open();
+    let (view, cx) = open_app(cx, Some(repo));
+    cx.run_until_parked();
+
+    // Call the handler directly, twice, back to back, with nothing
+    // draining the background executor in between. `cx.simulate_keystrokes`
+    // always runs the executor to a full park before returning (see
+    // `TestAppContext::simulate_keystrokes`), which would let the first
+    // (offline, fast-failing) fetch finish before a second trigger could
+    // ever observe it in flight. `Entity::update_in` runs only the
+    // synchronous body of the closure, so this reliably captures the
+    // "first fetch's background task hasn't run yet" window a second
+    // trigger during a real, slow `git fetch` would land in — no timing
+    // race, and (see the previous test's doc comment) no network involved
+    // either way.
+    view.update_in(cx, |app, window, cx| {
+        app.on_fetch_remote(&FetchRemote, window, cx)
+    });
+    view.read_with(cx, |app, _| {
+        assert!(
+            app.fetching,
+            "the first trigger must flip the guard synchronously, before its background task runs"
+        );
+    });
+
+    view.update_in(cx, |app, window, cx| {
+        app.on_fetch_remote(&FetchRemote, window, cx)
+    });
+    view.read_with(cx, |app, _| {
+        assert!(
+            app.fetching,
+            "still in flight -- a second trigger must be a no-op, not start a second fetch"
+        );
+    });
+
+    // Let the one real background fetch settle.
+    cx.run_until_parked();
+    view.read_with(cx, |app, _| {
+        assert!(!app.fetching);
+        assert!(
+            app.status.as_ref().is_some_and(|s| s.error),
+            "the single fetch that actually ran still reports its (offline) outcome"
+        );
+    });
+}
+
+// ---------------------------------------------------------------------
+// Run command
+// ---------------------------------------------------------------------
+
+#[gpui::test]
+fn run_command_that_succeeds_reaches_finished_state_with_expected_output(cx: &mut TestAppContext) {
+    let fx = Fixture::new();
+    let repo = fx.open();
+    let (view, cx) = open_app(cx, Some(repo));
+    cx.run_until_parked();
+
+    cx.simulate_keystrokes("cmd-e");
+    view.read_with(cx, |app, _| {
+        assert!(
+            matches!(
+                app.run_command.as_ref().map(|s| &s.phase),
+                Some(run_panel::RunPhase::Form)
+            ),
+            "cmd-e opens the Run Command dialog on the selected worktree"
+        );
+    });
+
+    cx.simulate_input("echo hello");
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    // The drain loop polls the streaming channel on a 16ms
+    // `cx.background_executor().timer(..)` — see `submit_run_command`'s doc
+    // comment (and `submit_create_dialog`'s, which this mirrors) for why
+    // `advance_clock` is required to unstick it deterministically rather
+    // than racing real wall-clock time.
+    cx.executor().advance_clock(Duration::from_secs(2));
+
+    view.read_with(cx, |app, _| {
+        let state = app
+            .run_command
+            .as_ref()
+            .expect("dialog should still be open, showing the running phase");
+        let run_panel::RunPhase::Running(progress) = &state.phase else {
+            panic!("expected the running phase after submitting");
+        };
+        match progress
+            .outcome
+            .as_ref()
+            .expect("the run should have finished")
+        {
+            run_panel::RunOutcome::Finished { success, code } => {
+                assert!(*success, "`echo` must succeed");
+                assert_eq!(*code, Some(0));
+            }
+            run_panel::RunOutcome::StartFailed(e) => panic!("could not start `sh`: {e}"),
+        }
+        assert!(
+            progress.log.iter().any(|line| line.contains("hello")),
+            "the streamed output must contain the echoed text, got {:?}",
+            progress.log
+        );
+    });
+}
+
+#[gpui::test]
+fn run_command_that_fails_is_presented_as_a_completed_run_not_an_error(cx: &mut TestAppContext) {
+    let fx = Fixture::new();
+    let repo = fx.open();
+    let (view, cx) = open_app(cx, Some(repo));
+    cx.run_until_parked();
+
+    cx.simulate_keystrokes("cmd-e");
+    cx.simulate_input("exit 3");
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    cx.executor().advance_clock(Duration::from_secs(2));
+
+    view.read_with(cx, |app, _| {
+        let state = app
+            .run_command
+            .as_ref()
+            .expect("dialog should still be open, showing the running phase");
+        let run_panel::RunPhase::Running(progress) = &state.phase else {
+            panic!("expected the running phase after submitting");
+        };
+        match progress
+            .outcome
+            .as_ref()
+            .expect("the run should have finished")
+        {
+            run_panel::RunOutcome::Finished { success, code } => {
+                assert!(!success, "a non-zero exit is not a success");
+                assert_eq!(
+                    *code,
+                    Some(3),
+                    "the real exit code must be reported, not just pass/fail"
+                );
+            }
+            run_panel::RunOutcome::StartFailed(e) => {
+                panic!("a non-zero exit must never be presented as a start failure: {e}")
+            }
+        }
+    });
+}
+
+#[gpui::test]
+fn recent_command_appears_after_a_run_and_filtering_narrows_the_suggestions(
+    cx: &mut TestAppContext,
+) {
+    let fx = Fixture::new();
+    let repo = fx.open();
+    let (view, cx) = open_app(cx, Some(repo));
+    cx.run_until_parked();
+
+    cx.simulate_keystrokes("cmd-e");
+    cx.simulate_input("echo one");
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    cx.executor().advance_clock(Duration::from_secs(2));
+
+    // Close the finished run — the suggestion list is read from
+    // `WtmApp::recent_commands`, which outlives the dialog itself (session
+    // state, not dialog state), so this must still show up after reopening.
+    cx.simulate_keystrokes("escape");
+    view.read_with(cx, |app, _| {
+        assert!(app.run_command.is_none(), "escape closes the dialog");
+    });
+
+    let repo_path = fx.root().to_path_buf();
+    view.read_with(cx, |app, _| {
+        let recent = app
+            .recent_commands
+            .get(&repo_path)
+            .expect("the repository must have a recent-commands entry after one run");
+        assert_eq!(recent, &vec!["echo one".to_string()]);
+    });
+
+    cx.simulate_keystrokes("cmd-e");
+    view.read_with(cx, |app, _| {
+        let recent = app
+            .recent_commands
+            .get(&repo_path)
+            .cloned()
+            .unwrap_or_default();
+        assert_eq!(
+            run_panel::filter_recent(&recent, ""),
+            vec!["echo one"],
+            "an empty query shows every recent command"
+        );
+        assert_eq!(
+            run_panel::filter_recent(&recent, "one"),
+            vec!["echo one"],
+            "filtering by a substring keeps a match"
+        );
+        assert!(
+            run_panel::filter_recent(&recent, "nonexistent").is_empty(),
+            "filtering narrows out a non-matching query"
+        );
     });
 }

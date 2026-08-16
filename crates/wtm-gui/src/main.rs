@@ -26,6 +26,7 @@ mod diff_view;
 mod file_browser;
 mod palette;
 mod prefs;
+mod run_panel;
 mod settings;
 mod text_input;
 mod theme;
@@ -84,6 +85,7 @@ macro_rules! key_bindings {
 key_bindings! {
     "cmd-q", Quit, None, "⌘Q", "Quit";
     "cmd-r", app::Reload, Some("WtmApp"), "⌘R", "Reload";
+    "cmd-shift-f", app::FetchRemote, Some("WtmApp"), "⌘⇧F", "Fetch";
     "enter", app::OpenSelected, Some("WtmApp"), "⏎", "Open in Editor";
     "down", app::SelectNext, Some("WtmApp"), "↓", "Select Next";
     "up", app::SelectPrev, Some("WtmApp"), "↑", "Select Previous";
@@ -104,6 +106,7 @@ key_bindings! {
     "cmd-k", app::OpenPalette, Some("WtmApp"), "⌘K", "Command Palette";
     "cmd-f", app::FocusFilter, Some("WtmApp"), "⌘F", "Filter Worktrees";
     "cmd-shift-o", app::AddRepository, Some("WtmApp"), "⌘⇧O", "Add Repository";
+    "cmd-e", app::RunCommand, Some("WtmApp"), "⌘E", "Run Command";
 }
 
 /// The default window size and position, used when no saved frame exists or
