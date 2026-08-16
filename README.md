@@ -114,8 +114,9 @@ invocation of bare `wtm` — a script, an agent, CI — still just prints help
 and exits `0`; it never opens a window any more than it opens a full-screen
 UI.
 
-<!-- TODO: add a screenshot of the app to assets/ (e.g. assets/app.png) and
-     embed it here, the way the TUI/list/add/prune GIFs are embedded above. -->
+<p align="center">
+  <img src="assets/app.png" alt="wtm's main window: a sidebar listing three repositories (one flagged missing), a worktree list with New Worktree/Prune…/Filter controls, a selected row with its multi-select checkbox checked and dirty/20 behind/gone status pills, and a detail panel open on the Details tab showing path, HEAD, upstream, remote, ahead/behind, and recent commits" width="840">
+</p>
 
 **Installing it.** macOS only for now — GPUI supports Linux and Windows too,
 but this app hasn't been built or tested there. Two ways to get it:
@@ -162,6 +163,10 @@ command palette with fuzzy search over worktrees and actions,
 type-to-filter, multi-select (shift/⌘-click or a row checkbox) with bulk
 remove, right-click context menus covering the full action set, and a
 settings sheet. See [`docs/app.md`](docs/app.md) for the full guide.
+
+<p align="center">
+  <img src="assets/app-palette.png" alt="wtm's ⌘K command palette open over the main window, listing Worktrees (main, and other checked-out branches) and Commands (New Worktree, Remove Worktree, Prune…, Reload, Open in Editor, Open in Terminal) each with their keyboard shortcut" width="840">
+</p>
 
 | Shortcut | Action |
 | --- | --- |
