@@ -139,14 +139,23 @@ Once installed, the CLI finds it automatically, checking in order:
 `~/Applications/WTM.app`, a `wtm-gui` binary next to the `wtm` binary itself,
 then `wtm-gui` on `$PATH`.
 
+**Adding a repository.** Click the `+` next to "Repositories" in the
+sidebar, press `⌘⇧O`, or (with no repositories open yet) use the "Add
+Repository…" row in the sidebar's empty state — any of the three opens a
+native folder picker; pick a git repository and it's added to the sidebar
+and opened.
+
 **What it does:** a sidebar of every repository you've opened (most
 recent first), a worktree list with live status, create/remove/prune
 dialogs, a filesystem watcher that keeps the list current without a manual
-reload, a detail panel (upstream, path, HEAD, dirty files, recent commits),
-a ⌘K command palette with fuzzy search over worktrees and actions,
-type-to-filter, multi-select (shift/⌘-click) with bulk remove, right-click
-context menus, and a settings sheet. See
-[`docs/app.md`](docs/app.md) for the full guide.
+reload, a detail panel with Details/Files/Changes tabs (upstream, path,
+HEAD, dirty files, recent commits; a gitignore-aware file tree; an inline
+diff of uncommitted changes), a searchable base-ref picker for new
+worktrees (local and remote-tracking refs, tagged `current`/`default`/
+`worktree`/`remote`), a ⌘K command palette with fuzzy search over worktrees
+and actions, type-to-filter, multi-select (shift/⌘-click or a row checkbox)
+with bulk remove, right-click context menus covering the full action set,
+and a settings sheet. See [`docs/app.md`](docs/app.md) for the full guide.
 
 | Shortcut | Action |
 | --- | --- |
@@ -164,9 +173,13 @@ context menus, and a settings sheet. See
 | `⌘⇧R` | Reveal in Finder |
 | `⎋` | Close Dialog or Menu |
 | `⌘I` | Toggle Detail Panel |
+| `⌘1` | Detail Panel: Details Tab |
+| `⌘2` | Detail Panel: Files Tab |
+| `⌘3` | Detail Panel: Changes Tab |
 | `⌘,` | Settings |
 | `⌘K` | Command Palette |
 | `⌘F` | Filter Worktrees |
+| `⌘⇧O` | Add Repository |
 
 The same table is generated inside the app itself (Settings → Keyboard
 Shortcuts) from the same source, so it can't drift from what's actually

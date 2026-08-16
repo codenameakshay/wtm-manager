@@ -1,6 +1,6 @@
 [package]
 name = "wtm-gui"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 description = "The wtm desktop app: a native Git worktree manager built with GPUI"
 repository = "https://github.com/codenameakshay/wtm-manager"

@@ -29,6 +29,15 @@ than a stale entry. Right-click a sidebar entry for **Open**, **Reveal in
 Finder**, **Copy Path**, or **Remove from Sidebar** — the last one only
 forgets the registry entry; it never touches anything on disk.
 
+**Adding a repository** — the `+` button next to the "Repositories" header,
+`⌘⇧O`, or (when the sidebar is empty) the "Add Repository…" row in its own
+empty state — opens a native folder picker. Choosing a directory resolves it
+to a git repository, adds it to the registry, and selects it, the same
+`activate_repo` path a sidebar click already takes; choosing something that
+isn't a git repository reports that in the footer instead of adding a
+useless entry. All three affordances funnel through the same handler, so
+there's no difference in behavior between them, only in how you reach it.
+
 Opening the app from the Dock or Spotlight (no repository argument) falls
 back, in order: the current working directory's repository (rarely
 meaningful for a Dock launch), then the last repository that was open,
@@ -54,12 +63,32 @@ Watching can fail — a platform watch-descriptor limit, a permissions error —
 and that's never surfaced as an error message: it just means live refresh is
 unavailable for that repository and ⌘R keeps working normally.
 
+The list toolbar carries labeled New Worktree and Prune… buttons above the
+rows — the same actions ⌘N/⌘⇧P and the command palette already reach, made
+into a visible door instead of something only a shortcut table names. The
+Prune… button's label includes a live count of prunable worktrees (using
+the same baseline candidate rules — nothing merged/gone-specific until you
+open the dialog and turn those toggles on), so there's a reason to click it
+beyond curiosity.
+
 ## Create, remove, and prune
 
 **Create** (⌘N) is a two-phase dialog: fill in a branch name (with a
 filtered picker of existing branches below it, showing which are already
 checked out elsewhere or have a gone upstream) and an optional base ref,
-then submit. Once submitted there's no going back to the form — the dialog
+then submit. The Base field doubles as a searchable ref picker: typing (or
+just focusing the field) shows local branches, remote-tracking branches, and
+two synthetic entries — `current` (whatever the worktree you were looking at
+has checked out) and `default` (the repo's configured `default_base`, or
+`HEAD`) — each labeled with what it is. `origin/main` and local `main` are
+kept as separate, selectable entries rather than deduplicated into one
+guess, since branching from one or the other is a real, different choice.
+The field still accepts typed free text for a sha or a ref the picker
+doesn't list; Escape closes the picker without closing the dialog underneath
+it, and Enter picks whatever's highlighted or, if nothing matches, submits
+exactly what you typed.
+
+Once submitted there's no going back to the form — the dialog
 switches to a streaming progress log of the same setup automation
 (`setup.commands`/`setup.copy`) the CLI runs, reported line-by-line as it
 happens via `setup::run_streaming` (a second entry point into setup
@@ -86,11 +115,29 @@ same safety-filtered candidate list the Prune dialog uses.
 
 ## Detail panel
 
-Toggled with ⌘I: upstream, path, HEAD, dirty files, and recent commits for
-the selected worktree — the same facts the TUI's right-hand pane shows.
-Loaded in the background per selection and discarded if the selection moves
-on before it arrives, so a fast series of arrow-key presses never paints a
-stale worktree's details a moment late.
+Toggled with ⌘I: three tabs — Details, Files, Changes (⌘1/⌘2/⌘3) — for the
+selected worktree. The panel is 320px wide on Details and widens to 640px
+on Files/Changes, since a diff in a 320px column isn't one anyone can read.
+
+**Details** shows upstream, path, HEAD, dirty files, and recent commits —
+the same facts the TUI's right-hand pane shows. Loaded in the background per
+selection and discarded if the selection moves on before it arrives, so a
+fast series of arrow-key presses never paints a stale worktree's details a
+moment late.
+
+**Files** is a lazily-expanding tree of the worktree's working directory:
+one directory level loads per click, gitignore-aware, so an unexpanded
+`node_modules` costs exactly one row instead of a walk of its contents.
+Clicking a file shows its diff (if any) in a column beside the tree.
+
+**Changes** renders every uncommitted file's diff for the worktree in one
+scrolling column, inline, with line-number gutters — the same unified-diff
+shape `git diff` output uses, drawn directly instead of shelling out to a
+pager. A binary file, or a diff past the data layer's 2000-line-per-file
+cap, says so explicitly rather than rendering empty or silently truncated.
+Both tabs load through the same generation-counter discipline the Details
+tab already used, so a slow listing for a worktree you've since navigated
+away from can't overwrite what's currently on screen.
 
 ## Command palette
 
@@ -116,7 +163,15 @@ visible.
 
 Shift-click selects every visible row between the anchor and the clicked
 row; ⌘-click toggles one row in or out of the selection and moves the anchor
-to it, the same "last-touched row is the anchor" convention Finder uses.
+to it, the same "last-touched row is the anchor" convention Finder uses. A
+small checkbox at the left edge of each row is the mouse-only equivalent:
+hidden until you hover the row, except once a real multi-selection (two or
+more rows) exists, when every row's checkbox stays visible so the whole
+selection reads at a glance. Once that happens, an "N selected" bar appears
+between the toolbar and the list with Remove Selected and Clear buttons —
+the discoverable surface for the same bulk-remove path a multi-row ⌘⌫
+already reaches.
+
 When no dialog, overlay, or menu is open, Escape's last resort — instead of
 doing nothing — is to collapse a multi-selection back to its anchor row;
 that's the one thing Escape falls through to, since it's non-destructive,
@@ -124,10 +179,26 @@ consistent with Escape never falling through to anything that isn't.
 
 ## Context menus
 
-Right-clicking a worktree row selects it and opens Open in Editor, Open in
-Terminal, Reveal in Finder, Copy Path, and Remove. Right-clicking a sidebar
-repository opens it and offers Open, Reveal in Finder, Copy Path, and Remove
-from Sidebar.
+Every right-click menu shows each item's keyboard shortcut alongside its
+label — that's how a shortcut gets learned rather than looked up in this
+document.
+
+Right-clicking a worktree row selects it (unless a multi-selection is
+already active, in which case the row is only described, not folded into
+it) and opens Open in Editor (⏎), Open in Terminal (⌘⇧T), Reveal in Finder
+(⌘⇧R), Copy Path (⌘C), a selection toggle labeled Select/Add to
+Selection/Remove from Selection depending on the row's current state, and
+Remove… (⌘⌫) — disabled, with "main worktree" in its shortcut slot, on the
+main worktree.
+
+Right-clicking the list's own empty space (not a row) opens New Worktree
+(⌘N), Prune… (⌘⇧P), and Reload (⌘R) — shown but disabled when no repository
+is open, rather than hidden, so an empty window's right-click never looks
+broken — plus Add Repository… (⌘⇧O), which works either way.
+
+Right-clicking a sidebar repository opens it and offers Open, Reveal in
+Finder, Copy Path, and Remove from Sidebar — the last one only forgets the
+registry entry, the same guarantee as the sidebar's own row menu above.
 
 ## Settings
 
@@ -143,9 +214,14 @@ from Sidebar.
   variable. Also macOS-only for now, same as the app itself.
 - **Effective repository configuration** — a read-only view of `wtm`'s own
   layered TOML config as it applies to the open repository (path template,
-  default base, editor, protected branches, setup commands/copy entries),
-  with a **Reveal** button next to each config file it was merged from. This
-  is deliberately not editable here: it's the CLI's config, potentially
+  default base, editor, protected branches, setup commands/copy entries).
+  Both the global config and the repo config are optional and typically
+  don't exist on a fresh install, so each is shown home-relative with a
+  "Not created" note when its file is absent, next to a **Reveal** button —
+  labeled "Reveal Folder" instead of "Reveal" when the file itself isn't
+  there, since Reveal in Finder's own missing-path fallback would land on
+  the containing folder, not a file that doesn't exist. This is
+  deliberately not editable here: it's the CLI's config, potentially
   checked into the repository, and the app must never rewrite it.
 - **Keyboard Shortcuts** — generated from the same table `main.rs` uses to
   register the real key bindings (`cx.bind_keys`), so this list is
@@ -168,6 +244,38 @@ rename) and a schema version, so a crash mid-write can't truncate the file
 and a file from a newer build of the app is ignored wholesale rather than
 partially trusted. Neither file is read by the CLI — they exist purely for
 the app's own sidebar and window state.
+
+## Testing
+
+`cargo test -p wtm-gui` runs a headless integration suite alongside the
+crate's unit tests, driving the real app through gpui's `TestAppContext`
+(simulated keystrokes and clicks against a real temporary git repository)
+rather than launching it by hand or relying on screen capture, neither of
+which has been reliable in this environment. It asserts against git's own
+state, not just the absence of a panic: creating a worktree checks it shows
+up in `git worktree list`, removing one checks it leaves disk, removing the
+main worktree checks it's refused. Coverage includes startup, create
+(including the base-ref picker), remove, prune, multi-select (both
+shift/⌘-click and the bulk-remove path), filtering, the command palette, the
+detail panel's Files/Changes tabs, adding a repository, and Escape's
+layered close/collapse behavior.
+
+Two things are deliberately not covered, and the suite says so rather than
+faking it:
+
+- **The filesystem watcher.** It's driven by real, non-deterministic OS
+  filesystem events, which the headless dispatcher can't make reproducible —
+  and starting a real one inside a test would block the dispatcher's single
+  cooperative thread forever, since its consumer blocks on a channel `recv()`
+  that's only ever safe on the real app's dedicated background thread. Tests
+  disable the watcher and instead trigger the same `reload` it would
+  eventually cause directly (⌘R, or a create/remove/prune completing).
+- **The native folder picker** behind "Add Repository". gpui 0.2.2's
+  `TestPlatform` has no way to simulate the open/choose-existing dialog
+  `cx.prompt_for_paths` calls — it's `unimplemented!()` and panics if
+  invoked. The resolve-and-activate logic that runs once a path comes back
+  is still tested directly; only the platform picker call itself is
+  untested.
 
 ## Platform support
 

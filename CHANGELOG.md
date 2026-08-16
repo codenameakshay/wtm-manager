@@ -5,6 +5,57 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-08-16
+
+### Added
+
+- **App: discoverable repository/worktree actions.** A `+` button on the
+  sidebar's Repositories header opens a folder picker to add a repository
+  (also bound to `⌘⇧O`), matched by an entry in the sidebar's empty state
+  and in a new right-click menu on empty list space. The worktree list's
+  toolbar gained New Worktree and Prune buttons, the latter showing a live
+  count of prunable worktrees. Right-click context menus now cover the full
+  action set on worktree rows, sidebar repositories, and empty list space,
+  each item labeled with its keyboard shortcut.
+- **App: mouse-driven multi-select.** A checkbox appears on each worktree
+  row — on hover, or on every row once a multi-selection is active — plus
+  an "N selected" bar with Remove Selected and Clear buttons. Shift-click
+  and `⌘`-click still work exactly as before; the checkbox is another way
+  in, not a replacement.
+- **App: a base-ref picker for New Worktree.** The Base field is now a
+  searchable picker listing local and remote-tracking refs, each tagged
+  `current`/`default`/`worktree`/`remote` — `origin/main` and local `main`
+  show up as separate, selectable entries instead of one deduplicated
+  guess — while still accepting typed free text for a sha or a ref the
+  picker doesn't list.
+- **App: Files and Changes tabs on the detail panel**, beside Details
+  (`⌘1`/`⌘2`/`⌘3`). Files is a lazily-expanding, gitignore-aware tree of the
+  worktree's contents; Changes renders the worktree's uncommitted diff
+  inline, with line-number gutters. The panel widens from 320px to 640px on
+  these two tabs to give a diff room to be readable.
+- `crates/wtm-gui`: a headless integration-test suite (`cargo test -p
+  wtm-gui`), driving the real app through simulated keystrokes and clicks
+  against a real temporary git repository to check flows like create,
+  remove, prune, multi-select, and the command palette end to end.
+
+### Fixed
+
+- **App: Reveal in Finder always failed when the target didn't exist.**
+  Both of `wtm`'s config files are optional and typically absent on a
+  default install, and revealing a path that isn't there used to just
+  fail outright. It now reveals the nearest existing ancestor directory
+  instead.
+- **App: the Settings sheet showed config paths as a bare "…".** A flex
+  column was missing `flex_1`, so the path label had no claim on the row's
+  width and collapsed to nothing next to its button. Paths now render
+  home-relative, with a "Not created" note when the file doesn't exist yet.
+- **App: a fast worktree create could leave the New Worktree dialog stuck
+  showing progress.** A create with little or nothing to set up could
+  finish before the dialog's progress screen noticed — the completion
+  message could go unread — leaving the dialog open with nothing left to
+  wait for. Both the create dialog's progress polling and the text field's
+  cursor blink now use a timer the app reliably wakes up for.
+
 ## [0.3.0] - 2026-08-16
 
 ### Added
