@@ -60,7 +60,7 @@ mod dialog_forms;
 mod loading;
 mod selection;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::Duration;
@@ -80,10 +80,12 @@ use wtm::worktree::WorktreeDetails;
 use crate::assets::icons;
 use crate::context_menu::{ContextMenu, MenuItem};
 use crate::data::{self, OpenRepo};
-use crate::detail_panel;
+use crate::detail_panel::{self, DetailTab};
 use crate::dialogs::{
     self, CreatePhase, CreateState, Dialog, ProgressState, PruneState, RemoveState, StreamMsg,
 };
+use crate::diff_view::{self, ChangesState};
+use crate::file_browser::{self, FileBrowserState, SelectedFileDiff};
 use crate::palette::{self, PaletteState};
 use crate::prefs::{self, Appearance, Prefs};
 use crate::settings;
@@ -133,6 +135,12 @@ actions!(
         /// sidebar — the mouse-driven equivalent of running `wtm` inside it
         /// from a terminal.
         AddRepository,
+        /// Show the detail panel's Details tab.
+        ShowDetailsTab,
+        /// Show the detail panel's Files tab (the worktree file browser).
+        ShowFilesTab,
+        /// Show the detail panel's Changes tab (every uncommitted diff).
+        ShowChangesTab,
     ]
 );
 
@@ -225,6 +233,31 @@ pub struct WtmApp {
     /// events that must not invalidate each other's in-flight work.
     details_path: Option<PathBuf>,
     details_generation: u64,
+    /// Which section of the detail panel is showing — see
+    /// [`detail_panel::DetailTab`].
+    detail_tab: DetailTab,
+    /// Per-worktree file-browser state (expansion, loaded directory
+    /// listings, selected file), keyed by worktree path so switching the
+    /// selected worktree away and back leaves the tree exactly as the user
+    /// left it — see [`file_browser::FileBrowserState`].
+    file_trees: HashMap<PathBuf, FileBrowserState>,
+    /// Diff for whichever file is selected in the Files tab tree.
+    /// [`WtmApp::load_panel_data`]/[`WtmApp::select_tree_file`] load it in
+    /// the background, guarded by `details_generation` and
+    /// `selected_file_diff_key` together — see those methods.
+    selected_file_diff: SelectedFileDiff,
+    /// The `(worktree path, rel file path)` `selected_file_diff` belongs to
+    /// (or is loading for). Selecting a different file never changes
+    /// `details_generation` (only a worktree-selection change does), so
+    /// this is what lets a slow diff load for a file the user has since
+    /// clicked away from be told apart from the current one.
+    selected_file_diff_key: Option<(PathBuf, PathBuf)>,
+    /// Every changed file's diff for the selected worktree — the Changes
+    /// tab. Loaded the same way `details` is; see `details_generation`.
+    changes: ChangesState,
+    /// The worktree path `changes` belongs to (or is loading for) — mirrors
+    /// `details_path`.
+    changes_path: Option<PathBuf>,
     /// Right-click menu shared by worktree rows and sidebar repository rows
     /// — see [`MenuTarget`].
     context_menu: ContextMenu<MenuTarget>,
@@ -300,6 +333,12 @@ impl WtmApp {
             details: None,
             details_path: None,
             details_generation: 0,
+            detail_tab: DetailTab::default(),
+            file_trees: HashMap::new(),
+            selected_file_diff: SelectedFileDiff::Unselected,
+            selected_file_diff_key: None,
+            changes: ChangesState::Loading,
+            changes_path: None,
             context_menu: ContextMenu::new(),
             context_menu_target: None,
             settings_open: false,
@@ -452,6 +491,9 @@ impl Render for WtmApp {
             .on_action(cx.listener(Self::on_open_palette))
             .on_action(cx.listener(Self::on_focus_filter))
             .on_action(cx.listener(Self::on_add_repository))
+            .on_action(cx.listener(Self::on_show_details_tab))
+            .on_action(cx.listener(Self::on_show_files_tab))
+            .on_action(cx.listener(Self::on_show_changes_tab))
             .size_full()
             .flex()
             .text_color(theme.text)

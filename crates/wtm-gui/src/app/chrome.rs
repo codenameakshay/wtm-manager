@@ -742,11 +742,253 @@ impl WtmApp {
         self.detail_panel_visible && self.selected.is_some()
     }
 
+    /// The Details/Files/Changes tab switch, invoked both by the tab bar's
+    /// clicks below and by the `ShowDetailsTab`/`ShowFilesTab`/
+    /// `ShowChangesTab` actions (`⌘1`/`⌘2`/`⌘3`) registered in
+    /// `app::WtmApp`'s `Render` impl.
+    pub(super) fn on_show_details_tab(
+        &mut self,
+        _: &ShowDetailsTab,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.set_detail_tab(DetailTab::Details, cx);
+    }
+
+    pub(super) fn on_show_files_tab(
+        &mut self,
+        _: &ShowFilesTab,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.set_detail_tab(DetailTab::Files, cx);
+    }
+
+    pub(super) fn on_show_changes_tab(
+        &mut self,
+        _: &ShowChangesTab,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.set_detail_tab(DetailTab::Changes, cx);
+    }
+
+    fn set_detail_tab(&mut self, tab: DetailTab, cx: &mut Context<Self>) {
+        self.detail_tab = tab;
+        cx.notify();
+    }
+
+    /// The detail panel: a persistent header (branch/main badge/lock),
+    /// then the tab bar, then whichever tab's content is active. The outer
+    /// frame's width tracks the active tab — `detail_panel::WIDTH` for
+    /// Details, `detail_panel::WIDE_WIDTH` for Files/Changes, since a diff
+    /// needs real room (see that constant's doc).
     pub(super) fn render_detail_panel(&self, cx: &mut Context<Self>) -> AnyElement {
         let Some(info) = self.selected.and_then(|ix| self.rows.get(ix)) else {
             return div().into_any_element();
         };
-        detail_panel::render(info, self.details.as_ref(), cx).into_any_element()
+        let theme = Theme::of(cx);
+        let width = match self.detail_tab {
+            DetailTab::Details => detail_panel::WIDTH,
+            DetailTab::Files | DetailTab::Changes => detail_panel::WIDE_WIDTH,
+        };
+        let worktree_path = info.path.clone();
+
+        let content: AnyElement = match self.detail_tab {
+            DetailTab::Details => {
+                detail_panel::render_details(info, self.details.as_ref(), &theme).into_any_element()
+            }
+            DetailTab::Files => self.render_files_tab(&worktree_path, &theme, cx),
+            DetailTab::Changes => self.render_changes_tab(&theme),
+        };
+
+        div()
+            .w(px(width))
+            .h_full()
+            .flex_none()
+            .flex()
+            .flex_col()
+            .bg(theme.raised)
+            .border_l_1()
+            .border_color(theme.border)
+            .child(detail_panel::render_header(info, &theme))
+            .child(self.render_detail_tab_bar(&theme, cx))
+            .child(content)
+            .into_any_element()
+    }
+
+    fn render_detail_tab_bar(&self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap(px(4.0))
+            .px(px(12.0))
+            .py(px(8.0))
+            .border_b_1()
+            .border_color(theme.border)
+            .child(self.render_detail_tab(DetailTab::Details, "Details", theme, cx))
+            .child(self.render_detail_tab(DetailTab::Files, "Files", theme, cx))
+            .child(self.render_detail_tab(DetailTab::Changes, "Changes", theme, cx))
+    }
+
+    fn render_detail_tab(
+        &self,
+        tab: DetailTab,
+        label: &'static str,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let active = self.detail_tab == tab;
+        div()
+            .id(label)
+            .px(px(10.0))
+            .py(px(5.0))
+            .rounded(px(ui::RADIUS))
+            .cursor_default()
+            .text_size(px(12.0))
+            .when(active, |d| d.bg(theme.item_selected).text_color(theme.text))
+            .when(!active, |d| {
+                d.text_color(theme.text_tertiary)
+                    .hover(|s| s.bg(theme.item_wash))
+            })
+            .child(label)
+            .on_click(cx.listener(move |this, _, _window, cx| {
+                this.set_detail_tab(tab, cx);
+            }))
+    }
+
+    /// The Files tab: a fixed-width, independently scrolling tree column,
+    /// then the selected file's diff filling the rest of the panel.
+    fn render_files_tab(
+        &self,
+        worktree_path: &Path,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let tree = self.file_trees.get(worktree_path);
+        let tree_panel = self.render_file_tree(tree, theme, cx);
+        let diff_panel = self.render_selected_file_diff(theme);
+
+        div()
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .child(
+                div()
+                    .id("file-tree-scroll")
+                    .w(px(220.0))
+                    .flex_none()
+                    .h_full()
+                    .min_h_0()
+                    .flex()
+                    .flex_col()
+                    .overflow_y_scroll()
+                    .border_r_1()
+                    .border_color(theme.border)
+                    .py(px(6.0))
+                    .child(tree_panel),
+            )
+            .child(
+                div()
+                    .id("file-diff-scroll")
+                    .flex_1()
+                    .min_w_0()
+                    .h_full()
+                    .min_h_0()
+                    .flex()
+                    .flex_col()
+                    .overflow_y_scroll()
+                    .p(px(14.0))
+                    .child(diff_panel),
+            )
+            .into_any_element()
+    }
+
+    /// The tree column's content: a loading/error/empty state for the root
+    /// listing, or every currently visible row (`file_browser::visible_rows`)
+    /// with click handling wired here — expanding/collapsing a directory
+    /// row, selecting a file row — since that needs `Context<WtmApp>`,
+    /// which `file_browser` itself never touches (see its module doc).
+    fn render_file_tree(
+        &self,
+        tree: Option<&FileBrowserState>,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let Some(tree) = tree else {
+            return ui::empty_hint("Loading files…", theme).into_any_element();
+        };
+        match tree.dir_state(Path::new("")) {
+            None | Some(file_browser::DirState::Loading) => {
+                ui::empty_hint("Loading files…", theme).into_any_element()
+            }
+            Some(file_browser::DirState::Error(e)) => {
+                ui::empty_hint(format!("Could not list files: {e}"), theme).into_any_element()
+            }
+            Some(file_browser::DirState::Loaded(entries)) if entries.is_empty() => {
+                ui::empty_hint("This worktree has no files.", theme).into_any_element()
+            }
+            Some(file_browser::DirState::Loaded(_)) => {
+                let selected = tree.selected_file();
+                let rows = file_browser::visible_rows(tree);
+                div()
+                    .flex()
+                    .flex_col()
+                    .children(rows.into_iter().map(|row| {
+                        let rel_path = row.rel_path.to_path_buf();
+                        let is_dir = row.is_dir;
+                        file_browser::render_row(&row, selected, theme).on_click(cx.listener(
+                            move |this, _, _window, cx| {
+                                if is_dir {
+                                    this.toggle_file_dir(rel_path.clone(), cx);
+                                } else {
+                                    this.select_tree_file(rel_path.clone(), cx);
+                                }
+                            },
+                        ))
+                    }))
+                    .into_any_element()
+            }
+        }
+    }
+
+    fn render_selected_file_diff(&self, theme: &Theme) -> AnyElement {
+        match &self.selected_file_diff {
+            SelectedFileDiff::Unselected => {
+                ui::empty_hint("Select a file to see its changes.", theme).into_any_element()
+            }
+            SelectedFileDiff::Loading => ui::empty_hint("Loading diff…", theme).into_any_element(),
+            SelectedFileDiff::NoChanges => {
+                ui::empty_hint("This file has no uncommitted changes.", theme).into_any_element()
+            }
+            SelectedFileDiff::Error(e) => {
+                ui::empty_hint(format!("Could not load diff: {e}"), theme).into_any_element()
+            }
+            SelectedFileDiff::Changed(diff) => diff_view::render_diff(diff, theme),
+        }
+    }
+
+    /// The Changes tab: every uncommitted file's diff for the selected
+    /// worktree, in one scrolling column.
+    fn render_changes_tab(&self, theme: &Theme) -> AnyElement {
+        let content: AnyElement = match &self.changes {
+            ChangesState::Loading => ui::empty_hint("Computing changes…", theme).into_any_element(),
+            ChangesState::Error(e) => {
+                ui::empty_hint(format!("Could not compute changes: {e}"), theme).into_any_element()
+            }
+            ChangesState::Loaded(diffs) => diff_view::render_changes(diffs, theme),
+        };
+        div()
+            .id("changes-scroll")
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .overflow_y_scroll()
+            .p(px(14.0))
+            .child(content)
+            .into_any_element()
     }
 }
 

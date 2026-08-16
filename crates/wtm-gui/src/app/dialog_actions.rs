@@ -49,6 +49,7 @@ impl WtmApp {
         self.dialog = Some(Dialog::Create(state));
         window.focus(&branch_focus);
         self.load_create_branches(cx);
+        self.load_create_refs(cx);
         cx.notify();
     }
 
@@ -208,6 +209,195 @@ impl WtmApp {
         };
         let input = state.branch_input.clone();
         input.update(cx, |input, cx| input.set_value(name, window, cx));
+    }
+
+    /// Load the refs the Base field's picker offers, mirroring
+    /// `load_create_branches` above. `current_worktree` is whichever
+    /// worktree row is selected in the main list when the dialog opens — the
+    /// worktree the user is "currently looking at" for `RefKind::Current`'s
+    /// purposes (see `data::list_refs`'s doc comment) — or `None` if nothing
+    /// is selected, in which case no ref becomes `Current`.
+    fn load_create_refs(&mut self, cx: &mut Context<Self>) {
+        let Some(repo) = self.active.clone() else {
+            return;
+        };
+        let current_worktree = self
+            .selected
+            .and_then(|ix| self.rows.get(ix))
+            .map(|w| w.path.clone());
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_spawn(
+                    async move { data::list_refs(&repo, current_worktree.as_deref()) },
+                )
+                .await;
+            this.update(cx, |this, cx| {
+                let error = result.as_ref().err().cloned();
+                if let Some(Dialog::Create(state)) = &mut this.dialog {
+                    state.base_refs_loading = false;
+                    if let Ok(refs) = result {
+                        state.base_refs = refs;
+                    }
+                }
+                if let Some(e) = error {
+                    this.set_status(format!("could not list refs: {e}"), true);
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Fill the Base field from a picker click or an Enter on the
+    /// highlighted row, and close the picker — a pick is a complete answer,
+    /// not something that leaves the dropdown open waiting for a second
+    /// action. Ignores the pick if the dialog closed in the meantime, the
+    /// same guard `select_branch_in_create` uses.
+    pub(super) fn select_base_ref_in_create(
+        &mut self,
+        name: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(Dialog::Create(state)) = &mut self.dialog else {
+            return;
+        };
+        let input = state.base_input.clone();
+        input.update(cx, |input, cx| input.set_value(name, window, cx));
+        state.base_picker_open = false;
+        cx.notify();
+    }
+
+    /// Show the Base field's ref picker — `CreateState::new`'s reaction to
+    /// `base_input` gaining focus. A no-op once the dialog is no longer in
+    /// its form phase (or gone entirely), which a late-firing focus event
+    /// can still deliver after the user has already submitted or cancelled.
+    pub(crate) fn open_base_picker(&mut self, cx: &mut Context<Self>) {
+        if let Some(Dialog::Create(state)) = &mut self.dialog {
+            state.base_picker_open = true;
+            state.base_picker_highlight = 0;
+        }
+        cx.notify();
+    }
+
+    /// Hide the Base field's ref picker without touching focus or the
+    /// field's typed value — used both by `base_input` losing focus (the
+    /// user moved to another field) and, deliberately, by Escape (see
+    /// `close_base_picker_or_dialog`), which must not also blur the field:
+    /// the whole point of the picker doubling as free-text entry is that
+    /// dismissing it with Escape leaves the user right where they were,
+    /// mid-edit, not kicked out of the field.
+    pub(crate) fn close_base_picker(&mut self, cx: &mut Context<Self>) {
+        if let Some(Dialog::Create(state)) = &mut self.dialog {
+            state.base_picker_open = false;
+        }
+        cx.notify();
+    }
+
+    /// Mouse-hover reaction for a picker row, mirroring
+    /// `palette_set_highlight` — hovering a row moves the keyboard highlight
+    /// to it, so mouse and keyboard navigation never disagree about which
+    /// row Enter would pick.
+    pub(super) fn set_base_picker_highlight(&mut self, ix: usize, cx: &mut Context<Self>) {
+        if let Some(Dialog::Create(state)) = &mut self.dialog {
+            state.base_picker_highlight = ix;
+        }
+        cx.notify();
+    }
+
+    /// The Base field's `Submit` reaction (Enter). While the picker is
+    /// closed this is exactly `submit_create_dialog`, the same as the
+    /// branch field's Enter — the common case of typing a ref by hand and
+    /// hitting Enter to create the worktree. While the picker is *open*,
+    /// Enter means something narrower: pick whatever's highlighted, if
+    /// anything is (mirrors clicking a row). If nothing is highlighted —
+    /// the filtered list is empty, e.g. a sha the picker has no matching row
+    /// for — Enter instead just closes the picker, the explicit "use
+    /// exactly what I typed" affordance: the field's raw text is left
+    /// untouched, and a second Enter (picker now closed) submits it as the
+    /// base, verbatim.
+    pub(crate) fn submit_create_or_pick_base(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(Dialog::Create(state)) = &self.dialog else {
+            return;
+        };
+        if !state.base_picker_open {
+            self.submit_create_dialog(window, cx);
+            return;
+        }
+        let query = state.base_input.read(cx).value().to_string();
+        let filtered = dialogs::filter_refs(&state.base_refs, &query);
+        let highlighted = dialogs::clamp_highlight(state.base_picker_highlight, filtered.len());
+        let picked = filtered.get(highlighted).map(|r| r.name.clone());
+        match picked {
+            Some(name) => self.select_base_ref_in_create(name, window, cx),
+            None => self.close_base_picker(cx),
+        }
+    }
+
+    /// The Base field's `Cancel` reaction (Escape). While the picker is
+    /// open, Escape closes *only* the picker — this is what keeps Escape
+    /// from also closing the whole create dialog out from under someone who
+    /// only meant to dismiss the suggestion list; see `close_base_picker`'s
+    /// doc comment for why that also leaves focus and the typed value
+    /// alone. Only once the picker is already closed does Escape fall
+    /// through to the ordinary dialog-wide behavior every other field's
+    /// Cancel already has.
+    pub(crate) fn close_base_picker_or_dialog(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let picker_open =
+            matches!(&self.dialog, Some(Dialog::Create(state)) if state.base_picker_open);
+        if picker_open {
+            self.close_base_picker(cx);
+        } else {
+            self.close_dialog(window, cx);
+        }
+    }
+
+    /// Raw key handler on the create dialog's card, catching Up/Down for the
+    /// Base field's picker — like the palette's search field (see
+    /// `crate::palette`'s module doc), `TextInput`'s own keymap binds
+    /// neither, so nothing would move the highlight without this. A no-op
+    /// whenever the picker isn't open, so it never interferes with the
+    /// branch field or any other key handling in the dialog; no
+    /// `stop_propagation()` needed either, for the same reason
+    /// `on_palette_key_down` doesn't need one — `WtmApp`'s own `SelectNext`/
+    /// `SelectPrev` (also bound to Up/Down, at the root) already no-op while
+    /// `overlay_open()` is true, which it is for as long as this dialog is
+    /// open.
+    pub(crate) fn on_create_dialog_key_down(
+        &mut self,
+        event: &KeyDownEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(Dialog::Create(state)) = &self.dialog else {
+            return;
+        };
+        if !state.base_picker_open {
+            return;
+        }
+        let delta = match event.keystroke.key.as_str() {
+            "down" => 1,
+            "up" => -1,
+            _ => return,
+        };
+        let query = state.base_input.read(cx).value().to_string();
+        let len = dialogs::filter_refs(&state.base_refs, &query).len();
+
+        let Some(Dialog::Create(state)) = &mut self.dialog else {
+            return;
+        };
+        state.base_picker_highlight =
+            dialogs::move_highlight(state.base_picker_highlight, delta, len);
+        cx.notify();
     }
 
     pub(super) fn toggle_run_setup(&mut self, cx: &mut Context<Self>) {

@@ -46,6 +46,11 @@ impl WtmApp {
                 ui::modal_card(440.0, theme)
                     .id("create-dialog-card")
                     .on_click(|_, _, cx| cx.stop_propagation())
+                    // Catches Up/Down for the Base field's ref picker — see
+                    // `WtmApp::on_create_dialog_key_down`'s doc comment for
+                    // why this lives here rather than on `TextInput`'s own
+                    // keymap.
+                    .on_key_down(cx.listener(WtmApp::on_create_dialog_key_down))
                     .child(ui::modal_header(
                         "New Worktree",
                         Some(&format!("in {}", repo.name())),
@@ -73,7 +78,7 @@ impl WtmApp {
             .px(px(16.0))
             .py(px(14.0))
             .child(labeled_field("Branch", state.branch_input.clone(), theme))
-            .child(labeled_field("Base", state.base_input.clone(), theme))
+            .child(self.render_base_field(state, theme, cx))
             .child(
                 div()
                     .id("create-branch-list")
@@ -150,6 +155,106 @@ impl WtmApp {
                         }
                     }),
             )
+    }
+
+    /// The Base field: its label, the `TextInput` itself (doubling as the
+    /// picker's search field — see `dialogs::CreateState`'s doc comment on
+    /// why this dialog uses one field for both free-text entry and
+    /// filtering rather than a second, dedicated search box), and, while
+    /// `state.base_picker_open` is true, the floating ref picker directly
+    /// beneath it.
+    fn render_base_field(
+        &self,
+        state: &CreateState,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(4.0))
+            .child(
+                div()
+                    .text_size(px(11.5))
+                    .text_color(theme.text_tertiary)
+                    .child("Base"),
+            )
+            .child(state.base_input.clone())
+            .when(state.base_picker_open, |this| {
+                this.child(self.render_base_picker(state, theme, cx))
+            })
+    }
+
+    /// The Base field's ref picker itself: a raised, bordered, shadowed
+    /// panel — reusing `theme.raised`/`theme.border_strong`/`shadow_lg`,
+    /// the same treatment `ui::modal_card` and the context menu's panel
+    /// already use for "this sits above the rest of the dialog" — so it
+    /// reads as a floating result list even though (see the module doc
+    /// below) it's laid out in ordinary flow directly under the field
+    /// rather than absolutely positioned over what comes after it.
+    ///
+    /// Rendered inline, in the dialog's normal flex column, rather than via
+    /// `gpui::deferred`/`.absolute()` the way the palette and context menu
+    /// float over the *whole window*: those both escape their own view
+    /// entirely, which is exactly what an in-dialog dropdown must NOT do
+    /// here — it needs to stay clipped to, and scroll with, this same
+    /// modal card. Absolutely positioning it over the branch list/setup
+    /// toggle/footer that follow would need a pixel-accurate anchor this
+    /// module has no cheap way to compute (no bounds query is available at
+    /// render time), so this pushes that later content down instead — a
+    /// deliberate compromise over the reference design's true floating
+    /// overlay, traded for a z-order bug this dialog cannot end up with.
+    fn render_base_picker(
+        &self,
+        state: &CreateState,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let query = state.base_input.read(cx).value().to_string();
+        let filtered = dialogs::filter_refs(&state.base_refs, &query);
+        let highlighted = dialogs::clamp_highlight(state.base_picker_highlight, filtered.len());
+
+        div()
+            .id("base-ref-picker")
+            .mt(px(4.0))
+            .flex()
+            .flex_col()
+            .gap(px(2.0))
+            .max_h(px(220.0))
+            .overflow_y_scroll()
+            .p(px(4.0))
+            .rounded(px(12.0))
+            .bg(theme.raised)
+            .border_1()
+            .border_color(theme.border_strong)
+            .shadow_lg()
+            .children(if state.base_refs_loading {
+                vec![dialog_hint("loading refs…", theme).into_any_element()]
+            } else if filtered.is_empty() {
+                vec![dialog_hint(
+                    "no matching refs — press Enter to use what you typed",
+                    theme,
+                )
+                .into_any_element()]
+            } else {
+                filtered
+                    .iter()
+                    .enumerate()
+                    .map(|(ix, r)| {
+                        let name = r.name.clone();
+                        dialogs::render_ref_row(r, ix == highlighted, theme)
+                            .on_hover(cx.listener(move |this, hovered: &bool, _window, cx| {
+                                if *hovered {
+                                    this.set_base_picker_highlight(ix, cx);
+                                }
+                            }))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.select_base_ref_in_create(name.clone(), window, cx);
+                            }))
+                            .into_any_element()
+                    })
+                    .collect()
+            })
     }
 
     fn render_create_progress(

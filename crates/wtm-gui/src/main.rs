@@ -22,6 +22,8 @@ mod context_menu;
 mod data;
 mod detail_panel;
 mod dialogs;
+mod diff_view;
+mod file_browser;
 mod palette;
 mod prefs;
 mod settings;
@@ -95,6 +97,9 @@ key_bindings! {
     "cmd-shift-r", app::RevealInFinder, Some("WtmApp"), "⌘⇧R", "Reveal in Finder";
     "escape", app::CloseDialog, Some("WtmApp"), "⎋", "Close Dialog or Menu";
     "cmd-i", app::ToggleDetailPanel, Some("WtmApp"), "⌘I", "Toggle Detail Panel";
+    "cmd-1", app::ShowDetailsTab, Some("WtmApp"), "⌘1", "Detail Panel: Details Tab";
+    "cmd-2", app::ShowFilesTab, Some("WtmApp"), "⌘2", "Detail Panel: Files Tab";
+    "cmd-3", app::ShowChangesTab, Some("WtmApp"), "⌘3", "Detail Panel: Changes Tab";
     "cmd-,", app::OpenSettings, Some("WtmApp"), "⌘,", "Settings";
     "cmd-k", app::OpenPalette, Some("WtmApp"), "⌘K", "Command Palette";
     "cmd-f", app::FocusFilter, Some("WtmApp"), "⌘F", "Filter Worktrees";

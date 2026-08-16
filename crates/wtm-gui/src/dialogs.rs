@@ -22,7 +22,8 @@ use std::path::PathBuf;
 
 use gpui::prelude::*;
 use gpui::{
-    div, px, Context, Div, Entity, Hsla, ScrollHandle, SharedString, Stateful, Subscription,
+    div, px, Context, Div, Entity, Focusable, Hsla, ScrollHandle, SharedString, Stateful,
+    Subscription,
 };
 
 use wtm::commands::prune::PruneCandidate;
@@ -30,7 +31,7 @@ use wtm::model::WorktreeInfo;
 use wtm::setup::SetupEvent;
 
 use crate::app::WtmApp;
-use crate::data::{BranchInfo, OpenRepo};
+use crate::data::{BranchInfo, OpenRepo, RefInfo, RefKind};
 use crate::text_input::{InputEvent, TextInput};
 use crate::theme::Theme;
 use crate::ui;
@@ -56,10 +57,44 @@ pub struct CreateState {
     // stops firing.
     _branch_sub: Subscription,
     _base_sub: Subscription,
+    // Opens/closes the base-ref picker as `base_input` gains/loses focus —
+    // see `CreateState::new`'s doc comment on why focus, not a dedicated
+    // button, drives it.
+    _base_focus_sub: Subscription,
+    _base_blur_sub: Subscription,
     /// Branches loaded from `list_branches`, for the filtered picker below
     /// the branch field. Empty until the background load finishes.
+    ///
+    /// Deliberately still `list_branches`, not `list_refs`: this field names
+    /// a *new* branch, so a local branch already checked out elsewhere needs
+    /// exactly the disabled "checked out" treatment `list_branches`/
+    /// `render_branch_row` already give it (`wtm add` would refuse it) — and
+    /// this field has no use for `list_refs`' remote-tracking entries or its
+    /// `Current`/`Default` synthetic rows, none of which name something you
+    /// could create a *new* branch called.
     pub branches: Vec<BranchInfo>,
     pub branches_loading: bool,
+    /// Refs offered by the Base field's picker: local branches, remote-
+    /// tracking branches, and the synthetic `Current`/`Default` entries —
+    /// see `crate::data::list_refs`. Unlike `branches` above, a branch
+    /// checked out in another worktree is a perfectly good *base* to branch
+    /// from (only the *new* branch name can't collide with one already
+    /// checked out), so nothing here is ever disabled. Empty until the
+    /// background load finishes.
+    pub base_refs: Vec<RefInfo>,
+    pub base_refs_loading: bool,
+    /// Whether the Base field's floating ref picker is currently shown.
+    /// Opened by focusing `base_input` (click or Tab), closed by Escape, by
+    /// picking a row, or by the field losing focus — see
+    /// `WtmApp::open_base_picker`/`close_base_picker`.
+    pub base_picker_open: bool,
+    /// Keyboard highlight into the picker's *filtered* ref list. Not kept in
+    /// range on every keystroke — `clamp_highlight` resolves it against the
+    /// current filtered length wherever it's read, the same convention
+    /// `PaletteState::highlighted` uses for the same reason (the filtered
+    /// list, and therefore what counts as "in range", changes on every
+    /// keystroke).
+    pub base_picker_highlight: usize,
     pub run_setup: bool,
     /// Whether the repo has any setup commands or copy entries at all — the
     /// toggle is disabled and explained rather than hidden when this is
@@ -185,13 +220,49 @@ impl CreateState {
                 InputEvent::Changed => cx.notify(),
             },
         );
+        // Unlike `branch_sub`, `InputEvent::Submit`/`Cancel` here route
+        // through the picker first (`submit_create_or_pick_base`/
+        // `close_base_picker_or_dialog`) rather than straight to
+        // `submit_create_dialog`/`close_dialog` — see those methods' doc
+        // comments for why Enter/Escape mean something different while the
+        // picker is open. `Changed` still just repaints: a keystroke
+        // re-filters whichever of the picker's list or the "no matches"
+        // hint is showing, computed fresh at render time from `base_refs`.
         let base_sub = cx.subscribe_in(
             &base_input,
             window,
             |app: &mut WtmApp, _input, event, window, cx| match event {
-                InputEvent::Submit => app.submit_create_dialog(window, cx),
-                InputEvent::Cancel => app.close_dialog(window, cx),
-                InputEvent::Changed => {}
+                InputEvent::Submit => app.submit_create_or_pick_base(window, cx),
+                InputEvent::Cancel => app.close_base_picker_or_dialog(window, cx),
+                InputEvent::Changed => cx.notify(),
+            },
+        );
+
+        // The picker opens and closes with `base_input`'s own focus — a
+        // click or Tab into the field shows suggestions, moving focus
+        // elsewhere (to the branch field, say) hides them again — rather
+        // than a dedicated toggle button: this crate cannot add a new
+        // global key binding (that table lives in `main.rs`, owned by
+        // another task), and every dialog field here already grabs focus on
+        // click for free via `TextInput`'s `track_focus` (see
+        // `paint_mouse_listeners` in gpui's `div.rs`), so focus is the one
+        // signal already flowing through this exact field with no new
+        // wiring anywhere off-limits. Escape (`close_base_picker_or_dialog`
+        // above) closes the picker *without* blurring the field, so typing
+        // can continue right after — see that method's doc comment.
+        let base_focus_handle = base_input.focus_handle(cx);
+        let base_focus_sub = cx.on_focus(
+            &base_focus_handle,
+            window,
+            |app: &mut WtmApp, _window, cx| {
+                app.open_base_picker(cx);
+            },
+        );
+        let base_blur_sub = cx.on_blur(
+            &base_focus_handle,
+            window,
+            |app: &mut WtmApp, _window, cx| {
+                app.close_base_picker(cx);
             },
         );
 
@@ -203,8 +274,14 @@ impl CreateState {
             base_input,
             _branch_sub: branch_sub,
             _base_sub: base_sub,
+            _base_focus_sub: base_focus_sub,
+            _base_blur_sub: base_blur_sub,
             branches: Vec::new(),
             branches_loading: true,
+            base_refs: Vec::new(),
+            base_refs_loading: true,
+            base_picker_open: false,
+            base_picker_highlight: 0,
             run_setup: setup_available,
             setup_available,
             phase: CreatePhase::Form,
@@ -354,6 +431,136 @@ pub fn render_toggle(
                 })
                 .child(label.into()),
         )
+}
+
+// ---------------------------------------------------------------------
+// Base-ref picker (Base field, create dialog)
+// ---------------------------------------------------------------------
+
+/// Refs matching `query`, ranked by `crate::palette::fuzzy_match`'s score
+/// (best first) — the same fuzzy scorer the command palette uses, reused
+/// rather than reimplemented since `fuzzy_match` is a public function of
+/// this crate. Matching is against `display`, the same field the row
+/// renders. `sort_by_key` is stable, so an empty query — every ref scores
+/// `0` — leaves `refs`' own order untouched: `list_refs`' Current, Default,
+/// locals-then-remotes ordering is exactly what a picker should browse
+/// before the user has typed anything to rank by.
+pub fn filter_refs<'a>(refs: &'a [RefInfo], query: &str) -> Vec<&'a RefInfo> {
+    let mut scored: Vec<(i64, &RefInfo)> = refs
+        .iter()
+        .filter_map(|r| {
+            let m = crate::palette::fuzzy_match(query, &r.display)?;
+            Some((m.score, r))
+        })
+        .collect();
+    scored.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
+    scored.into_iter().map(|(_, r)| r).collect()
+}
+
+/// Resolve a stored highlight index against the *current* result count:
+/// `0` when there is nothing to highlight, otherwise clamped to the last
+/// valid index. Used both to decide which row paints as highlighted and,
+/// when Enter is pressed, which ref it actually picks — sharing this one
+/// function is what keeps those two agreeing after a keystroke shrinks the
+/// filtered list out from under a highlight that pointed further down.
+pub fn clamp_highlight(highlighted: usize, len: usize) -> usize {
+    if len == 0 {
+        0
+    } else {
+        highlighted.min(len - 1)
+    }
+}
+
+/// Move the picker's highlight by `delta` (`1` for Down, `-1` for Up),
+/// wrapping at either end — the same wraparound
+/// `WtmApp::palette_move_highlight` already uses for the command palette,
+/// so every fuzzy list in this app agrees on what Up from the top (or Down
+/// from the bottom) does. `0` when there is nothing to highlight.
+pub fn move_highlight(highlighted: usize, delta: i32, len: usize) -> usize {
+    if len == 0 {
+        return 0;
+    }
+    let clamped = clamp_highlight(highlighted, len) as i32;
+    (clamped + delta).rem_euclid(len as i32) as usize
+}
+
+/// The muted tag shown at a ref row's right edge, naming what the ref is —
+/// `None` for a plain local branch, which is the common, unremarkable case
+/// and reads better with no badge at all than with a "local" label on every
+/// single row.
+pub fn ref_kind_label(kind: &RefKind) -> Option<&'static str> {
+    match kind {
+        RefKind::Current => Some("current"),
+        RefKind::Default => Some("default"),
+        RefKind::Worktree => Some("worktree"),
+        RefKind::Local => None,
+        RefKind::Remote { .. } => Some("remote"),
+    }
+}
+
+/// One row in the base-ref picker: the ref's name, its kind tag if any (see
+/// [`ref_kind_label`]), and — when cheap to get — a second, muted line with
+/// its short sha and commit subject, which is what makes "which `main` did
+/// I mean" answerable at a glance. `highlighted` paints the same selected
+/// wash [`ui::row`] gives a keyboard-highlighted palette entry; the caller
+/// attaches `.on_click(...)`, the same split [`render_branch_row`] uses.
+///
+/// Deliberately has no disabled state, unlike `render_branch_row`: a
+/// `RefKind::Worktree` entry is checked out elsewhere, which only matters
+/// for the *branch name* field (`wtm add` would refuse to reuse that name)
+/// — as a *base* to branch from, it's exactly as valid as any other ref.
+pub fn render_ref_row(r: &RefInfo, highlighted: bool, theme: &Theme) -> Stateful<Div> {
+    let tag = ref_kind_label(&r.kind);
+    let has_meta = r.subject.is_some() || r.short_id.is_some();
+
+    ui::row(
+        SharedString::from(format!("ref-{}", r.name)),
+        highlighted,
+        theme,
+    )
+    .flex()
+    .flex_col()
+    .gap(px(1.0))
+    .child(
+        div()
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap(px(8.0))
+            .child(
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(px(13.0))
+                    .text_color(theme.text)
+                    .child(r.display.clone()),
+            )
+            .when_some(tag, |this, tag| {
+                this.child(
+                    div()
+                        .flex_none()
+                        .text_size(px(11.5))
+                        .text_color(theme.text_tertiary)
+                        .child(tag),
+                )
+            }),
+    )
+    .when(has_meta, |this| {
+        this.child(
+            div()
+                .flex()
+                .min_w_0()
+                .gap(px(6.0))
+                .text_size(px(11.5))
+                .text_color(theme.text_tertiary)
+                .when_some(r.short_id.clone(), |this, id| {
+                    this.child(div().flex_none().child(id))
+                })
+                .when_some(r.subject.clone(), |this, subject| {
+                    this.child(div().min_w_0().truncate().child(subject))
+                }),
+        )
+    })
 }
 
 // ---------------------------------------------------------------------
@@ -522,6 +729,127 @@ mod tests {
             is_checked_out: checked_out,
             upstream_gone: false,
         }
+    }
+
+    fn ref_info(name: &str, kind: RefKind) -> RefInfo {
+        RefInfo {
+            name: name.to_string(),
+            display: name.to_string(),
+            kind,
+            subject: None,
+            short_id: None,
+        }
+    }
+
+    // ---------------- Base-ref picker ----------------
+
+    #[test]
+    fn filter_refs_empty_query_returns_all_in_list_order() {
+        let refs = vec![
+            ref_info("main", RefKind::Current),
+            ref_info("HEAD", RefKind::Default),
+            ref_info("feature", RefKind::Local),
+            ref_info(
+                "origin/main",
+                RefKind::Remote {
+                    remote: "origin".to_string(),
+                },
+            ),
+        ];
+        let filtered = filter_refs(&refs, "");
+        let names: Vec<&str> = filtered.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, vec!["main", "HEAD", "feature", "origin/main"]);
+    }
+
+    #[test]
+    fn filter_refs_matches_fuzzy_subsequence_and_excludes_non_matches() {
+        let refs = vec![
+            ref_info("feature-login", RefKind::Local),
+            ref_info("main", RefKind::Current),
+            ref_info(
+                "origin/feature-logout",
+                RefKind::Remote {
+                    remote: "origin".to_string(),
+                },
+            ),
+        ];
+        let filtered = filter_refs(&refs, "flogin");
+        let names: Vec<&str> = filtered.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, vec!["feature-login"]);
+    }
+
+    #[test]
+    fn filter_refs_ranks_better_matches_first() {
+        // "main" matches "main" as a whole-word prefix (all boundary
+        // characters) and should outrank "domain", where the same letters
+        // are buried mid-word.
+        let refs = vec![
+            ref_info("domain", RefKind::Local),
+            ref_info("main", RefKind::Local),
+        ];
+        let filtered = filter_refs(&refs, "main");
+        let names: Vec<&str> = filtered.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, vec!["main", "domain"]);
+    }
+
+    #[test]
+    fn clamp_highlight_handles_empty_and_out_of_range() {
+        assert_eq!(clamp_highlight(0, 0), 0);
+        assert_eq!(clamp_highlight(5, 0), 0);
+        assert_eq!(clamp_highlight(5, 3), 2);
+        assert_eq!(clamp_highlight(1, 3), 1);
+    }
+
+    #[test]
+    fn move_highlight_steps_within_bounds() {
+        assert_eq!(move_highlight(0, 1, 3), 1);
+        assert_eq!(move_highlight(1, 1, 3), 2);
+        assert_eq!(move_highlight(2, -1, 3), 1);
+    }
+
+    #[test]
+    fn move_highlight_wraps_at_both_ends() {
+        // Down from the last row wraps to the first.
+        assert_eq!(move_highlight(2, 1, 3), 0);
+        // Up from the first row wraps to the last.
+        assert_eq!(move_highlight(0, -1, 3), 2);
+    }
+
+    #[test]
+    fn move_highlight_with_nothing_to_highlight_stays_zero() {
+        assert_eq!(move_highlight(0, 1, 0), 0);
+        assert_eq!(move_highlight(4, -1, 0), 0);
+    }
+
+    #[test]
+    fn move_highlight_clamps_a_stale_index_before_stepping() {
+        // A highlight that pointed past the end of a list that just shrank
+        // (a keystroke narrowed the results) is clamped, not carried
+        // out-of-bounds, before delta is applied.
+        assert_eq!(move_highlight(10, 1, 3), 0);
+        assert_eq!(move_highlight(10, -1, 3), 1);
+    }
+
+    #[test]
+    fn ref_kind_label_maps_every_kind() {
+        assert_eq!(ref_kind_label(&RefKind::Current), Some("current"));
+        assert_eq!(ref_kind_label(&RefKind::Default), Some("default"));
+        assert_eq!(ref_kind_label(&RefKind::Worktree), Some("worktree"));
+        assert_eq!(ref_kind_label(&RefKind::Local), None);
+        assert_eq!(
+            ref_kind_label(&RefKind::Remote {
+                remote: "origin".to_string()
+            }),
+            Some("remote")
+        );
+        // The tag names the *kind*, not which remote — an "upstream" remote
+        // reads the same as "origin".
+        assert_eq!(
+            ref_kind_label(&RefKind::Remote {
+                remote: "upstream".to_string()
+            }),
+            Some("remote")
+        );
     }
 
     #[test]

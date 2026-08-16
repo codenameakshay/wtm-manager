@@ -1,5 +1,7 @@
 //! The detail panel: everything known about the selected worktree, rendered
-//! as a fixed-width inspector down the right edge of the window.
+//! down the right edge of the window as a tabbed inspector — Details (what
+//! this module always showed), Files (`crate::file_browser`), and Changes
+//! (`crate::diff_view`).
 //!
 //! Pure rendering only, in the spirit of [`crate::worktree_list`]: this
 //! module takes already-loaded [`WorktreeInfo`] and [`WorktreeDetails`]
@@ -8,6 +10,13 @@
 //! state, which is what lets `details` legitimately be `None` (still
 //! loading) without this module knowing anything about *why*.
 //!
+//! This module only renders the Details tab's content plus the header
+//! shared by every tab; the outer frame (width, background, tab bar) is
+//! assembled by `crate::app::chrome`, which is also what wires the tab
+//! bar's clicks and the Files tab's tree clicks — both need
+//! `Context<WtmApp>`, which this module deliberately never touches. See
+//! `chrome::render_detail_panel`.
+//!
 //! `WorktreeDetails::commits` (see `wtm::worktree::CommitLine`) only carries
 //! an abbreviated commit id and its first summary line — no author or
 //! timestamp — so the commit rows below show sha + subject only.
@@ -15,7 +24,7 @@
 //! for the day `CommitLine` grows a timestamp field.
 
 use gpui::prelude::*;
-use gpui::{div, px, AnyElement, App, SharedString};
+use gpui::{div, px, AnyElement, SharedString};
 use wtm::model::WorktreeInfo;
 use wtm::worktree::{CommitLine, WorktreeDetails};
 
@@ -23,9 +32,30 @@ use crate::assets::icons;
 use crate::theme::Theme;
 use crate::ui;
 
-/// Fixed width of the panel, so the parent can size the layout around it
-/// without measuring content.
+/// Panel width when the Details tab is active — the original, unchanged
+/// fixed inspector width.
 pub const WIDTH: f32 = 320.0;
+
+/// Panel width when the Files or Changes tab is active. A diff needs real
+/// room: at `WIDTH` a unified diff's gutter alone would eat a third of the
+/// available space. Roughly double `WIDTH` fits a file tree column plus a
+/// diff wide enough for ~70-80 monospace characters before horizontal
+/// scrolling kicks in (see `crate::diff_view`'s "Long lines" doc), while
+/// still leaving the worktree list a usable width at the window's default
+/// 1180px size. Below the window's 820px minimum the list's own
+/// `flex_1`/`min_w_0` lets it shrink rather than break — a real tradeoff at
+/// the smallest window size, accepted in favor of a diff that's actually
+/// legible the rest of the time.
+pub const WIDE_WIDTH: f32 = 640.0;
+
+/// Which section of the detail panel is currently shown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DetailTab {
+    #[default]
+    Details,
+    Files,
+    Changes,
+}
 
 /// Fixed width of a fact row's label column (`fact_row`, `skeleton_fact_row`).
 /// Wide enough to fit "Ahead/Behind" — the longest label in use — on one
@@ -33,45 +63,35 @@ pub const WIDTH: f32 = 320.0;
 /// needs `.truncate()` as a backstop rather than relying on width alone.
 const LABEL_WIDTH: f32 = 88.0;
 
-/// Render the detail panel for `info`, with `details` loaded asynchronously
-/// by the caller (`None` while still loading).
-pub fn render(
+/// The Details tab's content: the fact list, status pills, and recent
+/// commits. Unchanged from before this panel grew Files/Changes tabs beside
+/// it — `chrome::render_detail_panel` now supplies the outer frame and tab
+/// bar this used to build itself.
+pub fn render_details(
     info: &WorktreeInfo,
     details: Option<&WorktreeDetails>,
-    cx: &App,
+    theme: &Theme,
 ) -> impl IntoElement {
-    let theme = Theme::of(cx);
-
     div()
-        .w(px(WIDTH))
-        .h_full()
-        .flex_none()
+        .flex_1()
+        .min_h_0()
+        .overflow_hidden()
         .flex()
         .flex_col()
-        .bg(theme.raised)
-        .border_l_1()
-        .border_color(theme.border)
-        .child(render_header(info, &theme))
-        .child(
-            div()
-                .flex_1()
-                .min_h_0()
-                .overflow_hidden()
-                .flex()
-                .flex_col()
-                .gap(px(18.0))
-                .px(px(16.0))
-                .py(px(14.0))
-                .child(render_facts(info, details, &theme))
-                .child(render_status(info, &theme))
-                .child(render_commits(details, &theme)),
-        )
+        .gap(px(18.0))
+        .px(px(16.0))
+        .py(px(14.0))
+        .child(render_facts(info, details, theme))
+        .child(render_status(info, theme))
+        .child(render_commits(details, theme))
 }
 
 /// Branch name, the `main` badge, and a lock indicator — the same badges
 /// `worktree_list` shows on a row, so recognizing the selected worktree in
-/// the panel takes no relearning.
-fn render_header(info: &WorktreeInfo, theme: &Theme) -> impl IntoElement {
+/// the panel takes no relearning. Shown above the tab bar regardless of
+/// which tab is active, so the user always knows whose files/changes
+/// they're looking at.
+pub fn render_header(info: &WorktreeInfo, theme: &Theme) -> impl IntoElement {
     div()
         .w_full()
         .min_w_0()

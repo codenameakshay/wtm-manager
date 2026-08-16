@@ -47,10 +47,18 @@ impl WtmApp {
         self.active = Some(repo);
         self.rows.clear();
         self.selected = None;
+        // Worktree paths from the old repository are meaningless under the
+        // new one (and could, in principle, collide with a path the new
+        // repository also happens to use) — drop the file browser's
+        // per-worktree cache outright rather than leaving it to be
+        // reclaimed piecemeal by `load_panel_data`.
+        self.file_trees.clear();
         // Clears any detail data left over from the previous repository —
         // `load_details_for_selection` sees `self.selected` is now `None`
         // and degrades to "nothing loaded" rather than showing a stale
-        // worktree's commits under the new repo's name for a frame.
+        // worktree's commits under the new repo's name for a frame. It also
+        // clears the Files/Changes tabs' data the same way — see
+        // `load_panel_data`.
         self.load_details_for_selection(cx);
     }
 
@@ -284,16 +292,22 @@ impl WtmApp {
     // Detail panel
     // -------------------------------------------------------------
 
+    /// The path of whichever worktree row is currently selected, if any.
+    /// Factored out so the Files/Changes tab loading below — which keys its
+    /// per-worktree state off the same row — doesn't repeat the lookup.
+    fn selected_worktree_path(&self) -> Option<PathBuf> {
+        self.selected
+            .and_then(|ix| self.rows.get(ix))
+            .map(|row| row.path.clone())
+    }
+
     /// Load detail data for whichever row is selected, discarding the
     /// result if the selection has moved on by the time it arrives. A no-op
     /// when the selected path hasn't changed, so the two `apply_rows` passes
     /// of a single `reload` (fast, then with status) don't each kick off
     /// their own redundant load for the same worktree.
     pub(super) fn load_details_for_selection(&mut self, cx: &mut Context<Self>) {
-        let path = self
-            .selected
-            .and_then(|ix| self.rows.get(ix))
-            .map(|row| row.path.clone());
+        let path = self.selected_worktree_path();
         if self.details_path == path {
             return;
         }
@@ -303,6 +317,11 @@ impl WtmApp {
         self.details = None;
         self.details_path = path.clone();
         cx.notify();
+
+        // The detail panel's Files/Changes tabs are keyed off this exact
+        // same selection change and guarded by this exact same generation
+        // counter — see `load_panel_data`'s doc.
+        self.load_panel_data(path.clone(), cx);
 
         let Some(path) = path else {
             return; // Nothing selected: leave the panel showing nothing.
@@ -329,6 +348,236 @@ impl WtmApp {
             return;
         }
         self.details = details;
+        cx.notify();
+    }
+
+    // -------------------------------------------------------------
+    // Detail panel: Files / Changes tabs
+    // -------------------------------------------------------------
+    //
+    // Both tabs' data loads the same way `details` does above, and shares
+    // its exact `details_generation` counter rather than keeping a
+    // duplicate one: this method only ever runs from the same call site
+    // `load_details_for_selection` already gated on "the selection actually
+    // changed", so a second, independent counter would move in lockstep
+    // with `details_generation` anyway — reusing it is one fewer piece of
+    // state that could theoretically drift out of sync with the other.
+    //
+    // The one load here `details_generation` alone can't guard is the
+    // selected file's diff: clicking a different file in the Files tab
+    // tree doesn't change the *worktree* selection, so it doesn't bump
+    // `details_generation`. `selected_file_diff_key` (a `(worktree, rel
+    // path)` pair set synchronously before the load spawns) covers that
+    // dimension instead — see `select_tree_file`/`apply_file_diff`.
+
+    /// (Re)prime the Files and Changes tabs for `path`, the worktree that
+    /// just became selected (or `None` when nothing is). Ensures the file
+    /// tree's root — and any directory the user had previously expanded for
+    /// this worktree — is loaded, resumes loading whatever file was
+    /// selected in that worktree's tree, and (re)loads the full
+    /// `worktree_diff` for the Changes tab.
+    fn load_panel_data(&mut self, path: Option<PathBuf>, cx: &mut Context<Self>) {
+        let generation = self.details_generation;
+
+        let Some(path) = path else {
+            self.selected_file_diff = SelectedFileDiff::Unselected;
+            self.selected_file_diff_key = None;
+            self.changes = ChangesState::Loading;
+            self.changes_path = None;
+            return;
+        };
+
+        let tree = self.file_trees.entry(path.clone()).or_default();
+        let dirs_to_load = tree.dirs_needing_load();
+        for rel_dir in &dirs_to_load {
+            tree.set_loading(rel_dir.clone());
+        }
+        let selected_file = tree.selected_file().map(Path::to_path_buf);
+        for rel_dir in dirs_to_load {
+            self.spawn_dir_load(path.clone(), rel_dir, generation, cx);
+        }
+
+        match selected_file {
+            Some(rel) => self.spawn_file_diff_load(path.clone(), rel, generation, cx),
+            None => {
+                self.selected_file_diff = SelectedFileDiff::Unselected;
+                self.selected_file_diff_key = None;
+            }
+        }
+
+        self.changes = ChangesState::Loading;
+        self.changes_path = Some(path.clone());
+        self.spawn_changes_load(path, generation, cx);
+    }
+
+    fn spawn_dir_load(
+        &mut self,
+        worktree: PathBuf,
+        rel_dir: PathBuf,
+        generation: u64,
+        cx: &mut Context<Self>,
+    ) {
+        cx.spawn(async move |this, cx| {
+            let wt = worktree.clone();
+            let rel = rel_dir.clone();
+            let result = cx
+                .background_spawn(async move { data::list_files(&wt, &rel) })
+                .await;
+            this.update(cx, |this, cx| {
+                this.apply_dir_loaded(worktree, rel_dir, generation, result, cx)
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Apply a finished directory listing into whichever worktree's tree it
+    /// belongs to, ignoring one superseded by a newer selection. Applied
+    /// into `file_trees` by worktree path rather than only into "the
+    /// currently selected one" — a listing that lands after the user has
+    /// already moved on but *before* `details_generation` changed again
+    /// (i.e. the same worktree is still selected) should still update that
+    /// worktree's cache.
+    fn apply_dir_loaded(
+        &mut self,
+        worktree: PathBuf,
+        rel_dir: PathBuf,
+        generation: u64,
+        result: Result<Vec<data::FileEntry>, String>,
+        cx: &mut Context<Self>,
+    ) {
+        if generation != self.details_generation {
+            return;
+        }
+        if let Some(tree) = self.file_trees.get_mut(&worktree) {
+            match result {
+                Ok(entries) => tree.set_loaded(rel_dir, entries),
+                Err(e) => tree.set_error(rel_dir, e),
+            }
+        }
+        cx.notify();
+    }
+
+    fn spawn_file_diff_load(
+        &mut self,
+        worktree: PathBuf,
+        rel_path: PathBuf,
+        generation: u64,
+        cx: &mut Context<Self>,
+    ) {
+        self.selected_file_diff = SelectedFileDiff::Loading;
+        self.selected_file_diff_key = Some((worktree.clone(), rel_path.clone()));
+        let key = (worktree.clone(), rel_path.clone());
+        cx.spawn(async move |this, cx| {
+            let wt = worktree.clone();
+            let rel = rel_path.clone();
+            let result = cx
+                .background_spawn(async move { data::file_diff(&wt, &rel) })
+                .await;
+            this.update(cx, |this, cx| {
+                this.apply_file_diff(key, generation, result, cx)
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Apply a finished single-file diff load. Guarded by both
+    /// `details_generation` (a worktree-selection change since this was
+    /// spawned) and `selected_file_diff_key` (a different file selected in
+    /// the *same* worktree since this was spawned) — see this module's
+    /// section doc for why the key is needed in addition to the generation.
+    fn apply_file_diff(
+        &mut self,
+        key: (PathBuf, PathBuf),
+        generation: u64,
+        result: Result<Option<data::FileDiff>, String>,
+        cx: &mut Context<Self>,
+    ) {
+        if generation != self.details_generation {
+            return;
+        }
+        if self.selected_file_diff_key.as_ref() != Some(&key) {
+            return;
+        }
+        self.selected_file_diff = match result {
+            Ok(Some(diff)) => SelectedFileDiff::Changed(diff),
+            Ok(None) => SelectedFileDiff::NoChanges,
+            Err(e) => SelectedFileDiff::Error(e),
+        };
+        cx.notify();
+    }
+
+    fn spawn_changes_load(&mut self, worktree: PathBuf, generation: u64, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            let wt = worktree.clone();
+            let result = cx
+                .background_spawn(async move { data::worktree_diff(&wt) })
+                .await;
+            this.update(cx, |this, cx| {
+                this.apply_changes(worktree, generation, result, cx)
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Apply a finished `worktree_diff` load, ignoring one superseded by a
+    /// newer selection — the same `generation`-guard shape as
+    /// `apply_details`.
+    fn apply_changes(
+        &mut self,
+        worktree: PathBuf,
+        generation: u64,
+        result: Result<Vec<data::FileDiff>, String>,
+        cx: &mut Context<Self>,
+    ) {
+        if generation != self.details_generation {
+            return;
+        }
+        if self.changes_path.as_ref() != Some(&worktree) {
+            return;
+        }
+        self.changes = match result {
+            Ok(diffs) => ChangesState::Loaded(diffs),
+            Err(e) => ChangesState::Error(e),
+        };
+        cx.notify();
+    }
+
+    // -------------------------------------------------------------
+    // Detail panel: Files tab interactions
+    // -------------------------------------------------------------
+
+    /// Toggle a directory row's expansion in the currently selected
+    /// worktree's tree, kicking off its listing in the background the first
+    /// time it's expanded (see `FileBrowserState::dirs_needing_load` — a
+    /// re-expand after a collapse reuses the cached listing instead).
+    /// A no-op when nothing is selected.
+    pub(super) fn toggle_file_dir(&mut self, rel_dir: PathBuf, cx: &mut Context<Self>) {
+        let Some(path) = self.selected_worktree_path() else {
+            return;
+        };
+        let generation = self.details_generation;
+        let tree = self.file_trees.entry(path.clone()).or_default();
+        let now_expanded = tree.toggle_expanded(rel_dir.clone());
+        if now_expanded && tree.dir_state(&rel_dir).is_none() {
+            tree.set_loading(rel_dir.clone());
+            self.spawn_dir_load(path, rel_dir, generation, cx);
+        }
+        cx.notify();
+    }
+
+    /// Select a file in the currently selected worktree's tree, loading its
+    /// diff in the background. A no-op when nothing is selected.
+    pub(super) fn select_tree_file(&mut self, rel_path: PathBuf, cx: &mut Context<Self>) {
+        let Some(path) = self.selected_worktree_path() else {
+            return;
+        };
+        let generation = self.details_generation;
+        let tree = self.file_trees.entry(path.clone()).or_default();
+        tree.select_file(rel_path.clone());
+        self.spawn_file_diff_load(path, rel_path, generation, cx);
         cx.notify();
     }
 }
