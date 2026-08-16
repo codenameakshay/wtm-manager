@@ -32,6 +32,7 @@ mod text_input;
 mod theme;
 mod ui;
 mod watcher;
+mod window_frame;
 mod worktree_list;
 
 use std::path::PathBuf;
@@ -41,6 +42,11 @@ use gpui::{
     actions, point, px, size, App, Application, Bounds, KeyBinding, Menu, MenuItem, Pixels,
     SystemMenuType, TitlebarOptions, WindowBackgroundAppearance, WindowBounds, WindowOptions,
 };
+// Only the client-side-decoration request below (`request_decorations`) uses
+// this; on macOS there is no such request to make, so the import would be
+// dead there.
+#[cfg(not(target_os = "macos"))]
+use gpui::WindowDecorations;
 
 use app::WtmApp;
 use assets::Assets;
@@ -112,6 +118,72 @@ key_bindings! {
 /// The default window size and position, used when no saved frame exists or
 /// the saved one no longer lands on a connected display.
 const DEFAULT_WINDOW_SIZE: (f32, f32) = (1180.0, 760.0);
+
+/// The titlebar `WindowOptions` asks for, per platform.
+///
+/// macOS: unchanged from before Linux support existed — a transparent
+/// native titlebar with the traffic lights inset into the app's own
+/// title-bar strip (see `app::chrome::render_titlebar`).
+#[cfg(target_os = "macos")]
+fn titlebar_options() -> TitlebarOptions {
+    TitlebarOptions {
+        title: Some("wtm".into()),
+        appears_transparent: true,
+        traffic_light_position: Some(point(px(16.0), px(17.0))),
+    }
+}
+
+/// Linux: `appears_transparent` and `traffic_light_position` are both
+/// documented as macOS-only concepts in gpui's own `TitlebarOptions` (the
+/// former's doc comment points here, at `WindowOptions::window_decorations`,
+/// for what to use on Linux instead — see `request_decorations` below).
+/// `title` still does something real here though: X11's backend uses it to
+/// set `WM_NAME` (the taskbar/alt-tab label) regardless of who ends up
+/// drawing the frame around the window.
+#[cfg(not(target_os = "macos"))]
+fn titlebar_options() -> TitlebarOptions {
+    TitlebarOptions {
+        title: Some("wtm".into()),
+        appears_transparent: false,
+        traffic_light_position: None,
+    }
+}
+
+/// The window background `WindowOptions` asks for, per platform.
+///
+/// macOS: unchanged — vibrancy behind the (mostly-opaque) sidebar tint, as
+/// `theme::Theme::sidebar`'s own doc explains.
+#[cfg(target_os = "macos")]
+const WINDOW_BACKGROUND: WindowBackgroundAppearance = WindowBackgroundAppearance::Blurred;
+
+/// Linux has no vibrancy equivalent, so `Blurred` is not an option — but
+/// the choice between the two backgrounds gpui *does* support here is not
+/// as simple as picking `Opaque` and moving on:
+///
+/// `window_frame::wrap` draws rounded corners under client-side
+/// decorations, with a shadow cast into the margin outside them. An opaque
+/// window background is a full, literal rectangle at the platform level —
+/// window managers do not know or care that our own content stops short of
+/// the corners with rounded edges, so the four corners outside the rounded
+/// rect (and the whole shadow margin) would still be *opaque*, painted in
+/// whatever the platform's default backing color is. That reads as a solid
+/// square block sitting behind the rounded card, not a floating window with
+/// a soft shadow. Only `Transparent` lets those pixels genuinely composite
+/// with the desktop, which is what makes the rounded corners and the shadow
+/// look like a window rather than a screenshot of one.
+///
+/// This costs nothing when the compositor instead draws server-side
+/// decorations (`Decorations::Server`): `window_frame::wrap` is a no-op in
+/// that case, our own content fills the window edge-to-edge exactly as it
+/// would under `Opaque`, and a transparent background with 100%-opaque
+/// content on top is visually identical to an opaque one. The one real
+/// tradeoff is compositor dependence — on an X11 session with no compositor
+/// running at all, a `Transparent` window can render incorrectly (this is a
+/// limitation shared by every app that draws rounded, shadowed client-side
+/// decorations, not specific to wtm); compositor-less X11 is rare enough
+/// today that this is judged worth it for the common case.
+#[cfg(not(target_os = "macos"))]
+const WINDOW_BACKGROUND: WindowBackgroundAppearance = WindowBackgroundAppearance::Transparent;
 
 /// Convert a persisted [`WindowFrame`] into gpui's `Bounds<Pixels>`.
 fn window_frame_bounds(frame: &WindowFrame) -> Bounds<Pixels> {
@@ -239,13 +311,11 @@ fn main() {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 // The app draws its own title bar so the sidebar can run to
                 // the top of the window; macOS still owns the traffic lights,
-                // which are inset to sit inside that strip.
-                titlebar: Some(TitlebarOptions {
-                    title: Some("wtm".into()),
-                    appears_transparent: true,
-                    traffic_light_position: Some(point(px(16.0), px(17.0))),
-                }),
-                window_background: WindowBackgroundAppearance::Blurred,
+                // which are inset to sit inside that strip. On Linux, this
+                // titlebar has no OS-drawn buttons at all — see
+                // `titlebar_options` and `app::chrome::render_titlebar`.
+                titlebar: Some(titlebar_options()),
+                window_background: WINDOW_BACKGROUND,
                 window_min_size: Some(size(px(820.), px(520.))),
                 app_id: Some("dev.wtm.app".to_string()),
                 ..Default::default()
@@ -253,6 +323,21 @@ fn main() {
 
             cx.open_window(options, |window, cx| {
                 let view = cx.new(|cx| WtmApp::new(initial, prefs.clone(), window, cx));
+
+                // Ask the compositor to let the app draw its own frame
+                // (a title bar with no OS buttons, and — when granted —
+                // `window_frame::wrap`'s rounded corners) instead of a
+                // server-side one, so Linux gets the same custom-chrome
+                // look macOS already has rather than a second, native title
+                // bar sitting above this one. A no-op on macOS (there is no
+                // Linux compositor to ask), and not guaranteed even here: a
+                // window manager without client-decoration support silently
+                // keeps `Decorations::Server` regardless of this request —
+                // `window_frame::wrap` and `render_titlebar` both read the
+                // real answer back from `window.window_decorations()` every
+                // frame rather than assuming this call was honored.
+                #[cfg(not(target_os = "macos"))]
+                window.request_decorations(WindowDecorations::Client);
 
                 // Ask the platform to bring this window to the foreground
                 // and make it key. This matters beyond the obvious UX

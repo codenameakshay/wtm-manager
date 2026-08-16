@@ -1,0 +1,321 @@
+# Builds the wtm-gui desktop app for every platform it targets — macOS
+# (WTM.app) and Linux (a tarball + a .deb, for x86_64 and aarch64) — and
+# attaches them to the same GitHub Release that .github/workflows/release.yml
+# (dist-generated) creates for the wtm CLI.
+#
+# This file used to be release-gui.yml and cover macOS only; it was renamed
+# to release-app.yml once Linux packaging was added, since "release-gui"
+# stopped describing what it does the moment a second platform joined.
+#
+# This is a hand-written workflow, not something `dist generate` produces or
+# manages — see the comment above `[dist]` in dist-workspace.toml for why
+# dist's own `extra-artifacts` mechanism doesn't fit here (its build command
+# always runs on the ubuntu-22.04 "global artifacts" runner, but the actual
+# per-platform build/package work below needs to run on macOS and Linux
+# runners respectively, natively, one architecture at a time).
+#
+# It triggers on `workflow_run` completion of the "Release" workflow rather
+# than the same tag push, because:
+#   - there's no `needs:` dependency across separate workflow files, and
+#   - the GitHub Release has to already exist before `gh release upload` can
+#     attach an asset to it.
+# `workflow_run` fires only after every job in "Release" has finished
+# (plan -> build-local-artifacts -> build-global-artifacts -> host ->
+# announce), so by the time this runs, `host` has already created the
+# release if it was going to.
+#
+# NOTE for maintainers: `workflow_run` subscriptions only activate once this
+# file exists on the repository's default branch (main) — GitHub resolves
+# `workflows: ["Release"]` against the default branch's workflow files, not
+# whatever branch/PR this was authored on. The first real release after this
+# merges is the first one that will get these artifacts attached.
+#
+# NOTE on scripts/package-linux.sh and cargo-deb: scripts/package-linux.sh
+# only builds the .tar.xz tarball (bin/ + .desktop entry + hicolor icons +
+# install.sh) — its own header comment says explicitly that it does not
+# build a .deb, and points at `cargo deb -p wtm-gui` for that instead,
+# backed by the `[package.metadata.deb]` table in crates/wtm-gui/Cargo.toml
+# (maintainer, assets, depends, etc. — that table now exists there). The
+# `package-linux` job below runs the script for the tarball, then
+# `cargo deb -p wtm-gui --no-build` for the .deb, reusing the same
+# target/release/wtm-gui binary the tarball step already built (the
+# metadata's `assets` list also points at that same path).
+name: Release App Bundles
+
+on:
+  workflow_run:
+    workflows: ["Release"]
+    types: [completed]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-app-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  bundle-macos:
+    name: Build and upload WTM.app
+    runs-on: macos-latest
+    env:
+      # job-level, matching how release.yml (dist-generated) scopes this —
+      # not the workflow-level `env:` above, to keep `secrets.*` usage
+      # exactly where the rest of this repo's release tooling already puts it.
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    # Only proceed for a *successful* "Release" run that was itself
+    # triggered by a tag push, not the `pull_request:`-triggered `dist plan`
+    # dry runs that release.yml also runs on every PR. release.yml's only
+    # `push` trigger is the version-tag pattern, so `event == 'push'` here
+    # always means `head_branch` is a release tag, never a plain branch.
+    if: >-
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.conclusion == 'success'
+    steps:
+      - name: Checkout release commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Own prefix: this is a --release build, unlike the debug build the
+          # `gui` CI job caches under "gui-v1-macos-latest" in ci.yml.
+          # Keeping them apart avoids thrashing one cache between debug and
+          # release artifacts.
+          prefix-key: "release-app-macos-v1"
+
+      - name: Determine release tag
+        id: tag
+        env:
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+        run: echo "tag=$HEAD_BRANCH" >> "$GITHUB_OUTPUT"
+
+      # No --sign identity: scripts/bundle-mac.sh ad-hoc signs by default
+      # when one isn't given (its own comment on the codesign call explains
+      # why — Apple Silicon needs *a* signature just to launch the binary at
+      # all, but ad-hoc has no certificate chain and is not a substitute for
+      # a real Developer ID signature plus notarization). The "Note signing
+      # status" step below says so explicitly on the release, rather than
+      # letting the bare "WTM-macOS.zip" filename imply otherwise.
+      - name: Build WTM.app
+        run: bash scripts/bundle-mac.sh --release --output target/bundle
+
+      # `ditto`, not `zip -r`: it preserves the .app bundle's resource
+      # forks, extended attributes and code signature, which a plain `zip`
+      # can silently corrupt.
+      - name: Zip WTM.app
+        run: ditto -c -k --sequesterRsrc --keepParent target/bundle/WTM.app WTM-macOS.zip
+
+      - name: Upload WTM-macOS.zip to the release
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: gh release upload "$TAG" WTM-macOS.zip --clobber
+
+      # Keep the release honest about what "WTM-macOS.zip" actually is.
+      # Idempotent: skips if a previous run (e.g. a re-run of this workflow)
+      # already appended the note.
+      - name: Note signing status on the release
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          marker="<!-- wtm-gui-signing-note -->"
+          notes="$(gh release view "$TAG" --json body -q .body)"
+          if [[ "$notes" == *"$marker"* ]]; then
+            echo "Signing note already present on release $TAG, skipping."
+            exit 0
+          fi
+          {
+            printf '%s\n' "$notes"
+            echo
+            echo "---"
+            echo "$marker"
+            echo "**macOS app (\`WTM-macOS.zip\`):** ad-hoc signed, not notarized by Apple. After unzipping, right-click \`WTM.app\` and choose **Open** the first time to get past Gatekeeper's unidentified-developer warning."
+          } > "$RUNNER_TEMP/notes.md"
+          gh release edit "$TAG" --notes-file "$RUNNER_TEMP/notes.md"
+
+  # Builds and packages wtm-gui for Linux, one architecture per matrix leg.
+  #
+  # Both x86_64 and aarch64 legs run on *native* runners (ubuntu-latest and
+  # GitHub's newer ubuntu-24.04-arm) rather than cross-compiling a single
+  # x86_64 job to aarch64. gpui's Linux backend links against a pile of
+  # system libraries (X11, Wayland, Vulkan, ALSA, fontconfig — see the apt
+  # install step below); cross-compiling that whole native dependency
+  # graph would mean sourcing or building an aarch64 sysroot for every one
+  # of those libraries, which is a much larger maintenance burden than
+  # asking GitHub for a second, native runner. ubuntu-24.04-arm is
+  # generally available for public repositories on GitHub-hosted runners at
+  # no extra cost (same as ubuntu-latest), which is what makes "just build
+  # natively twice" the cheaper option here.
+  #
+  # Trade-off this accepts: the aarch64 leg is only as trustworthy as
+  # GitHub's hosted arm64 VM — it is not tested on physical hardware a user
+  # might actually own (e.g. a Raspberry Pi or an arm64 SBC). The release
+  # note this job's artifacts get (added by `note-linux-status` below) says
+  # so explicitly.
+  package-linux:
+    name: package-linux (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            arch: x86_64
+          - runner: ubuntu-24.04-arm
+            arch: aarch64
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    # Same reasoning as bundle-macos's `if:` above — only run for a real,
+    # tag-triggered "Release" run, not the PR-triggered `dist plan` dry runs.
+    if: >-
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.conclusion == 'success'
+    outputs:
+      # Identical across both matrix legs (derived only from head_branch),
+      # so it doesn't matter which leg's value GitHub keeps for the job
+      # output.
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - name: Checkout release commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      # Same package list, for the same reasons, as the `gui` job's "Install
+      # Linux GUI dependencies" step in ci.yml (see that step's comment for
+      # what each package is for) — this job builds the same crate the same
+      # way, just via scripts/package-linux.sh --release instead of a bare
+      # `cargo build`.
+      - name: Install Linux GUI dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential clang cmake pkg-config libasound2-dev libfontconfig-dev \
+            libwayland-dev libx11-xcb-dev libxkbcommon-x11-dev libssl-dev libvulkan-dev \
+            libxcb-shape0-dev libxcb-xfixes0-dev libgbm-dev
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Own prefix per architecture: distinct from both the debug-build
+          # "gui-v1-ubuntu-latest" cache in ci.yml and from the macOS
+          # release cache above, and x86_64/aarch64 don't share a cache
+          # with each other since their compiled artifacts aren't
+          # interchangeable.
+          prefix-key: "release-app-linux-v1-${{ matrix.arch }}"
+
+      - name: Determine release tag
+        id: tag
+        env:
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+        run: echo "tag=$HEAD_BRANCH" >> "$GITHUB_OUTPUT"
+
+      # Produces target/dist-linux/wtm-gui-<version>-<arch>-linux.tar.xz
+      # (bin/, share/applications/*.desktop, share/icons/hicolor/, install.sh
+      # — no .deb; see the top-of-file NOTE on scripts/package-linux.sh and
+      # cargo-deb for why that's a separate step below).
+      - name: Package wtm-gui for Linux (tarball)
+        run: bash scripts/package-linux.sh --release --output target/dist-linux
+
+      # cargo-deb builds the .deb, driven by the `[package.metadata.deb]`
+      # table in crates/wtm-gui/Cargo.toml. --no-build reuses the
+      # target/release/wtm-gui binary the tarball step above just built
+      # instead of compiling a second time.
+      - name: Install cargo-deb
+        run: cargo install cargo-deb --locked
+
+      - name: Package wtm-gui for Linux (.deb)
+        run: cargo deb -p wtm-gui --no-build
+
+      # Don't assume exact output filenames from either tool — glob for what
+      # they produced instead — but the uploaded asset names are pinned here
+      # to explicitly include the architecture, so a user can never grab an
+      # aarch64 .deb on an x86_64 machine (or vice versa) by mistake.
+      # scripts/package-linux.sh writes the tarball into target/dist-linux
+      # (via --output above); cargo-deb writes the .deb somewhere under
+      # target/ (its default layout has varied across versions, e.g.
+      # target/debian/ vs target/<profile>/debian/), so that search is
+      # intentionally broader.
+      - name: Locate and rename artifacts with an architecture suffix
+        id: rename
+        env:
+          TARBALL_DIR: target/dist-linux
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          tarball="$(find "$TARBALL_DIR" -maxdepth 1 -name '*.tar.xz' -print -quit)"
+          deb="$(find target -name '*.deb' -print -quit)"
+          if [ -z "$tarball" ]; then
+            echo "error: no .tar.xz found in $TARBALL_DIR" >&2
+            echo "       (expected scripts/package-linux.sh --release --output $TARBALL_DIR to produce one)" >&2
+            exit 1
+          fi
+          if [ -z "$deb" ]; then
+            echo "error: no .deb found under target/" >&2
+            echo "       (expected cargo deb -p wtm-gui --no-build to produce one)" >&2
+            exit 1
+          fi
+          tar_dest="WTM-linux-${ARCH}.tar.xz"
+          deb_dest="WTM-linux-${ARCH}.deb"
+          cp "$tarball" "$tar_dest"
+          cp "$deb" "$deb_dest"
+          echo "tarball=$tar_dest" >> "$GITHUB_OUTPUT"
+          echo "deb=$deb_dest" >> "$GITHUB_OUTPUT"
+
+      - name: Upload Linux artifacts to the release
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+          TARBALL: ${{ steps.rename.outputs.tarball }}
+          DEB: ${{ steps.rename.outputs.deb }}
+        run: gh release upload "$TAG" "$TARBALL" "$DEB" --clobber
+
+  # Separate job, run once after both package-linux matrix legs finish,
+  # rather than a step inside package-linux itself: two matrix legs racing
+  # to read-modify-write the same release body via `gh release edit` could
+  # clobber each other's note. Running it once here, after `needs:
+  # package-linux` waits for both legs, avoids that race. If either leg of
+  # package-linux fails, this job is skipped by GitHub Actions' default
+  # `if: success()` (a job is not considered successful if any of its
+  # `needs` did not succeed), so the release never gets a note claiming
+  # artifacts exist that didn't upload.
+  note-linux-status:
+    name: Note Linux artifact status on the release
+    needs: package-linux
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      # Keep the release honest about what the Linux artifacts actually are.
+      # Idempotent: skips if a previous run already appended the note.
+      - name: Note signing/testing status on the release
+        env:
+          TAG: ${{ needs.package-linux.outputs.tag }}
+        run: |
+          set -euo pipefail
+          marker="<!-- wtm-gui-linux-note -->"
+          notes="$(gh release view "$TAG" --json body -q .body)"
+          if [[ "$notes" == *"$marker"* ]]; then
+            echo "Linux note already present on release $TAG, skipping."
+            exit 0
+          fi
+          {
+            printf '%s\n' "$notes"
+            echo
+            echo "---"
+            echo "$marker"
+            echo "**Linux builds (\`WTM-linux-x86_64.tar.xz\`/\`.deb\`, \`WTM-linux-aarch64.tar.xz\`/\`.deb\`):** built natively per architecture on GitHub-hosted \`ubuntu-latest\` (x86_64) and \`ubuntu-24.04-arm\` (aarch64) runners. Neither the binary nor the \`.deb\` is GPG- or code-signed, so \`apt install ./WTM-linux-*.deb\` may warn about an unverified package — that is expected, not a corrupted download. These are verified only to build and pass the crate's automated test suite inside CI containers; they have not been manually exercised on a real X11 or Wayland desktop session, and the aarch64 build has not been run on physical hardware (the aarch64 runner is a cloud VM)."
+          } > "$RUNNER_TEMP/notes.md"
+          gh release edit "$TAG" --notes-file "$RUNNER_TEMP/notes.md"

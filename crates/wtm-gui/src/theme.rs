@@ -14,17 +14,32 @@
 
 use gpui::{hsla, rgb, App, Global, Hsla, WindowAppearance};
 
+/// The sidebar's alpha channel — see `Theme::sidebar`'s own doc for why
+/// this varies by platform at all.
+///
+/// macOS: unchanged. Deliberately not fully opaque: raw vibrancy takes its
+/// tone from whatever wallpaper happens to be behind the window, which
+/// turns a dark sidebar light — and its text unreadable — the moment
+/// someone uses a light desktop picture. A mostly-opaque tint keeps the
+/// blur's depth while the theme keeps control of contrast.
+#[cfg(target_os = "macos")]
+const SIDEBAR_ALPHA: f32 = 0.82;
+
+/// Linux gets no blurred window backing to show through in the first place
+/// (`main.rs`'s `WindowBackgroundAppearance` is `Transparent` there, for
+/// client-side-decoration corners — see that constant's doc — not vibrancy),
+/// so a translucent sidebar would instead show whatever happens to be
+/// behind the *whole window*: the desktop wallpaper while floating, or
+/// another window while tiled next to one. Fully opaque avoids both.
+#[cfg(not(target_os = "macos"))]
+const SIDEBAR_ALPHA: f32 = 1.0;
+
 #[derive(Clone, Copy)]
 pub struct Theme {
     /// The window's base surface.
     pub canvas: Hsla,
-    /// The sidebar, painted *over* the window's blurred backing.
-    ///
-    /// Deliberately not fully transparent: raw vibrancy takes its tone from
-    /// whatever wallpaper happens to be behind the window, which turns a dark
-    /// sidebar light — and its text unreadable — the moment someone uses a
-    /// light desktop picture. A mostly-opaque tint keeps the blur's depth
-    /// while the theme keeps control of contrast.
+    /// The sidebar, painted *over* the window's blurred backing on macOS
+    /// (opaque everywhere else) — see `SIDEBAR_ALPHA`.
     pub sidebar: Hsla,
     /// Panels that sit above the canvas (headers, footers).
     pub raised: Hsla,
@@ -66,7 +81,7 @@ impl Theme {
     pub fn dark() -> Self {
         Self {
             canvas: rgb(0x1A1A1A).into(),
-            sidebar: hsla(0.0, 0.0, 0.094, 0.82),
+            sidebar: hsla(0.0, 0.0, 0.094, SIDEBAR_ALPHA),
             raised: rgb(0x212121).into(),
             inset: rgb(0x151515).into(),
             item_wash: hsla(0.0, 0.0, 0.941, 0.06),
@@ -95,7 +110,7 @@ impl Theme {
     pub fn light() -> Self {
         Self {
             canvas: rgb(0xF6F5F6).into(),
-            sidebar: hsla(0.0, 0.0, 0.953, 0.82),
+            sidebar: hsla(0.0, 0.0, 0.953, SIDEBAR_ALPHA),
             raised: rgb(0xFFFFFF).into(),
             inset: rgb(0xECECEC).into(),
             item_wash: hsla(0.0, 0.0, 0.078, 0.06),

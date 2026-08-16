@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **App: Linux support.** `wtm-gui` now runs on Linux (X11 and Wayland
+  sessions), not just macOS. Install it from a self-contained tarball
+  (`WTM-linux-x86_64.tar.xz`/`WTM-linux-aarch64.tar.xz`, with a bundled
+  `install.sh` and a `.desktop`/icon set for your app launcher) or a `.deb`
+  (`WTM-linux-x86_64.deb`/`WTM-linux-aarch64.deb`) built from
+  `crates/wtm-gui/Cargo.toml`'s new `[package.metadata.deb]` table. Desktop
+  integrations are native rather than macOS shims: Reveal in Finder goes
+  through the freedesktop `FileManager1` D-Bus interface (falling back to
+  `xdg-open`), Open in Terminal honors `$WTM_TERMINAL` and then tries a list
+  of common terminal emulators, and Copy Path uses whichever of
+  `wl-copy`/`xclip`/`xsel` is installed. `wtm`'s CLI-side app launcher
+  (`wtm`/`wtm app`) looks for the installed binary in the matching Linux
+  locations. **Caveat:** this is verified in CI only — it builds, passes its
+  test suite, and passes Clippy on `ubuntu-latest` and `ubuntu-24.04-arm` —
+  it has not yet been run on a real Linux desktop by the maintainer.
+
 ## [0.5.0] - 2026-08-16
 
 ### Added

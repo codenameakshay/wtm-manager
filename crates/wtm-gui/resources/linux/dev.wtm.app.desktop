@@ -1,0 +1,23 @@
+[Desktop Entry]
+Type=Application
+Name=wtm
+Comment=A fast, ergonomic Git worktree manager
+# No %U/%f: the app's only launch argument (see `std::env::args().nth(1)` in
+# crates/wtm-gui/src/main.rs) is a plain repository directory path, not a
+# document type. There is no MimeType declared here — same reasoning as
+# Info.plist's lack of CFBundleDocumentTypes — so file managers never offer
+# this entry in an "Open With" menu, and %f/%u (which exist for that flow)
+# would have nothing to substitute in practice. Launch is by app id/name
+# (menu, Spotlight-equivalents, `wtm app` in the CLI), where a bare `Exec`
+# is all that is required.
+Exec=wtm-gui
+Icon=dev.wtm.app
+Terminal=false
+Categories=Development;RevisionControl;
+# Must match `WindowOptions.app_id` in crates/wtm-gui/src/main.rs
+# ("dev.wtm.app"). Wayland/X11 compositors match a running window back to
+# this desktop entry (and therefore this Icon=) by comparing app_id/WM_CLASS
+# against StartupWMClass — without it the window shows a generic fallback
+# icon in the dock/taskbar instead of the wtm icon, even though everything
+# else here is correct.
+StartupWMClass=dev.wtm.app

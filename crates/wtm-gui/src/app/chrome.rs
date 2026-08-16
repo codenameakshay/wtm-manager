@@ -215,14 +215,31 @@ impl WtmApp {
     }
 
     /// The title bar strip: traffic-light clearance, sidebar toggle, the
-    /// active repository, and the actions that apply to it.
-    pub(super) fn render_titlebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    /// active repository, and the actions that apply to it. On Linux, when
+    /// the compositor has handed the app client-side decorations, this also
+    /// grows a drag-to-move/double-click-to-zoom region and the window
+    /// controls macOS gets from the real traffic lights instead — see
+    /// `render_window_controls`.
+    pub(super) fn render_titlebar(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let theme = Theme::of(cx);
         let title = self
             .active
             .as_ref()
             .map(|repo| repo.name().to_string())
             .unwrap_or_else(|| "wtm".to_string());
+        // Whether *this* window currently has client-side decorations —
+        // not simply "is this Linux": an X11 window manager without
+        // decoration support keeps `Decorations::Server` regardless of what
+        // `main.rs` requested, and in that case the compositor's own title
+        // bar already has close/minimize/maximize and its own dragging, so
+        // adding ours here would be redundant. macOS never takes this
+        // branch at all (see `window_frame`'s module doc), which is what
+        // keeps it on real traffic lights without needing a `#[cfg]` here.
+        let csd = matches!(window.window_decorations(), Decorations::Client { .. });
 
         div()
             .h(px(ui::TITLEBAR_HEIGHT))
@@ -234,7 +251,12 @@ impl WtmApp {
             .px(px(10.0))
             // Only the collapsed sidebar leaves the traffic lights over this
             // strip; when the sidebar is open they sit above it instead.
-            .when(!self.sidebar_visible, |this| {
+            // macOS only — on Linux this space belongs to content, whether
+            // or not client-side decorations are in play (a title bar with
+            // no OS-drawn buttons needs no clearance for any; the buttons
+            // this strip draws itself under CSD are sized and placed by
+            // `render_window_controls`, not by reserving space up front).
+            .when(cfg!(target_os = "macos") && !self.sidebar_visible, |this| {
                 this.pl(px(ui::TRAFFIC_LIGHT_CLEARANCE))
             })
             .child(
@@ -270,6 +292,29 @@ impl WtmApp {
                                 .child(div().text_color(theme.text_ghost).child("/"))
                                 .child(ui::meta(icons::GIT_BRANCH, branch, &theme)),
                         )
+                    })
+                    // Under CSD there is no native title bar left to drag by,
+                    // so this — the flexible middle of the strip, which has
+                    // no click handler of its own today — takes over that
+                    // job: a first press starts moving the window, a second
+                    // (`click_count` from the platform's own double-click
+                    // detection, the same field `worktree_list`'s row
+                    // double-click already reads off `ClickEvent`) zooms it
+                    // instead, matching how a real title bar behaves. Scoped
+                    // to this label area rather than the whole strip on
+                    // purpose: every button on either side of it (including
+                    // `render_window_controls`) is this element's *sibling*,
+                    // not its descendant, so none of their presses ever
+                    // bubble through here — nothing needs to guard against a
+                    // move starting underneath a button click.
+                    .when(csd, |this| {
+                        this.on_mouse_down(MouseButton::Left, |event, window, _cx| {
+                            if event.click_count >= 2 {
+                                window.zoom_window();
+                            } else {
+                                window.start_window_move();
+                            }
+                        })
                     }),
             )
             .child(
@@ -297,6 +342,7 @@ impl WtmApp {
                     }),
                 ),
             )
+            .when(csd, |this| this.child(render_window_controls(&theme, cx)))
     }
 
     fn selected_branch(&self) -> Option<String> {
@@ -1130,6 +1176,83 @@ fn toolbar_button(
                 .text_color(theme.text)
                 .child(label.into()),
         )
+}
+
+/// The window controls Linux draws in its own title bar when the compositor
+/// grants client-side decorations — minimize, maximize/restore, and close,
+/// in the right-side order GNOME and KDE both use (`render_titlebar` places
+/// this last, after every other title-bar button). macOS never renders
+/// this: it always keeps `Decorations::Server` and its real traffic lights
+/// instead — see `render_titlebar`'s `csd` guard.
+fn render_window_controls(theme: &Theme, cx: &mut Context<WtmApp>) -> impl IntoElement {
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(px(2.0))
+        .child(
+            window_control_button("win-minimize", theme)
+                .child(minimize_glyph(theme))
+                .on_click(|_, window, _cx| window.minimize_window()),
+        )
+        .child(
+            window_control_button("win-maximize", theme)
+                .child(maximize_glyph(theme))
+                .on_click(|_, window, _cx| window.zoom_window()),
+        )
+        .child(
+            window_control_button("win-close", theme)
+                .child(ui::icon(icons::CLOSE, 12.0, theme.text_tertiary))
+                .on_click(cx.listener(|_this, _, window, cx| {
+                    // A client-side close button is not the OS-level close
+                    // gesture `main.rs`'s `on_window_should_close` is
+                    // registered against (that hook only fires for a
+                    // platform-originated close request), so calling
+                    // `remove_window` alone would skip it — and with it,
+                    // the window-frame save that hook exists to do. This
+                    // does that save by hand instead, reusing the exact
+                    // function the real close path calls.
+                    let view = cx.entity();
+                    crate::save_prefs_with_window_frame(&view, window, cx);
+                    window.remove_window();
+                })),
+        )
+}
+
+/// The base of a Linux window-control button: the same 26×26 hover square
+/// `ui::icon_button` uses, but built here directly rather than through it,
+/// since minimize/maximize need a caller-supplied glyph in place of an svg
+/// icon — see `minimize_glyph`/`maximize_glyph` below for why.
+fn window_control_button(id: &'static str, theme: &Theme) -> Stateful<Div> {
+    div()
+        .id(id)
+        .w(px(26.0))
+        .h(px(26.0))
+        .flex()
+        .flex_none()
+        .items_center()
+        .justify_center()
+        .rounded(px(6.0))
+        .cursor_default()
+        .hover(|this| this.bg(theme.item_wash))
+}
+
+/// A minimize glyph: a single horizontal line, the shape every desktop
+/// environment uses for it. Composed from a plain `div()` rather than an
+/// svg asset — `assets.rs` is owned elsewhere and not extended for this
+/// task, and it has nothing shaped like this to begin with.
+fn minimize_glyph(theme: &Theme) -> impl IntoElement {
+    div().w(px(10.0)).h(px(1.0)).bg(theme.text_tertiary)
+}
+
+/// A maximize/restore glyph: a small square outline, composed the same way
+/// `minimize_glyph` is.
+fn maximize_glyph(theme: &Theme) -> impl IntoElement {
+    div()
+        .w(px(9.0))
+        .h(px(9.0))
+        .border_1()
+        .border_color(theme.text_tertiary)
 }
 
 #[cfg(test)]

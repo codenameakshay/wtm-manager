@@ -1,24 +1,33 @@
 [workspace]
 members = ["cargo:."]
 
-# crates/wtm-gui (the GPUI desktop app, WTM.app) is deliberately NOT a member
-# here. It's `publish = false` and macOS-only, so it isn't a "dist-able"
-# Rust package in dist's sense. Its release artifact (a zipped WTM.app) is
-# built and attached to the same GitHub Release by
-# .github/workflows/release-gui.yml, a small hand-written workflow that
-# triggers via `workflow_run` once this dist-generated pipeline finishes.
+# crates/wtm-gui (the GPUI desktop app) is deliberately NOT a member here.
+# It's `publish = false`, so it isn't a "dist-able" Rust package in dist's
+# sense regardless of platform. Its release artifacts — a zipped WTM.app on
+# macOS, and a tarball + .deb per architecture on Linux — are built and
+# attached to the same GitHub Release by .github/workflows/release-app.yml
+# (formerly release-gui.yml, renamed once Linux packaging joined macOS in
+# it), a small hand-written workflow that triggers via `workflow_run` once
+# this dist-generated pipeline finishes.
 #
 # `[dist.extra-artifacts]` was considered and rejected for this: dist treats
 # extra-artifacts as a *global* artifact (see `add_extra_artifacts` in
-# cargo-dist's tasks.rs), so its `build` command always runs in the
+# cargo-dist's tasks.rs), so its `build` command always runs in the single
 # `build-global-artifacts` job — which this repo's generated release.yml
 # pins to `ubuntu-22.04` regardless of `targets` below. There's no
-# extra-artifacts-scoped way to force just that one command onto macOS; the
-# only lever is `[dist.github-custom-runners] global = "macos-latest"`,
-# which would move dist's *entire* global job (shell installer generation,
-# manifest stitching, checksums, SBOMs, ...) onto macOS for every release
-# just to accommodate one optional asset. That's a bigger blast radius than
-# this needs, hence the separate workflow instead.
+# extra-artifacts-scoped way to fan that one command out across macOS *and*
+# multiple Linux architectures; the only lever is
+# `[dist.github-custom-runners]`, which controls dist's *own* per-target
+# build runners (for the `wtm` CLI targets below), not an extra-artifacts
+# command. Moving the whole global job to a different runner just to
+# accommodate optional wtm-gui assets would be a bigger blast radius than
+# this needs, hence the separate hand-written workflow instead.
+#
+# Note: the Linux targets in `targets` below (x86_64/aarch64-unknown-linux-
+# gnu) already give dist everything it needs to build the `wtm` *CLI*
+# binary for Linux — that part needs no change here. They do not cover
+# wtm-gui, which release-app.yml packages separately via
+# scripts/package-linux.sh on native ubuntu-latest/ubuntu-24.04-arm runners.
 #
 # Config for 'dist'
 [dist]

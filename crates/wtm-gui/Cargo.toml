@@ -47,3 +47,50 @@ tempfile = "3.27.0"
 # normal dependency's `runtime_shaders` feature) so release builds never pull
 # in test scaffolding — see `crates/wtm-gui/src/app/integration_tests.rs`.
 gpui = { version = "0.2.2", features = ["runtime_shaders", "test-support"] }
+
+# Drives `cargo deb -p wtm-gui`, which builds usr/bin/wtm-gui.deb for Debian
+# and Ubuntu. See scripts/README.md for the full workflow; this section only
+# holds the metadata cargo-deb needs.
+[package.metadata.deb]
+maintainer = "codenameakshay <akshaymaurya3006@gmail.com>"
+copyright = "2026, wtm contributors"
+# The crate is dual MIT/Apache-2.0 (see `license` above); cargo-deb wants one
+# file for the package's machine-readable copyright text, so this points at
+# LICENSE-MIT specifically and skips its own "MIT License" title + copyright
+# lines (1-4) since those are already captured by `copyright` above. The
+# actual dual-licensing terms are unaffected — this only controls what text
+# gets embedded in usr/share/doc/wtm-gui/copyright.
+license-file = ["../../LICENSE-MIT", "4"]
+section = "devel"
+priority = "optional"
+extended-description = """\
+wtm-gui is the native desktop app for wtm, a fast, ergonomic Git worktree \
+manager. It lists every worktree for a repository straight from git's own \
+registry (so it finds worktrees created outside the app too), computes \
+per-worktree status — dirty, ahead/behind, merged, gone — and lets you \
+create, switch to, and prune worktrees without leaving the GUI. Built with \
+GPUI, the UI framework behind the Zed editor."""
+assets = [
+	["target/release/wtm-gui", "usr/bin/wtm-gui", "755"],
+	["resources/linux/dev.wtm.app.desktop", "usr/share/applications/dev.wtm.app.desktop", "644"],
+	["resources/linux/icons/hicolor/16x16/apps/dev.wtm.app.png", "usr/share/icons/hicolor/16x16/apps/dev.wtm.app.png", "644"],
+	["resources/linux/icons/hicolor/24x24/apps/dev.wtm.app.png", "usr/share/icons/hicolor/24x24/apps/dev.wtm.app.png", "644"],
+	["resources/linux/icons/hicolor/32x32/apps/dev.wtm.app.png", "usr/share/icons/hicolor/32x32/apps/dev.wtm.app.png", "644"],
+	["resources/linux/icons/hicolor/48x48/apps/dev.wtm.app.png", "usr/share/icons/hicolor/48x48/apps/dev.wtm.app.png", "644"],
+	["resources/linux/icons/hicolor/64x64/apps/dev.wtm.app.png", "usr/share/icons/hicolor/64x64/apps/dev.wtm.app.png", "644"],
+	["resources/linux/icons/hicolor/128x128/apps/dev.wtm.app.png", "usr/share/icons/hicolor/128x128/apps/dev.wtm.app.png", "644"],
+	["resources/linux/icons/hicolor/256x256/apps/dev.wtm.app.png", "usr/share/icons/hicolor/256x256/apps/dev.wtm.app.png", "644"],
+	["resources/linux/icons/hicolor/512x512/apps/dev.wtm.app.png", "usr/share/icons/hicolor/512x512/apps/dev.wtm.app.png", "644"],
+]
+# `$auto` runs cargo-deb's own ldd-equivalent over the built binary and maps
+# each *directly linked* shared library to the Debian package that ships it
+# (libc6, libgcc-s1, zlib1g, libxcb1, libxkbcommon0, libxkbcommon-x11-0, as
+# verified with `ldd`+`dpkg -S` on a release build in wtm-linux-build) — so
+# it's preferred over hand-listing those. It cannot see libvulkan1 or
+# libwayland-client0 though: gpui's Linux backend `dlopen`s both at startup
+# (confirmed via `strings`/`nm -D` showing `dlopen` + the two .so names, with
+# neither appearing as a direct ELF dependency in `ldd`), so there is no
+# link-time trace of them for $auto to find. Without libvulkan1 the app
+# cannot open a window at all; without libwayland-client0 it just can't run
+# under Wayland. Both are added by hand for that reason.
+depends = "$auto, libvulkan1, libwayland-client0"

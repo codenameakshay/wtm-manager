@@ -71,9 +71,9 @@ use std::time::Duration;
 
 use gpui::prelude::*;
 use gpui::{
-    actions, deferred, div, px, uniform_list, AnyElement, App, ClickEvent, Context, Div, Entity,
-    FocusHandle, Focusable, KeyDownEvent, MouseButton, MouseDownEvent, Pixels, Point, SharedString,
-    Stateful, Subscription, Window, WindowAppearance,
+    actions, deferred, div, px, uniform_list, AnyElement, App, ClickEvent, Context, Decorations,
+    Div, Entity, FocusHandle, Focusable, KeyDownEvent, MouseButton, MouseDownEvent, Pixels, Point,
+    SharedString, Stateful, Subscription, Window, WindowAppearance,
 };
 use wtm::commands::prune::{PruneCandidate, PruneReport};
 use wtm::model::WorktreeInfo;
@@ -98,6 +98,7 @@ use crate::text_input::{InputEvent, TextInput};
 use crate::theme::{self, Theme};
 use crate::ui::{self, ButtonVariant};
 use crate::watcher::RepoWatcher;
+use crate::window_frame;
 use crate::worktree_list::{self, SortMode};
 
 actions!(
@@ -526,7 +527,7 @@ impl Render for WtmApp {
             cx.listener(|this, id: &str, window, cx| this.handle_menu_select(id, window, cx));
         let context_menu = self.context_menu.render(&theme, window, cx, on_menu_select);
 
-        div()
+        let root = div()
             .id("wtm-root")
             .key_context("WtmApp")
             .track_focus(&self.focus_handle)
@@ -570,7 +571,7 @@ impl Render for WtmApp {
                     .flex()
                     .flex_col()
                     .bg(theme.canvas)
-                    .child(self.render_titlebar(cx))
+                    .child(self.render_titlebar(window, cx))
                     .child(self.render_list(cx))
                     .child(self.render_footer(cx)),
             )
@@ -583,6 +584,13 @@ impl Render for WtmApp {
             .when_some(overlay, |this, overlay| {
                 this.child(deferred(overlay).with_priority(1))
             })
-            .when_some(context_menu, |this, menu| this.child(menu))
+            .when_some(context_menu, |this, menu| this.child(menu));
+
+        // Client-side decorations (Linux, when the compositor grants them —
+        // see `window_frame`'s module doc): wraps `root` in a shadow margin,
+        // rounded corners, and resize handles. A no-op everywhere else,
+        // including macOS, which never reports anything but
+        // `Decorations::Server`.
+        window_frame::wrap(root, &theme, window)
     }
 }

@@ -1,0 +1,54 @@
+# wtm-gui __VERSION__ (Linux)
+
+This is the wtm desktop app — a native Git worktree manager built with
+[GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui) (the UI
+framework behind Zed) — packaged as a self-contained tarball for Linux.
+
+**Status:** this build compiles and has been exercised in a headless
+container during development, but has not yet been run on real Linux
+desktop hardware. If something breaks, please file an issue:
+https://github.com/codenameakshay/wtm-manager/issues
+
+## Install
+
+    ./install.sh                  # into ~/.local, no root required
+    sudo ./install.sh --system    # into /usr/local, for all users
+    ./install.sh --prefix DIR     # into an arbitrary prefix
+
+Run `./install.sh --help` for details. It copies:
+
+    bin/wtm-gui                                             -> <prefix>/bin/wtm-gui
+    share/applications/dev.wtm.app.desktop                  -> <prefix>/share/applications/
+    share/icons/hicolor/<size>x<size>/apps/dev.wtm.app.png  -> <prefix>/share/icons/hicolor/<size>x<size>/apps/
+
+and refreshes the desktop/icon caches (`update-desktop-database`,
+`gtk-update-icon-cache`) if those tools are installed, so the app shows up
+in your application launcher with its own icon rather than a generic one.
+
+## Runtime dependencies
+
+wtm-gui is a GPUI app. On Linux it either links directly against, or loads
+at startup, these shared libraries (derived by running `ldd` and inspecting
+the binary for `dlopen` calls against a release build — not guessed):
+
+  - `libc6`, `libgcc-s1`, `zlib1g` — base runtime, present on essentially
+    every Debian/Ubuntu-family system already.
+  - `libxcb1`, `libxkbcommon0`, `libxkbcommon-x11-0` — X11 and keyboard
+    layout handling.
+  - `libvulkan1` — GPU rendering. This is `dlopen`ed at startup rather than
+    linked, so `ldd` won't show it, but the app cannot draw a window
+    without it and will fail at launch, not at build time.
+  - `libwayland-client0` — only exercised under a Wayland session, also
+    `dlopen`ed at startup.
+
+These are present on essentially any desktop Linux install; a minimal
+server or container base image is the likeliest place to be missing
+`libvulkan1` or `libwayland-client0` specifically. Install them with your
+distribution's package manager if wtm-gui fails to launch.
+
+## Uninstall
+
+Remove the files `install.sh` copied — `bin/wtm-gui`,
+`share/applications/dev.wtm.app.desktop`, and each
+`share/icons/hicolor/<size>x<size>/apps/dev.wtm.app.png` — from whichever
+prefix you installed into.

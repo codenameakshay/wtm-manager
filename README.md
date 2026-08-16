@@ -118,8 +118,9 @@ UI.
   <img src="assets/app.png" alt="wtm's main window: a sidebar listing three repositories (one flagged missing), a worktree list with New Worktree/Prune…/Filter controls, a selected row with its multi-select checkbox checked and dirty/20 behind/gone status pills, and a detail panel open on the Details tab showing path, HEAD, upstream, remote, ahead/behind, and recent commits" width="840">
 </p>
 
-**Installing it.** macOS only for now — GPUI supports Linux and Windows too,
-but this app hasn't been built or tested there. Two ways to get it:
+**Installing it.** macOS and Linux are both supported now; Windows is not.
+
+**macOS:**
 
 - Build it yourself: `scripts/bundle-mac.sh` assembles `WTM.app` from source
   (see [`scripts/README.md`](scripts/README.md)). Install with
@@ -135,10 +136,52 @@ from a download), Gatekeeper will refuse to open it normally: right-click
 `WTM.app` and choose **Open**, then confirm, to get past that one-time
 warning.
 
+**Linux** (`x86_64` and `aarch64`):
+
+- Download `WTM-linux-x86_64.tar.xz` or `WTM-linux-aarch64.tar.xz` from the
+  [latest release](https://github.com/codenameakshay/wtm-manager/releases),
+  extract it, and run the bundled installer:
+
+  ```sh
+  tar -xJf WTM-linux-x86_64.tar.xz
+  ./wtm-gui-*-linux/install.sh          # into ~/.local, no root required
+  ```
+
+  (`install.sh --system`, run with `sudo`, installs into `/usr/local`
+  instead.) It also installs a `.desktop` entry and icons so the app shows
+  up in your application launcher.
+- Or download `WTM-linux-x86_64.deb`/`WTM-linux-aarch64.deb` and install it
+  with your package manager, e.g. `sudo apt install
+  ./WTM-linux-x86_64.deb`.
+
+Either package needs `libvulkan1` and `libwayland-client0` at runtime — GPUI
+loads both with `dlopen` at startup rather than linking them, so they won't
+show up as missing until the app actually tries to open a window — on top of
+the base libraries most desktop Linux installs already have (`libc6`,
+`libgcc-s1`, `zlib1g`, `libxcb1`, `libxkbcommon0`, `libxkbcommon-x11-0`). The
+`.deb` declares all of these as dependencies, so `apt`/`dpkg` pull them in
+automatically; installing from the tarball, install them yourself if
+they're missing:
+
+```sh
+sudo apt install libvulkan1 libwayland-client0 libxkbcommon-x11-0 \
+  libxcb1 libxkbcommon0 zlib1g libgcc-s1 libc6
+```
+
+**Be honest with yourself about how tested this is.** The Linux build is
+verified in CI — it compiles, passes `wtm-gui`'s test suite, and passes
+Clippy on `ubuntu-latest` (x86_64) and `ubuntu-24.04-arm` (aarch64) — but it
+has **not** been run on a real Linux desktop by the maintainer. Treat it as
+"builds and tests cleanly," not "battle-tested," until that changes. Windows
+remains unsupported: GPUI has a Windows backend, but this app has never been
+built against it.
+
 Once installed, the CLI finds it automatically, checking in order:
-`$WTM_APP` (an explicit path, for development), `/Applications/WTM.app`,
-`~/Applications/WTM.app`, a `wtm-gui` binary next to the `wtm` binary itself,
-then `wtm-gui` on `$PATH`.
+`$WTM_APP` (an explicit path, for development); on macOS,
+`/Applications/WTM.app` then `~/Applications/WTM.app`; a `wtm-gui` binary
+next to the `wtm` binary itself; on Linux, `~/.local/bin/wtm-gui`,
+`/usr/local/bin/wtm-gui`, then `/usr/bin/wtm-gui`; and finally `wtm-gui` on
+`$PATH`.
 
 **Adding a repository.** Click the `+` next to "Repositories" in the
 sidebar, press `⌘⇧O`, or (with no repositories open yet) use the "Add

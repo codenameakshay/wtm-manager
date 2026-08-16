@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+#
+# install.sh — installs this wtm-gui tarball into a prefix.
+#
+# Run from inside the extracted wtm-gui-<version>-<arch>-linux/ directory:
+#   ./install.sh                  # into ~/.local, no root required
+#   sudo ./install.sh --system    # into /usr/local, for all users
+#   ./install.sh --prefix DIR     # into an arbitrary prefix
+set -euo pipefail
+
+prefix="$HOME/.local"
+
+usage() {
+	cat <<'EOF'
+Usage: ./install.sh [--system] [--prefix DIR] [-h|--help]
+
+Installs wtm-gui, its .desktop entry, and its icons into a prefix.
+
+  --system        Install into /usr/local instead of ~/.local. Needs root
+                   (run with sudo) since /usr/local is not user-writable.
+  --prefix DIR    Install into an arbitrary prefix instead.
+  -h, --help      Show this help and exit.
+
+Without a flag, installs into ~/.local — no root required, and
+~/.local/bin is already on $PATH on most distros (systemd's user
+environment generator adds it; check `echo $PATH` if `wtm-gui` isn't found
+afterwards).
+EOF
+}
+
+while [ $# -gt 0 ]; do
+	case "$1" in
+	--system)
+		prefix=/usr/local
+		shift
+		;;
+	--prefix)
+		[ $# -ge 2 ] || {
+			echo "error: --prefix requires a directory argument" >&2
+			exit 1
+		}
+		prefix=$2
+		shift 2
+		;;
+	-h | --help)
+		usage
+		exit 0
+		;;
+	*)
+		echo "error: unknown argument: $1" >&2
+		usage >&2
+		exit 1
+		;;
+	esac
+done
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+echo "==> installing into $prefix"
+
+install -Dm755 "$script_dir/bin/wtm-gui" "$prefix/bin/wtm-gui"
+install -Dm644 "$script_dir/share/applications/dev.wtm.app.desktop" \
+	"$prefix/share/applications/dev.wtm.app.desktop"
+
+for icon in "$script_dir"/share/icons/hicolor/*/apps/dev.wtm.app.png; do
+	# .../hicolor/<size>x<size>/apps/dev.wtm.app.png -> keep the <size>x<size>
+	# path segment so it lands in the matching hicolor bucket at the prefix.
+	size_dir="$(basename "$(dirname "$(dirname "$icon")")")"
+	install -Dm644 "$icon" "$prefix/share/icons/hicolor/$size_dir/apps/dev.wtm.app.png"
+done
+
+# Refresh the caches the desktop entry and icon rely on, if the tools that
+# maintain them are present. Skipping this on a fresh install leaves a
+# missing/stale launcher entry and a generic icon until something else
+# happens to trigger a cache rebuild (e.g. a later package install).
+if command -v update-desktop-database >/dev/null 2>&1; then
+	update-desktop-database "$prefix/share/applications" 2>/dev/null || true
+fi
+if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+	gtk-update-icon-cache -f -t "$prefix/share/icons/hicolor" 2>/dev/null || true
+fi
+
+echo "==> installed wtm-gui to $prefix/bin/wtm-gui"
+case ":$PATH:" in
+*":$prefix/bin:"*) : ;;
+*)
+	echo "    note: $prefix/bin is not on \$PATH — add it to your shell profile"
+	;;
+esac

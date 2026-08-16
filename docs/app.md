@@ -1,8 +1,10 @@
 # The wtm desktop app
 
-A deeper guide to `WTM.app`, the native macOS app in `crates/wtm-gui`. See
-the [README](../README.md#app) for the short version — installing it, the
-keyboard shortcut table, and where its state lives. This document covers
+A deeper guide to the wtm desktop app (`crates/wtm-gui`; `WTM.app` on
+macOS), which now runs on both macOS and Linux — see
+[Platform support](#platform-support) below for what differs between them.
+See the [README](../README.md#app) for the short version — installing it,
+the keyboard shortcut table, and where its state lives. This document covers
 what the README doesn't have room for: what each piece of the app actually
 does and why it's built the way it is.
 
@@ -281,10 +283,12 @@ registry entry, the same guarantee as the sidebar's own row menu above.
   immediately. Forcing Light or Dark survives a live OS appearance change;
   System keeps following it.
 - **Terminal app** — read-only, showing whatever `$WTM_TERMINAL` currently
-  resolves to (`Terminal` if unset). There's no in-app field for this
-  because nothing downstream of one would currently read it; changing which
-  terminal `⌘⇧T`/"Open in Terminal" uses means setting the environment
-  variable. Also macOS-only for now, same as the app itself.
+  resolves to, or the label `Terminal` when it's unset (that label reflects
+  macOS's own default; on Linux the actual unset-case behavior is the
+  fallback list under [Platform support](#platform-support), not literally
+  an app named "Terminal"). There's no in-app field for this because nothing
+  downstream of one would currently read it; changing which terminal
+  `⌘⇧T`/"Open in Terminal" uses means setting the environment variable.
 - **Effective repository configuration** — a read-only view of `wtm`'s own
   layered TOML config as it applies to the open repository (path template,
   default base, editor, protected branches, setup commands/copy entries).
@@ -356,13 +360,85 @@ faking it:
 
 ## Platform support
 
-macOS only. GPUI itself supports Linux and Windows, but this app has not
-been built or tested on either — the CI gate for `crates/wtm-gui`
-(`.github/workflows/ci.yml`) only runs on `macos-latest`, and
-`scripts/bundle-mac.sh` refuses to run anywhere else.
-
-The release build (`WTM-macOS.zip`, attached to GitHub Releases by
-`.github/workflows/release-gui.yml`) and a bundle you build yourself with
+**macOS.** The release build (`WTM-macOS.zip`, attached to GitHub Releases
+by `.github/workflows/release-app.yml`) and a bundle you build yourself with
 `scripts/bundle-mac.sh` are both ad-hoc signed by default, not notarized —
 see the [README](../README.md#app) for what that means for Gatekeeper on
 first launch.
+
+**Linux.** `wtm-gui` also builds and runs on Linux, against both X11 and
+Wayland sessions through GPUI's Linux backend, for `x86_64` and `aarch64`.
+The CI gate for `crates/wtm-gui` (`.github/workflows/ci.yml`'s `gui` job) is
+a matrix over `macos-latest` and `ubuntu-latest`, so every push and PR
+exercises both platforms equally, not just macOS.
+
+**Installing it.** Two artifacts, both attached to GitHub Releases by
+`.github/workflows/release-app.yml`, built natively on `ubuntu-latest`
+(x86_64) and `ubuntu-24.04-arm` (aarch64):
+
+- `WTM-linux-<arch>.tar.xz` — a self-contained tarball built by
+  `scripts/package-linux.sh` (see [`scripts/README.md`](../scripts/README.md)):
+  the `wtm-gui` binary, a `.desktop` entry, a hicolor icon set, and an
+  `install.sh` that copies all three into `~/.local` (or `/usr/local` with
+  `--system`) and refreshes the desktop/icon caches.
+- `WTM-linux-<arch>.deb` — built by `cargo deb -p wtm-gui`, driven by the
+  `[package.metadata.deb]` table in `crates/wtm-gui/Cargo.toml`, not by
+  `scripts/package-linux.sh` (that script only produces the tarball).
+
+**Runtime dependencies.** On top of base libraries essentially every
+Debian/Ubuntu desktop already has (`libc6`, `libgcc-s1`, `zlib1g`,
+`libxcb1`, `libxkbcommon0`, `libxkbcommon-x11-0`), the app needs
+`libvulkan1` and `libwayland-client0`. Both are `dlopen`ed at startup
+instead of being linked, so they leave no trace in `ldd`'s output and
+`cargo-deb`'s automatic `$auto` dependency detection can't see them either —
+they're added to the `.deb`'s `depends` field by hand instead. `libvulkan1`
+matters most: GPUI's Linux backend renders through Vulkan (there is no
+Metal-equivalent fallback), so without it the app cannot open a window at
+all — it just fails to start, rather than starting and looking broken.
+`libwayland-client0` is only touched under a Wayland session; an X11 session
+never loads it.
+
+**Desktop integrations** are native Linux mechanisms, not macOS behavior
+papered over:
+
+- **Reveal in Finder** (`data::reveal_in_finder`) calls the freedesktop
+  `org.freedesktop.FileManager1.ShowItems` D-Bus method — implemented by
+  GNOME Files/Nautilus, Dolphin, and most other file managers — so the
+  target itself ends up selected, not just its containing folder. If
+  nothing answers that call (no D-Bus, no file manager registered,
+  `dbus-send` not installed), it falls back to `xdg-open`ing the containing
+  directory instead, same as on any system without a compliant file
+  manager.
+- **Open in Terminal** (`data::open_in_terminal`) honors `$WTM_TERMINAL`
+  first — a bare name resolved on `$PATH`, or a full path — then tries, in
+  order, `x-terminal-emulator`, `gnome-terminal`, `konsole`, `alacritty`,
+  `kitty`, `wezterm`, `foot`, `xterm`, launching the first one found. Each
+  is spawned with whatever working-directory flag it actually supports
+  (`--workdir` for konsole, `--working-directory` for alacritty and
+  gnome-terminal, `start --cwd` for wezterm, and so on); xterm and
+  `x-terminal-emulator` have no such flag and rely on inheriting the
+  spawning process's working directory instead. The Settings sheet's
+  read-only "Terminal app" field reflects the same `$WTM_TERMINAL` value
+  here as on macOS.
+- **Copy Path** (`data::copy_to_clipboard`) uses whichever of `wl-copy`,
+  `xclip -selection clipboard`, or `xsel -ib` is installed, tried in that
+  order.
+
+**State** lives in exactly the same place as on macOS — see
+[Where its state lives](#where-its-state-lives) above — because the
+underlying config-directory resolution (`$WTM_CONFIG_DIR`, then
+`$XDG_CONFIG_HOME/wtm`, then `~/.config/wtm`) was already
+platform-independent before Linux support existed; nothing about `repos.json`
+or `gui.json` had to change to work there.
+
+**Honesty check.** The Linux build is verified in CI — `cargo build`,
+`cargo test -p wtm-gui`, and `cargo clippy -p wtm-gui` all run on
+`ubuntu-latest`/`ubuntu-24.04-arm`, and the release tarball and `.deb` are
+built, installed, and inspected (`dpkg -i`, `dpkg -c`,
+`desktop-file-validate`, running `install.sh`) inside a headless container —
+but nobody on the maintaining side has run the app on a real Linux desktop
+session yet. Treat it as unverified beyond "it builds, tests, and lints
+cleanly" until that changes.
+
+Windows is unsupported: GPUI has a Windows backend, but this app has never
+been built against it.

@@ -72,11 +72,22 @@ fn launch_app(global: &GlobalArgs) -> Result<()> {
     if app::try_launch(global)? {
         return Ok(());
     }
-    Err(Error::Other(
-        "the wtm desktop app is not installed (expected WTM.app in /Applications \
-         or a `wtm-gui` binary on PATH); run `wtm tui` for the terminal UI"
-            .to_string(),
-    ))
+    // Name the locations `app::locate` actually searches (besides the
+    // `$WTM_APP` override, which is a development/testing escape hatch, not
+    // a real install location worth telling a user about here) -- macOS has
+    // a bundle concept Linux doesn't, and vice versa for the fixed
+    // per-user/system binary directories, so the two platforms get distinct
+    // messages rather than one that is only ever half-true.
+    let message = if cfg!(target_os = "macos") {
+        "the wtm desktop app is not installed (expected WTM.app in /Applications or \
+         ~/Applications, or a `wtm-gui` binary next to `wtm` or on PATH); run `wtm tui` \
+         for the terminal UI"
+    } else {
+        "the wtm desktop app is not installed (expected a `wtm-gui` binary next to `wtm`, \
+         in ~/.local/bin, /usr/local/bin, /usr/bin, or on PATH); run `wtm tui` for the \
+         terminal UI"
+    };
+    Err(Error::Other(message.to_string()))
 }
 
 /// Resolve the repository context (honoring `-C/--repo`) and load the layered

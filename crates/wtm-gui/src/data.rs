@@ -148,42 +148,138 @@ pub fn open_in_editor(repo: &OpenRepo, path: &Path) -> Result<(), String> {
     open::spawn_editor(&repo.config, path).map_err(|e| e.to_string())
 }
 
-/// Reveal a path in Finder. Both config files the Settings sheet offers to
-/// reveal (`~/.config/wtm/config.toml`, `<repo>/.worktree.toml`) are
-/// optional, so `path` not existing is the common case, not an edge case:
-/// `open -R` exits 1 for a path that isn't there. When `path` doesn't exist,
-/// walk up to the nearest existing ancestor directory and reveal that
-/// instead, so the user lands in the folder where the file would go rather
-/// than hitting an opaque Finder failure.
+/// Reveal a path in the platform's file manager: Finder on macOS via
+/// `open -R`; on Linux, the freedesktop "FileManager1" D-Bus interface
+/// (`org.freedesktop.FileManager1.ShowItems`, which GNOME Files, Nautilus,
+/// Dolphin, and most other file managers register for exactly this
+/// "show and select" request), falling back to `xdg-open`ing the containing
+/// directory when nothing answers that D-Bus call (a minimal window manager
+/// with no file manager registered, or `dbus-send` not installed).
+/// `xdg-open` alone can't select the file within the folder it opens -- there
+/// is no cross-desktop standard for that -- so that fallback is "land in the
+/// right folder", not "land on the right file".
+///
+/// The name is kept as `reveal_in_finder` even though the Linux path no
+/// longer touches Finder: it mirrors the app's `RevealInFinder` GPUI action
+/// and its menu label, both outside this module, so renaming just this
+/// function would leave the codebase using two different names for the same
+/// concept.
+///
+/// Both config files the Settings sheet offers to reveal
+/// (`~/.config/wtm/config.toml`, `<repo>/.worktree.toml`) are optional, so
+/// `path` not existing is the common case, not an edge case: none of `open
+/// -R`, the D-Bus call, or `xdg-open` handle a missing path gracefully. When
+/// `path` doesn't exist, walk up to the nearest existing ancestor directory
+/// and reveal that instead, so the user lands in the folder where the file
+/// would go rather than hitting an opaque failure.
 pub fn reveal_in_finder(path: &Path) -> Result<(), String> {
     let Some(target) = existing_ancestor(path) else {
         // Only possible for a relative path with no existing prefix at all
         // (an absolute path always bottoms out at a filesystem root).
         return Err(format!(
-            "cannot reveal '{}' in Finder: neither it nor any parent directory exists",
+            "cannot reveal '{}': neither it nor any parent directory exists",
             path.display()
         ));
     };
     let redirected = target.as_path() != path;
 
+    reveal_target(&target).map_err(|e| {
+        if redirected {
+            format!(
+                "'{}' does not exist yet; revealing '{}' instead also failed: {e}",
+                path.display(),
+                target.display()
+            )
+        } else {
+            e
+        }
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn reveal_target(target: &Path) -> Result<(), String> {
     std::process::Command::new("open")
         .arg("-R")
-        .arg(&target)
+        .arg(target)
         .status()
         .map_err(|e| format!("could not launch Finder: {e}"))
         .and_then(|status| {
             if status.success() {
                 Ok(())
-            } else if redirected {
-                Err(format!(
-                    "'{}' does not exist yet; revealing '{}' instead also failed: Finder exited with {status}",
-                    path.display(),
-                    target.display()
-                ))
             } else {
                 Err(format!("Finder exited with {status}"))
             }
         })
+}
+
+/// Linux: try the D-Bus `FileManager1.ShowItems` call first -- it can select
+/// `target` itself, not just open its directory -- and only fall back to
+/// `xdg-open` when that fails outright, so a working file manager still gets
+/// the more precise result.
+#[cfg(not(target_os = "macos"))]
+fn reveal_target(target: &Path) -> Result<(), String> {
+    let Err(dbus_err) = reveal_via_dbus(target) else {
+        return Ok(());
+    };
+    let dir = xdg_open_fallback_target(target);
+    std::process::Command::new("xdg-open")
+        .arg(dir)
+        .status()
+        .map_err(|e| {
+            format!("D-Bus FileManager1 failed ({dbus_err}); xdg-open could not be launched either: {e}")
+        })
+        .and_then(|status| {
+            if status.success() {
+                Ok(())
+            } else {
+                Err(format!(
+                    "D-Bus FileManager1 failed ({dbus_err}); xdg-open exited with {status}"
+                ))
+            }
+        })
+}
+
+/// Ask whichever file manager registered `org.freedesktop.FileManager1` on
+/// the session bus to open its window on `target`'s containing folder with
+/// `target` itself selected. Implemented via the `dbus-send` CLI rather than
+/// pulling in a D-Bus client library -- this is the one D-Bus call in the
+/// whole app, not worth a new dependency for.
+#[cfg(not(target_os = "macos"))]
+fn reveal_via_dbus(target: &Path) -> Result<(), String> {
+    let uri = format!("file://{}", target.display());
+    std::process::Command::new("dbus-send")
+        .args([
+            "--session",
+            "--dest=org.freedesktop.FileManager1",
+            "--type=method_call",
+            "/org/freedesktop/FileManager1",
+            "org.freedesktop.FileManager1.ShowItems",
+            &format!("array:string:{uri}"),
+            "string:",
+        ])
+        .status()
+        .map_err(|e| format!("could not launch dbus-send: {e}"))
+        .and_then(|status| {
+            if status.success() {
+                Ok(())
+            } else {
+                Err(format!("dbus-send exited with {status}"))
+            }
+        })
+}
+
+/// The directory `xdg-open` should be pointed at as the reveal fallback:
+/// `target` itself if it's a directory, otherwise its parent -- `xdg-open`
+/// has no notion of "open this folder with this file selected". Split out of
+/// `reveal_target` so the directory-vs-parent choice is unit tested without
+/// spawning `xdg-open`.
+#[cfg(not(target_os = "macos"))]
+fn xdg_open_fallback_target(target: &Path) -> &Path {
+    if target.is_dir() {
+        target
+    } else {
+        target.parent().unwrap_or(target)
+    }
 }
 
 /// The nearest existing ancestor of `path`: `path` itself if it already
@@ -200,8 +296,21 @@ fn existing_ancestor(path: &Path) -> Option<PathBuf> {
         .map(Path::to_path_buf)
 }
 
-/// Open a worktree in a terminal app. macOS only for now: `$WTM_TERMINAL`
-/// names the app (`open -a <app> <path>`), falling back to `Terminal`.
+/// Open a worktree in a terminal app.
+///
+/// macOS: `$WTM_TERMINAL` names the app for `open -a <app> <path>`, falling
+/// back to `Terminal`.
+///
+/// Linux: `$WTM_TERMINAL` names the emulator binary to try first (a bare
+/// name resolved on `$PATH`, or a full path); failing that, the first
+/// installed of, in order, `x-terminal-emulator`, `gnome-terminal`,
+/// `konsole`, `alacritty`, `kitty`, `wezterm`, `foot`, `xterm`. Each is
+/// spawned detached (`Command::spawn`, never waited on) rather than launched
+/// the way macOS's `open -a` is: `open` itself exits the moment the app is
+/// launched, but several of these terminals (xterm, alacritty, kitty, foot,
+/// wezterm) run in the foreground and don't return control until their
+/// window closes, so waiting on them here would block for as long as the
+/// user keeps the terminal open.
 pub fn open_in_terminal(path: &Path) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
@@ -222,8 +331,85 @@ pub fn open_in_terminal(path: &Path) -> Result<(), String> {
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = path;
-        Err("opening a terminal is not supported on this platform yet".to_string())
+        if let Ok(explicit) = std::env::var("WTM_TERMINAL") {
+            if !explicit.is_empty() {
+                return spawn_terminal(&explicit, path);
+            }
+        }
+        const CANDIDATES: &[&str] = &[
+            "x-terminal-emulator",
+            "gnome-terminal",
+            "konsole",
+            "alacritty",
+            "kitty",
+            "wezterm",
+            "foot",
+            "xterm",
+        ];
+        for name in CANDIDATES {
+            if spawn_terminal(name, path).is_ok() {
+                return Ok(());
+            }
+        }
+        Err(format!(
+            "no terminal emulator found (tried: {})",
+            CANDIDATES.join(", ")
+        ))
+    }
+}
+
+/// Launch one Linux terminal candidate, detached. `program` may be a bare
+/// name (`"gnome-terminal"`, looked up on `$PATH`) or a full path (from
+/// `$WTM_TERMINAL`); either way its file name is what [`terminal_args`]
+/// matches against to decide which working-directory flag it needs. `Err`
+/// covers both "not installed" (spawn failed) and any other spawn failure --
+/// both mean the caller should try the next candidate rather than stop.
+#[cfg(not(target_os = "macos"))]
+fn spawn_terminal(program: &str, path: &Path) -> Result<(), String> {
+    let match_name = Path::new(program)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(program);
+    std::process::Command::new(program)
+        // Set unconditionally: load-bearing for the terminals that inherit
+        // cwd from the spawning process (see `terminal_args`), harmless for
+        // the ones that need an explicit flag instead.
+        .current_dir(path)
+        .args(terminal_args(match_name, path))
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("could not launch {program}: {e}"))
+}
+
+/// Extra CLI args that make `program` open with `path` as its working
+/// directory, keyed on the emulator's executable name. Terminals differ here
+/// in a way that can't be papered over with one flag: some read the
+/// *spawning process's* cwd directly (xterm, and `x-terminal-emulator` --
+/// itself a Debian alternatives symlink to an unknown underlying terminal,
+/// so relying on inherited cwd is the only thing that works for every
+/// possible target); others (gnome-terminal) talk to a persistent daemon
+/// over D-Bus whose own cwd is what a new window inherits by default,
+/// regardless of the client process's cwd, so those need an explicit flag.
+/// Pure and unit tested directly -- no process is spawned to test this.
+#[cfg(not(target_os = "macos"))]
+fn terminal_args(program: &str, path: &Path) -> Vec<std::ffi::OsString> {
+    let path = path.as_os_str();
+    match program {
+        "gnome-terminal" | "foot" => {
+            let mut arg = std::ffi::OsString::from("--working-directory=");
+            arg.push(path);
+            vec![arg]
+        }
+        "konsole" => vec!["--workdir".into(), path.to_os_string()],
+        "alacritty" => vec!["--working-directory".into(), path.to_os_string()],
+        "kitty" => vec!["--directory".into(), path.to_os_string()],
+        "wezterm" => vec!["start".into(), "--cwd".into(), path.to_os_string()],
+        // xterm and x-terminal-emulator: no flag, rely on the inherited cwd
+        // set by `Command::current_dir` in `spawn_terminal`.
+        _ => Vec::new(),
     }
 }
 
@@ -252,13 +438,30 @@ pub fn copy_to_clipboard(text: &str) -> Result<(), String> {
         let Ok(mut child) = child else {
             continue; // Not installed; try the next tool.
         };
-        if let Some(stdin) = child.stdin.as_mut() {
+
+        let write_ok = child.stdin.as_mut().is_some_and(|stdin| {
             use std::io::Write;
-            if stdin.write_all(text.as_bytes()).is_err() {
-                continue;
-            }
-        }
+            stdin.write_all(text.as_bytes()).is_ok()
+        });
+        // Close our end regardless of `write_ok`: EOF on stdin is exactly
+        // what tells wl-copy/xclip/xsel to stop reading and fork into the
+        // background to *stay* the clipboard's owner -- all three hold the
+        // selection in that spawned (and now detached) process itself, not
+        // in some system clipboard store, so a process that never gets past
+        // this point never actually owns the clipboard. Waiting for it below
+        // is safe and fast, not a long block: it only waits for that
+        // read-then-fork step, not for the clipboard to be pasted.
         drop(child.stdin.take());
+
+        if !write_ok {
+            // The write failed mid-stream (e.g. the tool died), so whatever
+            // partial bytes it already read would otherwise still get
+            // forked into the background as a bogus clipboard owner once it
+            // sees our EOF. Kill it instead of leaving that orphan running.
+            let _ = child.kill();
+            let _ = child.wait();
+            continue;
+        }
         match child.wait() {
             Ok(status) if status.success() => return Ok(()),
             _ => continue,
@@ -1604,6 +1807,90 @@ mod tests {
     fn existing_ancestor_none_when_all_ancestors_missing() {
         let path = Path::new("definitely/does/not/exist/anywhere/at/all");
         assert_eq!(existing_ancestor(path), None);
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn xdg_open_fallback_target_is_the_dir_itself_for_a_directory() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        assert_eq!(xdg_open_fallback_target(tmp.path()), tmp.path());
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn xdg_open_fallback_target_is_the_parent_for_a_file() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let file = tmp.path().join("f.txt");
+        std::fs::write(&file, "x").unwrap();
+        assert_eq!(xdg_open_fallback_target(&file), tmp.path());
+    }
+
+    // ---------------- Task: open_in_terminal (Linux) ----------------
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn terminal_args_uses_equals_form_for_gnome_terminal_and_foot() {
+        let path = Path::new("/repo/wt");
+        assert_eq!(
+            terminal_args("gnome-terminal", path),
+            vec![std::ffi::OsString::from("--working-directory=/repo/wt")]
+        );
+        assert_eq!(
+            terminal_args("foot", path),
+            vec![std::ffi::OsString::from("--working-directory=/repo/wt")]
+        );
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn terminal_args_uses_separate_flag_and_value_for_konsole_alacritty_kitty() {
+        let path = Path::new("/repo/wt");
+        assert_eq!(
+            terminal_args("konsole", path),
+            vec![
+                std::ffi::OsString::from("--workdir"),
+                std::ffi::OsString::from("/repo/wt")
+            ]
+        );
+        assert_eq!(
+            terminal_args("alacritty", path),
+            vec![
+                std::ffi::OsString::from("--working-directory"),
+                std::ffi::OsString::from("/repo/wt")
+            ]
+        );
+        assert_eq!(
+            terminal_args("kitty", path),
+            vec![
+                std::ffi::OsString::from("--directory"),
+                std::ffi::OsString::from("/repo/wt")
+            ]
+        );
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn terminal_args_wezterm_uses_start_cwd_subcommand() {
+        let path = Path::new("/repo/wt");
+        assert_eq!(
+            terminal_args("wezterm", path),
+            vec![
+                std::ffi::OsString::from("start"),
+                std::ffi::OsString::from("--cwd"),
+                std::ffi::OsString::from("/repo/wt")
+            ]
+        );
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn terminal_args_xterm_and_x_terminal_emulator_rely_on_inherited_cwd() {
+        let path = Path::new("/repo/wt");
+        assert!(terminal_args("xterm", path).is_empty());
+        assert!(terminal_args("x-terminal-emulator", path).is_empty());
+        // An unrecognized name (e.g. a custom $WTM_TERMINAL) degrades the
+        // same way rather than guessing at flags it might not support.
+        assert!(terminal_args("some-custom-term", path).is_empty());
     }
 
     // ---------------- Task 2: list_refs ordering ----------------
