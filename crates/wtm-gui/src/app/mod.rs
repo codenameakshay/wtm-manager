@@ -557,6 +557,37 @@ impl Render for WtmApp {
             .size_full()
             .flex()
             .text_color(theme.text)
+            // Sets the *default* text family for the entire window: gpui's
+            // `TextStyle::default()` hardcodes `.SystemUIFont`, and nothing
+            // else in the tree ever calls `.font_family(theme.font_sans)` —
+            // every non-mono call site (row labels, dialog copy, section
+            // headers, button labels…) was silently painting in the
+            // platform UI font instead of the bundled Geist despite
+            // `assets::register_fonts` shipping it. Setting it once here
+            // lets gpui's text-style cascade (`Window::text_style_stack`,
+            // pushed by every descendant `Div::prepaint`) carry it to every
+            // normal child for free.
+            //
+            // This same refinement also reaches the four deferred/anchored
+            // overlays below (the dialogs/settings/palette/run-command
+            // `deferred(overlay)` and `context_menu.render`'s own internal
+            // `deferred(anchored(..))`): `gpui::Window::defer_draw` clones
+            // `text_style_stack` at the moment each is prepainted (see
+            // `gpui-0.2.2/src/window.rs`'s `defer_draw`/
+            // `prepaint_deferred_draws`), which happens *inside* this div's
+            // own `with_text_style` scope since both are `root`'s
+            // descendants in the normal top-down prepaint pass. `anchored()`
+            // never touches the text-style stack at all (verified against
+            // `gpui-0.2.2/src/elements/anchored.rs` — it only offsets
+            // layout), so it's fully transparent to this cascade.
+            //
+            // The one root that does NOT inherit from here is
+            // `ui::Tooltip`: gpui prepaints tooltips via a wholly separate
+            // `layout_as_root` call in `Window::draw_roots` (after —  not
+            // nested under — the main tree's `prepaint_as_root`/deferred
+            // passes), so it carries no snapshot of this stack at all and
+            // sets `theme.font_sans` itself.
+            .font_family(theme.font_sans)
             // The root itself stays unpainted so the window's blurred backing
             // shows through the sidebar, the way a native source list does.
             // Only the content column gets an opaque surface.
@@ -570,7 +601,7 @@ impl Render for WtmApp {
                     .h_full()
                     .flex()
                     .flex_col()
-                    .bg(theme.canvas)
+                    .bg(theme.bg)
                     .child(self.render_titlebar(window, cx))
                     .child(self.render_list(cx))
                     .child(self.render_footer(cx)),

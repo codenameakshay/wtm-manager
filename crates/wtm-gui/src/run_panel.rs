@@ -61,9 +61,10 @@ use wtm::model::WorktreeInfo;
 use crate::app::WtmApp;
 use crate::assets::icons;
 use crate::data;
+use crate::motion;
 use crate::text_input::{InputEvent, TextInput};
-use crate::theme::Theme;
-use crate::ui::{self, ButtonVariant};
+use crate::theme::{Theme, RADIUS_CONTROL, SPACE_12, SPACE_16, SPACE_2, SPACE_4, SPACE_6, SPACE_8};
+use crate::ui::{self, ButtonVariant, TEXT_BASE, TEXT_SM, TEXT_XS};
 
 /// Cap on retained output lines. Past this, further lines are counted in
 /// [`RunProgressState::dropped`] rather than pushed — output stays bounded
@@ -268,32 +269,39 @@ pub fn render(
         RunPhase::Running(progress) => render_progress(progress, theme, cx).into_any_element(),
     };
 
-    crate::app::render_modal_backdrop(cx)
+    let card = ui::modal_card(WIDTH, theme)
+        .id("run-command-dialog-card")
+        .on_click(|_, _, cx| cx.stop_propagation())
+        .child(ui::modal_header(
+            "Run Command",
+            Some(&format!("in {}", state.target.display_name())),
+            theme,
+        ))
         .child(
-            ui::modal_card(WIDTH, theme)
-                .id("run-command-dialog-card")
-                .on_click(|_, _, cx| cx.stop_propagation())
-                .child(ui::modal_header(
-                    "Run Command",
-                    Some(&format!("in {}", state.target.display_name())),
-                    theme,
-                ))
-                .child(
-                    // The target worktree named plainly, in full, right
-                    // under the header — so which worktree this runs in is
-                    // never in doubt, even if `display_name()` alone (just
-                    // the branch) is ambiguous across two worktrees with
-                    // the same branch name in different repos, or simply
-                    // easy to skim past.
-                    div().px(px(16.0)).pb(px(2.0)).child(ui::meta(
-                        icons::FOLDER,
-                        state.target.path.display().to_string(),
-                        theme,
-                    )),
-                )
-                .child(body),
+            // The target worktree named plainly, in full, right
+            // under the header — so which worktree this runs in is
+            // never in doubt, even if `display_name()` alone (just
+            // the branch) is ambiguous across two worktrees with
+            // the same branch name in different repos, or simply
+            // easy to skim past.
+            div().px(px(SPACE_16)).pb(px(SPACE_2)).child(ui::meta(
+                icons::FOLDER,
+                state.target.path.display().to_string(),
+                theme,
+            )),
         )
-        .into_any_element()
+        .child(body);
+
+    // SURFACES §7: card enters with `DIALOG_IN`, the scrim behind it with
+    // the cheaper `FADE_QUICK` — the same two-layer entrance every other
+    // dialog in this app uses (see `app::dialog_forms`'s `render_*_dialog`
+    // functions).
+    let backdrop = crate::app::render_modal_backdrop(cx).child(motion::dialog_in(
+        "run-command-dialog-in",
+        card,
+        cx,
+    ));
+    motion::fade_quick("run-command-dialog-backdrop-in", backdrop, cx).into_any_element()
 }
 
 fn render_form(
@@ -309,18 +317,20 @@ fn render_form(
     div()
         .flex()
         .flex_col()
-        .gap(px(10.0))
-        .px(px(16.0))
-        .py(px(14.0))
+        .gap(px(SPACE_12))
+        .px(px(SPACE_16))
+        .py(px(SPACE_12))
         .child(
+            // SURFACES §7: field label at `TEXT_SM`/`text_muted` above the
+            // input well.
             div()
                 .flex()
                 .flex_col()
-                .gap(px(4.0))
+                .gap(px(SPACE_4))
                 .child(
                     div()
-                        .text_size(px(11.5))
-                        .text_color(theme.text_tertiary)
+                        .text_size(px(TEXT_SM))
+                        .text_color(theme.text_muted)
                         .child("Command"),
                 )
                 .child(state.command_input.clone()),
@@ -330,10 +340,10 @@ fn render_form(
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(2.0))
+                    .gap(px(SPACE_2))
                     .child(
                         div()
-                            .text_size(px(11.0))
+                            .text_size(px(TEXT_XS))
                             .text_color(theme.text_ghost)
                             .child("Recent"),
                     )
@@ -342,7 +352,7 @@ fn render_form(
                             .id("run-command-recent")
                             .flex()
                             .flex_col()
-                            .gap(px(1.0))
+                            .gap(px(SPACE_2))
                             .max_h(px(150.0))
                             .overflow_y_scroll()
                             .children(suggestions.into_iter().map(|command| {
@@ -393,7 +403,7 @@ fn render_recent_row(command: &str, theme: &Theme) -> Stateful<gpui::Div> {
         div()
             .min_w_0()
             .truncate()
-            .text_size(px(12.5))
+            .text_size(px(TEXT_BASE))
             .text_color(theme.text)
             .child(command.to_string()),
     )
@@ -407,16 +417,20 @@ fn render_progress(
     div()
         .flex()
         .flex_col()
-        .gap(px(10.0))
-        .px(px(16.0))
-        .py(px(14.0))
+        .gap(px(SPACE_12))
+        .px(px(SPACE_16))
+        .py(px(SPACE_12))
         .child(
             div()
-                .text_size(px(12.5))
+                .text_size(px(TEXT_BASE))
                 .text_color(theme.text)
+                .font(output_font())
                 .child(format!("$ {}", progress.command)),
         )
         .child(
+            // SURFACES §7: progress/log views are mono on `surface_inset`,
+            // newest line pinned in view (`track_scroll` + each push
+            // scrolling to the last item — see `RunProgressState::push_line`).
             div()
                 .id("run-command-log")
                 .flex()
@@ -424,10 +438,10 @@ fn render_progress(
                 .h(px(240.0))
                 .overflow_y_scroll()
                 .track_scroll(&progress.scroll)
-                .px(px(10.0))
-                .py(px(8.0))
-                .rounded(px(ui::RADIUS))
-                .bg(theme.inset)
+                .px(px(SPACE_8))
+                .py(px(SPACE_8))
+                .rounded(px(RADIUS_CONTROL))
+                .bg(theme.surface_inset)
                 .font(output_font())
                 .children(
                     progress
@@ -438,8 +452,8 @@ fn render_progress(
                 .when(progress.dropped > 0, |this| {
                     this.child(
                         div()
-                            .pt(px(4.0))
-                            .text_size(px(11.0))
+                            .pt(px(SPACE_4))
+                            .text_size(px(TEXT_XS))
                             .text_color(theme.text_ghost)
                             .child(format!(
                                 "…{} more line{} not shown (output capped at {} lines)",
@@ -458,9 +472,9 @@ fn render_progress(
 
 fn render_output_line(text: &str, theme: &Theme) -> impl IntoElement {
     div()
-        .text_size(px(11.5))
+        .text_size(px(TEXT_XS))
         .line_height(px(16.0))
-        .text_color(theme.text_secondary)
+        .text_color(theme.text_muted)
         .child(if text.is_empty() {
             " ".to_string()
         } else {
@@ -471,29 +485,49 @@ fn render_output_line(text: &str, theme: &Theme) -> impl IntoElement {
 /// The finished/failed banner: `theme.success` for a clean exit,
 /// `theme.danger` for anything else — a non-zero exit is shown here exactly
 /// like a clean one, just tinted differently, never as an error dialog (see
-/// this module's doc comment and `data::run_command_streaming`'s).
+/// this module's doc comment and `data::run_command_streaming`'s). Color is
+/// paired with both an icon and the outcome spelled out in the label text
+/// (SPEC §5: motion/color are never the only feedback channel), not just a
+/// tinted word.
 fn render_outcome_banner(outcome: &RunOutcome, theme: &Theme) -> impl IntoElement {
-    let (color, text) = match outcome {
+    let (color, icon_path, text) = match outcome {
         RunOutcome::Finished {
             success: true,
             code: _,
-        } => (theme.success, "Exited 0".to_string()),
+        } => (
+            theme.success,
+            crate::assets::icons::CHECK,
+            "Exited 0".to_string(),
+        ),
         RunOutcome::Finished {
             success: false,
             code: Some(code),
-        } => (theme.danger, format!("Exited {code}")),
+        } => (
+            theme.danger,
+            crate::assets::icons::CIRCLE_ALERT,
+            format!("Exited {code}"),
+        ),
         RunOutcome::Finished {
             success: false,
             code: None,
-        } => (theme.danger, "Terminated by signal".to_string()),
-        RunOutcome::StartFailed(e) => (theme.danger, format!("Could not start: {e}")),
+        } => (
+            theme.danger,
+            crate::assets::icons::CIRCLE_ALERT,
+            "Terminated by signal".to_string(),
+        ),
+        RunOutcome::StartFailed(e) => (
+            theme.danger,
+            crate::assets::icons::CIRCLE_ALERT,
+            format!("Could not start: {e}"),
+        ),
     };
     div()
         .flex()
         .items_center()
-        .gap(px(6.0))
-        .text_size(px(12.5))
+        .gap(px(SPACE_6))
+        .text_size(px(TEXT_BASE))
         .text_color(color)
+        .child(ui::icon(icon_path, 12.0, color))
         .child(text)
 }
 
@@ -508,7 +542,7 @@ fn render_progress_footer(
             div()
                 .flex_1()
                 .min_w_0()
-                .text_size(px(11.0))
+                .text_size(px(TEXT_XS))
                 .text_color(theme.text_ghost)
                 .child("Running… closing this dialog will not stop it."),
         )

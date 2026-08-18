@@ -12,6 +12,8 @@
 
 use super::*;
 
+use crate::motion;
+
 impl WtmApp {
     pub(super) fn on_toggle_detail_panel(
         &mut self,
@@ -73,6 +75,19 @@ impl WtmApp {
             Appearance::Light => theme::refresh(WindowAppearance::Light, cx),
             Appearance::Dark => theme::refresh(WindowAppearance::Dark, cx),
         }
+        cx.notify();
+    }
+
+    /// Set the reduce-motion preference, persist it, and apply it
+    /// immediately — same shape as [`Self::set_appearance`]: write
+    /// `self.prefs`, persist, then push the live value to the runtime global
+    /// (`motion::set_reduced`) the same render pass reads back via
+    /// `motion::reduced`, so the toggle and actual animation behavior can
+    /// never disagree.
+    pub(crate) fn set_reduce_motion(&mut self, value: bool, cx: &mut Context<Self>) {
+        self.prefs.reduce_motion = value;
+        self.save_prefs();
+        motion::set_reduced(cx, value);
         cx.notify();
     }
 

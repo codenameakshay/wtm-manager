@@ -24,6 +24,7 @@ mod detail_panel;
 mod dialogs;
 mod diff_view;
 mod file_browser;
+mod motion;
 mod palette;
 mod prefs;
 mod run_panel;
@@ -235,6 +236,10 @@ fn main() {
     Application::new()
         .with_assets(Assets)
         .run(move |cx: &mut App| {
+            // Register the bundled Geist/Geist Mono faces before anything
+            // paints. Failure is non-fatal (see `assets::register_fonts`) —
+            // this is best-effort, not a gate on startup.
+            assets::register_fonts(cx);
             theme::init(cx);
             // `theme::init` already resolved the OS appearance; a forced
             // Light/Dark preference overrides that immediately by handing
@@ -246,6 +251,10 @@ fn main() {
                 prefs::Appearance::Light => theme::refresh(gpui::WindowAppearance::Light, cx),
                 prefs::Appearance::Dark => theme::refresh(gpui::WindowAppearance::Dark, cx),
             }
+            // Same "apply the persisted preference at startup" treatment as
+            // appearance above — see `WtmApp::set_reduce_motion` for the
+            // runtime toggle that keeps this in sync after launch.
+            motion::set_reduced(cx, prefs.reduce_motion);
             cx.activate(true);
 
             cx.on_action(|_: &Quit, cx: &mut App| cx.quit());

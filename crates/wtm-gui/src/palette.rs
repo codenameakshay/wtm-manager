@@ -35,13 +35,16 @@
 use std::collections::HashSet;
 
 use gpui::prelude::*;
-use gpui::{div, hsla, px, AnyElement, Context, Entity, SharedString, Subscription, Window};
+use gpui::{div, px, AnyElement, Context, Entity, SharedString, Subscription, Window};
 use wtm::model::WorktreeInfo;
 
 use crate::app::WtmApp;
 use crate::assets::icons;
+use crate::motion;
 use crate::text_input::{InputEvent, TextInput};
-use crate::theme::Theme;
+use crate::theme::{
+    scrim, Theme, RADIUS_CONTROL, SCRIM_ALPHA_DARK, SPACE_12, SPACE_2, SPACE_4, SPACE_6, SPACE_8,
+};
 use crate::ui;
 
 /// Width of the palette card. Deliberately wider than the ~400-440px
@@ -427,7 +430,12 @@ pub struct PaletteState {
 
 impl PaletteState {
     pub fn new(window: &mut Window, cx: &mut Context<WtmApp>) -> Self {
-        let input = cx.new(|cx| TextInput::new("Search worktrees and commands…", window, cx));
+        // `.borderless()`: the palette's search field sits inside the
+        // `ui::popover` card's own well (SURFACES §6: "a borderless inset
+        // well") rather than drawing a second box of its own — see
+        // `TextInput::borderless`'s doc.
+        let input =
+            cx.new(|cx| TextInput::new("Search worktrees and commands…", window, cx).borderless());
         let sub = cx.subscribe_in(&input, window, {
             // Only ever calls back through `WtmApp`'s own `pub(crate)`
             // methods, never reaches into its fields directly — the same
@@ -488,11 +496,11 @@ pub fn render(
         .id("palette-results")
         .flex()
         .flex_col()
-        .gap(px(2.0))
+        .gap(px(SPACE_2))
         .max_h(px(MAX_RESULTS_HEIGHT))
         .overflow_y_scroll()
-        .px(px(6.0))
-        .py(px(6.0))
+        .px(px(SPACE_6))
+        .py(px(SPACE_6))
         .when(!worktree_entries.is_empty(), |this| {
             this.child(ui::section_header("Worktrees", theme)).children(
                 worktree_entries
@@ -508,23 +516,64 @@ pub fn render(
             )
         })
         .when(results.is_empty(), |this| {
+            // A one-line empty state (SURFACES §6), not the full
+            // icon+headline `ui::empty_state` — that component is sized for
+            // a panel filling its own space (COMPONENTS.md), which would
+            // dwarf a "no matches" hint inside an already-open search
+            // overlay. Same primitives (`ui::icon`, muted text), composed
+            // at a scale that fits here.
             this.child(
                 div()
-                    .px(px(8.0))
-                    .py(px(10.0))
-                    .text_size(px(12.5))
-                    .text_color(theme.text_ghost)
+                    .flex()
+                    .items_center()
+                    .gap(px(SPACE_6))
+                    .px(px(SPACE_8))
+                    .py(px(SPACE_8))
+                    .text_size(px(ui::TEXT_SM))
+                    .text_color(theme.text_muted)
+                    .child(ui::icon(icons::SEARCH, 13.0, theme.text_faint))
                     .child("No matches"),
             )
         });
 
-    let card = ui::modal_card(WIDTH, theme)
+    // Search field: a borderless inset well with a leading search icon
+    // (SURFACES §6). `TextInput` itself paints no background/border in
+    // `.borderless()` mode (see `PaletteState::new`), so this wrapper is
+    // the well: `surface_inset` at `RADIUS_CONTROL`, concentric with the
+    // card's own `RADIUS_PANEL` (10) at `SPACE_4` (4) padding —
+    // `10 - 4 == 6 == RADIUS_CONTROL` (`ui::concentric_inner_radius`'s own
+    // worked example).
+    let search = div().p(px(SPACE_4)).child(
+        div()
+            .id("palette-search")
+            .flex()
+            .items_center()
+            .gap(px(SPACE_8))
+            .h(px(ui::ROW_HEIGHT))
+            .px(px(SPACE_12))
+            .rounded(px(RADIUS_CONTROL))
+            .bg(theme.surface_inset)
+            .child(ui::icon(icons::SEARCH, 14.0, theme.text_faint))
+            .child(div().flex_1().min_w_0().child(state.input.clone())),
+    );
+
+    // `ui::popover`: `RADIUS_PANEL` + `shadow_popover`, the same overlay
+    // surface the context menu uses (SURFACES §6) — replaces the former
+    // `ui::modal_card` (`RADIUS_DIALOG`/`shadow_dialog`), which is the
+    // dialog ladder's step, not the popover ladder's.
+    let card = ui::popover(theme)
         .id("palette-card")
+        .w(px(WIDTH))
         .on_click(|_, _, cx| cx.stop_propagation())
         .on_key_down(cx.listener(WtmApp::on_palette_key_down))
-        .child(div().px(px(12.0)).py(px(10.0)).child(state.input.clone()))
-        .child(div().border_t_1().border_color(theme.border))
+        .child(search)
+        .child(ui::divider(theme))
         .child(results_col);
+
+    // SPEC §5: the results list beneath never animates (touched on every
+    // keystroke); the palette itself is touched rarely and enters with
+    // `MENU_IN` so the motion tells the eye where it came from.
+    let card = motion::menu_in("palette-card-motion", card, cx);
 
     div()
         .id("palette-backdrop")
@@ -533,7 +582,7 @@ pub fn render(
         .flex()
         .flex_col()
         .items_center()
-        .bg(hsla(0.0, 0.0, 0.0, 0.45))
+        .bg(scrim(SCRIM_ALPHA_DARK))
         .on_click(cx.listener(|this, _, window, cx| this.close_palette(window, cx)))
         .child(div().h(px(TOP_OFFSET)).flex_none())
         .child(card)
@@ -564,8 +613,8 @@ fn render_entry(
     ui::row(("palette-entry", ix), highlighted, theme)
         .flex()
         .items_center()
-        .gap(px(8.0))
-        .child(ui::icon(icon_path, 13.0, theme.text_tertiary))
+        .gap(px(SPACE_8))
+        .child(ui::icon(icon_path, 13.0, theme.text_faint))
         .child(
             div()
                 .flex_1()
@@ -630,7 +679,7 @@ fn highlighted_spans(label: &str, indices: &[usize], theme: &Theme) -> Vec<AnyEl
 fn span(text: &str, matched: bool, theme: &Theme) -> AnyElement {
     div()
         .flex_none()
-        .text_size(px(12.5))
+        .text_size(px(ui::TEXT_BASE))
         .text_color(if matched { theme.accent } else { theme.text })
         .child(text.to_string())
         .into_any_element()

@@ -24,18 +24,26 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use gpui::prelude::*;
-use gpui::{div, px, AnyElement, Div, Hsla, SharedString, Stateful};
+use gpui::{div, px, radians, svg, AnyElement, Div, Hsla, SharedString, Stateful, Transformation};
 
 use crate::assets::icons;
 use crate::data::{FileEntry, FileStatus};
-use crate::theme::Theme;
+use crate::theme::{Theme, SPACE_6, SPACE_8};
 use crate::ui;
 
 /// Indentation added per tree depth level.
 const INDENT: f32 = 14.0;
-/// Height of one tree row — slightly tighter than a worktree list row
-/// (32px) since a file tree reads better dense.
-const ROW_HEIGHT: f32 = 24.0;
+/// Fixed width of the disclosure-chevron column — reserved for every row
+/// (file rows just leave it empty) so names still line up under their
+/// siblings instead of drifting left when a row has no chevron to show.
+const DISCLOSURE_WIDTH: f32 = 10.0;
+/// Height of one tree row. Pre-redesign this was a bespoke, tighter 24px
+/// ("a file tree reads better dense") — SURFACES §4 standardizes Files-tab
+/// rows on the shared [`ui::ROW_HEIGHT`] token (32px) instead, so a tree row
+/// and a sidebar action row share a height for the same "literally the same
+/// function" reason `ui.rs`'s own module doc gives for the rest of the
+/// component vocabulary.
+const ROW_HEIGHT: f32 = ui::ROW_HEIGHT;
 
 /// What's known about one directory's contents: nothing requested yet
 /// (absent from [`FileBrowserState`]'s map), a request in flight, a
@@ -200,7 +208,7 @@ fn push_entries<'a>(
 /// Map a [`FileStatus`] to the same semantic colors `worktree_list`/
 /// `detail_panel` already use for a worktree's own status pills — modified
 /// reads as "dirty" (warning), added as success, deleted/conflicted as
-/// danger, untracked as the neutral `text_tertiary` a new, not-yet-tracked
+/// danger, untracked as the neutral `text_faint` a new, not-yet-tracked
 /// file deserves rather than an alarm color. `Renamed` has no existing
 /// worktree-level precedent to match (there is no per-worktree "renamed"
 /// status); `info` is used for it here as the same "structurally different,
@@ -216,7 +224,7 @@ pub fn status_color(status: FileStatus, theme: &Theme) -> Hsla {
         FileStatus::Added => theme.success,
         FileStatus::Deleted => theme.danger,
         FileStatus::Renamed => theme.info,
-        FileStatus::Untracked => theme.text_tertiary,
+        FileStatus::Untracked => theme.text_faint,
         FileStatus::Conflicted => theme.danger,
     }
 }
@@ -237,6 +245,12 @@ pub fn status_label(status: FileStatus) -> &'static str {
 /// One tree row. Returns a stateful element with no click handler attached
 /// — see the module doc for why the caller (`crate::app::chrome`) attaches
 /// one, the same split `worktree_list::render_row` uses for the main list.
+///
+/// Built on [`ui::row`] (SURFACES §4: "selected row uses the standard row
+/// selection") rather than a hand-rolled `item_selected`/`item_wash`
+/// pairing — the same wash-plus-accent-leading-bar selection every other
+/// selectable row in the app uses, in place of what used to be this
+/// module's own copy of that logic.
 pub fn render_row(
     row: &VisibleRow<'_>,
     selected_file: Option<&Path>,
@@ -248,7 +262,7 @@ pub fn render_row(
     let name_color = match row.status {
         Some(status) => status_color(status, theme),
         None if row.is_dir => theme.text,
-        None => theme.text_secondary,
+        None => theme.text_muted,
     };
 
     // A directory that's open but still loading (or failed) gets a small
@@ -260,7 +274,7 @@ pub fn render_row(
             Some(DirState::Loading) => Some(
                 div()
                     .flex_none()
-                    .text_size(px(10.5))
+                    .text_size(px(ui::TEXT_XS))
                     .text_color(theme.text_ghost)
                     .child("loading…")
                     .into_any_element(),
@@ -270,7 +284,7 @@ pub fn render_row(
                     .flex_none()
                     .max_w(px(140.0))
                     .truncate()
-                    .text_size(px(10.5))
+                    .text_size(px(ui::TEXT_XS))
                     .text_color(theme.danger)
                     .child(format!("error: {e}"))
                     .into_any_element(),
@@ -281,49 +295,79 @@ pub fn render_row(
         None
     };
 
-    div()
-        .id(id)
+    // A real chevron icon in place of the pre-redesign "▸"/"▾" text glyph
+    // (SURFACES §4). Rotation is a static snap between two fixed angles,
+    // not an animated tween through `motion::COLLAPSE`: this function has
+    // no `cx`/`App` to check `motion::reduced` or drive a real
+    // `AnimationElement` through (see the redesign report for the
+    // signature change an animated version would need).
+    let disclosure: Option<AnyElement> = row.is_dir.then(|| {
+        svg()
+            .path(icons::CHEVRON_RIGHT)
+            .size(px(10.0))
+            .flex_none()
+            .text_color(theme.text_ghost)
+            .with_transformation(Transformation::rotate(radians(if expanded {
+                std::f32::consts::FRAC_PI_2
+            } else {
+                0.0
+            })))
+            .into_any_element()
+    });
+
+    ui::row(id, is_selected, theme)
+        // `ui::row` already rounds at `RADIUS_ROW` internally — no need to
+        // restate it here.
         .h(px(ROW_HEIGHT))
-        .w_full()
-        .min_w_0()
-        .pl(px(8.0 + row.depth as f32 * INDENT))
-        .pr(px(8.0))
+        .pl(px(SPACE_8 + row.depth as f32 * INDENT))
         .flex()
         .items_center()
-        .gap(px(6.0))
-        .rounded(px(ui::RADIUS))
-        .cursor_default()
-        .when(is_selected, |d| d.bg(theme.item_selected))
-        .when(!is_selected, |d| d.hover(|s| s.bg(theme.item_wash)))
+        .gap(px(SPACE_6))
         .child(
-            // Fixed-width disclosure glyph column: a directory shows
-            // ▸/▾ for collapsed/expanded, a file shows nothing, but the
-            // column is always reserved so file rows still line up under
-            // their siblings' names instead of drifting left.
+            // Fixed-width disclosure column: reserved for every row (see
+            // `DISCLOSURE_WIDTH`'s doc) so file rows still line up under
+            // their siblings' names.
             div()
                 .flex_none()
-                .w(px(10.0))
-                .text_size(px(9.0))
-                .text_color(theme.text_ghost)
-                .child(if !row.is_dir {
-                    ""
-                } else if expanded {
-                    "▾"
-                } else {
-                    "▸"
-                }),
+                .w(px(DISCLOSURE_WIDTH))
+                .flex()
+                .items_center()
+                .justify_center()
+                .children(disclosure),
         )
         .when(row.is_dir, |d| {
-            d.child(ui::icon(icons::FOLDER, 12.0, theme.text_tertiary))
+            // File icon by kind (SURFACES §4): a directory reads open/closed
+            // through `FOLDER_OPEN`/`FOLDER`, matching its own disclosure
+            // state.
+            d.child(ui::icon(
+                if expanded {
+                    icons::FOLDER_OPEN
+                } else {
+                    icons::FOLDER
+                },
+                12.0,
+                theme.text_faint,
+            ))
+        })
+        .when(!row.is_dir, |d| {
+            d.child(ui::icon(icons::FILE, 12.0, theme.text_faint))
         })
         .child(
+            // `.id(..)` (keyed on the row's own rel path, unique per row) so
+            // `.tooltip(..)` — `StatefulInteractiveElement`-only in gpui
+            // 0.2.2 — is available on this div.
             div()
+                .id(SharedString::from(format!(
+                    "file-row-name:{}",
+                    row.rel_path.display()
+                )))
                 .flex_1()
                 .min_w_0()
                 .truncate()
-                .text_size(px(12.5))
+                .text_size(px(ui::TEXT_SM))
                 .text_color(name_color)
-                .child(row.name.to_string()),
+                .child(row.name.to_string())
+                .tooltip(ui::tooltip(row.rel_path.display().to_string())),
         )
         .when_some(trailing, |d, el| d.child(el))
 }
@@ -516,7 +560,7 @@ mod tests {
         assert_eq!(status_color(FileStatus::Conflicted, &theme), theme.danger);
         assert_eq!(
             status_color(FileStatus::Untracked, &theme),
-            theme.text_tertiary
+            theme.text_faint
         );
     }
 

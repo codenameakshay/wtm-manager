@@ -16,6 +16,21 @@
 //! no use for it, and every action left in `text_input` below binds a key a
 //! dialog actually needs.
 //!
+//! # Paint only, per the redesign
+//!
+//! The redesign (SURFACES §10) touches only how this file paints: the field
+//! is an inset well (`theme.surface_inset`), focus adds a stronger edge (see
+//! [`TextInput::render`]'s use of [`crate::ui::focus_ring`]), the
+//! placeholder reads at `text_faint`, and the caret/selection band paint
+//! from `Theme`'s dedicated `caret`/`selection` tokens (see their docs on
+//! `Theme` for why those exist rather than a bare `theme.accent`).
+//! [`TextInput::borderless`] is the one new, purely-additive knob: an
+//! overlay that supplies its own containing well
+//! (the command palette's search field, sitting inside `ui::popover`) can
+//! opt out of this file's own background/border so it doesn't nest a second
+//! box around the first. Every IME/selection/keyboard code path below is
+//! unchanged.
+//!
 //! The original steps the cursor by grapheme cluster via the
 //! `unicode-segmentation` crate. This crate may only touch its own two
 //! files, so `unicode-segmentation` is not a dependency here — cursor
@@ -24,12 +39,6 @@
 //! skin-tone modifier, a combining accent typed as two codepoints); every
 //! string this app collects — worktree and branch names — is plain
 //! ASCII/Latin in practice, so the simplification is invisible in use.
-
-// No dialog constructs a `TextInput` yet, so rustc considers this entire
-// module dead code — every path through it starts from `TextInput::new`,
-// which nothing calls. Drop this once a dialog (search, rename, new
-// worktree) wires one in.
-#![allow(dead_code)]
 
 use std::ops::Range;
 use std::time::Duration;
@@ -43,8 +52,8 @@ use gpui::{
     UTF16Selection, UnderlineStyle, Window,
 };
 
-use crate::theme::Theme;
-use crate::ui::RADIUS;
+use crate::theme::{Theme, RADIUS_CONTROL, SPACE_6, SPACE_8};
+use crate::ui;
 
 /// How long the caret stays in each phase of its blink. Matches the ~530ms
 /// most desktop text fields use — fast enough that the caret doesn't read
@@ -100,6 +109,9 @@ pub struct TextInput {
     /// Only consulted while painting a focused field with no selection —
     /// with a selection there is no caret quad, blinking or otherwise.
     cursor_visible: bool,
+    /// When set, [`TextInput::render`] skips its own background/border
+    /// entirely — see [`TextInput::borderless`]'s doc.
+    borderless: bool,
 }
 
 impl TextInput {
@@ -122,7 +134,28 @@ impl TextInput {
             last_bounds: None,
             is_selecting: false,
             cursor_visible: true,
+            borderless: false,
         }
+    }
+
+    /// Opt out of this field's own background/border/radius paint. Builder
+    /// style so it chains straight onto [`TextInput::new`], before the
+    /// value is wrapped in an `Entity` (e.g.
+    /// `cx.new(|cx| TextInput::new(placeholder, window, cx).borderless())`).
+    ///
+    /// For every existing field (dialogs, the filter box, the run panel's
+    /// command field) the default — a bordered inset well — is exactly
+    /// right, so this is opt-in and changes nothing for them. It exists for
+    /// the one caller that already supplies its own containing well: the
+    /// command palette's search field sits inside `ui::popover` and wants
+    /// to blend into it (SURFACES §6: "a borderless inset well") rather
+    /// than draw a second, redundant box nested inside the first. Purely a
+    /// paint switch — [`TextInput::render`] is the only reader of this
+    /// field, and every IME/selection/keyboard path elsewhere in this file
+    /// is unaffected either way.
+    pub fn borderless(mut self) -> Self {
+        self.borderless = true;
+        self
     }
 
     pub fn value(&self) -> &str {
@@ -643,8 +676,9 @@ impl Element for TextElement {
         let cursor_visible = input.cursor_visible;
         let style = window.text_style();
 
+        // SURFACES §10: "Placeholder is text_faint."
         let (display_text, text_color) = if content.is_empty() {
-            (input.placeholder.clone(), theme.text_ghost)
+            (input.placeholder.clone(), theme.text_faint)
         } else {
             (content, theme.text)
         };
@@ -689,6 +723,11 @@ impl Element for TextElement {
             .text_system()
             .shape_line(display_text, font_size, &runs, None);
 
+        // `theme.caret`/`theme.selection`: dedicated tokens for exactly
+        // this — see their docs on `Theme` for why they exist (a caret and
+        // a selection band are the "focus" half of accent's SPEC §3
+        // mandate, tuned per appearance so `theme.text` painted on top
+        // stays readable, rather than a bare `theme.accent` reused as-is).
         let cursor_pos = line.x_for_index(cursor);
         let (selection, cursor) = if selected_range.is_empty() {
             (
@@ -699,7 +738,7 @@ impl Element for TextElement {
                             point(bounds.left() + cursor_pos, bounds.top()),
                             size(px(2.), bounds.bottom() - bounds.top()),
                         ),
-                        theme.accent,
+                        theme.caret,
                     )
                 }),
             )
@@ -716,7 +755,7 @@ impl Element for TextElement {
                             bounds.bottom(),
                         ),
                     ),
-                    theme.accent.alpha(0.25),
+                    theme.selection,
                 )),
                 None,
             )
@@ -771,7 +810,7 @@ impl Render for TextInput {
         let theme = Theme::of(cx);
         let focused = self.focus_handle.is_focused(window);
 
-        div()
+        let field = div()
             .key_context("TextInput")
             .track_focus(&self.focus_handle)
             .cursor(CursorStyle::IBeam)
@@ -794,15 +833,32 @@ impl Render for TextInput {
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_move(cx.listener(Self::on_mouse_move))
             .w_full()
-            .px(px(8.0))
-            .py(px(6.0))
-            .rounded(px(RADIUS))
-            .border_1()
-            .border_color(if focused { theme.accent } else { theme.border })
-            .bg(theme.inset)
-            .text_size(px(13.0))
-            .line_height(px(18.0))
-            .child(TextElement { input: cx.entity() })
+            .text_size(px(ui::TEXT_BASE))
+            .line_height(px(18.0));
+
+        // SURFACES §10: "the field itself is an inset well; focus adds
+        // border_strong and the ring." `ui::focus_ring` — the design
+        // system's one implementation of "the ring" (a real border, since
+        // gpui has no inset box-shadow) — already paints a 2px accent edge
+        // on focus, which reads strictly stronger than the resting 1px
+        // `border` hairline; a separate `border_strong` layer underneath it
+        // would never be visible, so this applies the ring directly rather
+        // than painting a border nothing would show. Skipped in
+        // `borderless` mode — see [`TextInput::borderless`]'s doc.
+        let field = if self.borderless {
+            field
+        } else {
+            field
+                .px(px(SPACE_8))
+                .py(px(SPACE_6))
+                .rounded(px(RADIUS_CONTROL))
+                .bg(theme.surface_inset)
+                .border_1()
+                .border_color(theme.border)
+                .when(focused, ui::focus_ring(&theme))
+        };
+
+        field.child(TextElement { input: cx.entity() })
     }
 }
 

@@ -26,8 +26,7 @@ use gpui::{
     ResizeEdge, Stateful, Tiling, Window,
 };
 
-use crate::theme::Theme;
-use crate::ui;
+use crate::theme::{Theme, RADIUS_PANEL};
 
 /// Width of the margin reserved for the drop shadow and the resize handles
 /// that live in it — also what `Window::set_client_inset` is told, so the
@@ -118,15 +117,27 @@ pub(crate) fn wrap(content: impl IntoElement, theme: &Theme, window: &mut Window
                         .when(layout.edge_right, |d| d.border_r(BORDER))
                         .when(layout.edge_bottom, |d| d.border_b(BORDER))
                         .when(layout.edge_left, |d| d.border_l(BORDER))
-                        .when(layout.corner_top_left, |d| d.rounded_tl(px(ui::RADIUS)))
-                        .when(layout.corner_top_right, |d| d.rounded_tr(px(ui::RADIUS)))
-                        .when(layout.corner_bottom_left, |d| d.rounded_bl(px(ui::RADIUS)))
-                        .when(layout.corner_bottom_right, |d| d.rounded_br(px(ui::RADIUS)))
+                        // The outer window shape: a floating panel, not a
+                        // list row, so it takes `theme::RADIUS_PANEL` rather
+                        // than the row-shaped radius other chrome uses.
+                        .when(layout.corner_top_left, |d| d.rounded_tl(px(RADIUS_PANEL)))
+                        .when(layout.corner_top_right, |d| d.rounded_tr(px(RADIUS_PANEL)))
+                        .when(layout.corner_bottom_left, |d| {
+                            d.rounded_bl(px(RADIUS_PANEL))
+                        })
+                        .when(layout.corner_bottom_right, |d| {
+                            d.rounded_br(px(RADIUS_PANEL))
+                        })
                         // A tiled window butts against the screen edge or a
                         // neighbor on at least one side, so it never floats
                         // — no shadow to cast, matching every desktop
-                        // environment's own tiled-window treatment.
-                        .when(!tiling.is_tiled(), |d| d.shadow_lg())
+                        // environment's own tiled-window treatment. Never
+                        // gpui's own `shadow_lg()` preset — COMPONENTS.md:
+                        // "gpui's built-in ramp is not tuned for this
+                        // palette" — so this uses the theme's own dialog
+                        // ladder instead, the heaviest one, for the single
+                        // floating element that contains everything else.
+                        .when(!tiling.is_tiled(), |d| d.shadow(theme.shadow_dialog()))
                         .child(content),
                 ),
         )

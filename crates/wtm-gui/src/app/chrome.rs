@@ -10,6 +10,21 @@
 
 use super::*;
 
+use crate::motion;
+
+/// The worktree list's own content-column cap (`render_list`'s "a bounded
+/// content column: on a wide window, full-width rows strand the status
+/// pills a screen away from the branch they describe"). Named so
+/// [`WtmApp::worktree_row_card_width`] can reuse the exact number
+/// `render_list`'s `max_w(px(..))` paints, instead of a second literal that
+/// could silently drift from it.
+const LIST_MAX_WIDTH: f32 = 1040.0;
+
+/// [`WtmApp::render_row_checkbox`]'s own fixed square size, named so
+/// [`WtmApp::worktree_row_card_width`] can reserve the exact same width
+/// instead of a second, independently-typed `15.0`.
+const ROW_CHECKBOX_SIZE: f32 = 15.0;
+
 impl WtmApp {
     /// The sidebar: window controls clearance, actions, then the repo list.
     pub(super) fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -17,12 +32,14 @@ impl WtmApp {
         let active_path = self.active.as_ref().map(|r| r.path().to_path_buf());
 
         div()
-            .w(px(248.0))
+            .w(px(theme::SIDEBAR_WIDTH))
             .h_full()
             .flex()
             .flex_none()
             .flex_col()
-            .bg(theme.sidebar)
+            // The chrome plane, translucent over the window's blurred
+            // backing on macOS (opaque elsewhere) — SURFACES §1.
+            .bg(theme.glass())
             .border_r_1()
             .border_color(theme.border)
             // The title bar is transparent, so the sidebar starts under the
@@ -30,7 +47,7 @@ impl WtmApp {
             .child(div().h(px(ui::TITLEBAR_HEIGHT)).flex_none())
             .child(
                 div()
-                    .px(px(8.0))
+                    .px(px(theme::SPACE_8))
                     .flex()
                     .flex_col()
                     .child(
@@ -52,7 +69,7 @@ impl WtmApp {
                             })),
                     ),
             )
-            .child(div().h(px(10.0)).flex_none())
+            .child(div().h(px(theme::SPACE_12)).flex_none())
             .child(
                 div()
                     .flex_1()
@@ -60,40 +77,35 @@ impl WtmApp {
                     .overflow_hidden()
                     .flex()
                     .flex_col()
-                    .px(px(8.0))
+                    .px(px(theme::SPACE_8))
                     .child(
-                        // `ui::section_header` has no slot for a trailing
-                        // action and `ui.rs` is not owned by this task to add
-                        // one, so its exact height/inset/text styling is
-                        // reproduced here around a real affordance instead —
-                        // the user's own complaint was "how do I add more
-                        // repos (no plus button)?"; this is that button.
-                        div()
-                            .h(px(28.0))
-                            .pl(px(8.0))
-                            .pr(px(4.0))
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .child(
-                                div()
-                                    .text_size(px(12.5))
-                                    .text_color(theme.text_tertiary)
-                                    .child("Repositories"),
-                            )
-                            .child(
-                                ui::icon_button("add-repository", icons::PLUS, &theme).on_click(
-                                    cx.listener(|this, _, window, cx| {
-                                        this.on_add_repository(&AddRepository, window, cx);
-                                    }),
-                                ),
+                        // `ui::section_header_with_action` is exactly the
+                        // slot this needed — the hand-rolled copy of
+                        // `section_header`'s styling that used to live here
+                        // (its own comment admitted it was a copy, made only
+                        // because that slot didn't exist yet) is gone.
+                        ui::section_header_with_action(
+                            "Repositories",
+                            Some(
+                                ui::icon_button_with_tooltip(
+                                    "add-repository",
+                                    icons::PLUS,
+                                    "Add Repository · ⌘⇧O",
+                                    &theme,
+                                )
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.on_add_repository(&AddRepository, window, cx);
+                                }))
+                                .into_any_element(),
                             ),
+                            &theme,
+                        ),
                     )
                     .child(
                         div()
                             .flex()
                             .flex_col()
-                            .gap(px(1.0))
+                            .gap(px(theme::SPACE_2))
                             .children(self.repos.iter().map(|entry| {
                                 self.render_repo_row(entry, active_path.as_deref(), &theme, cx)
                             }))
@@ -102,12 +114,12 @@ impl WtmApp {
                                     div()
                                         .flex()
                                         .flex_col()
-                                        .gap(px(6.0))
-                                        .px(px(8.0))
-                                        .py(px(6.0))
+                                        .gap(px(theme::SPACE_6))
+                                        .px(px(theme::SPACE_8))
+                                        .py(px(theme::SPACE_6))
                                         .child(
                                             div()
-                                                .text_size(px(12.0))
+                                                .text_size(px(ui::TEXT_SM))
                                                 .text_color(theme.text_ghost)
                                                 .child("No repositories yet."),
                                         )
@@ -134,18 +146,25 @@ impl WtmApp {
                     ),
             )
             .child(
+                // Height is left to derive from the button plus this
+                // padding rather than a fixed density number, so it doesn't
+                // need its own token — see the redesign report.
                 div()
-                    .h(px(40.0))
-                    .px(px(10.0))
-                    .flex()
                     .flex_none()
+                    .py(px(theme::SPACE_8))
+                    .px(px(theme::SPACE_8))
+                    .flex()
                     .items_center()
                     .child(
-                        ui::icon_button("settings", icons::SETTINGS, &theme).on_click(cx.listener(
-                            |this, _, window, cx| {
-                                this.on_open_settings(&OpenSettings, window, cx);
-                            },
-                        )),
+                        ui::icon_button_with_tooltip(
+                            "settings",
+                            icons::SETTINGS,
+                            "Settings · ⌘,",
+                            &theme,
+                        )
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.on_open_settings(&OpenSettings, window, cx);
+                        })),
                     ),
             )
     }
@@ -168,38 +187,51 @@ impl WtmApp {
         )
         .flex()
         .flex_col()
-        .gap(px(3.0))
+        .gap(px(theme::SPACE_4))
         .child(
             div()
                 .flex()
+                .min_w_0()
                 .items_center()
-                .gap(px(6.0))
+                .gap(px(theme::SPACE_6))
                 .line_height(px(18.0))
                 .child(
                     div()
                         .flex_1()
                         .min_w_0()
                         .truncate()
-                        .text_size(px(13.0))
+                        .text_size(px(ui::TEXT_BASE))
                         .text_color(if missing {
-                            theme.text_tertiary
+                            theme.text_faint
                         } else {
                             theme.text
                         })
                         .child(entry.name.clone()),
                 )
                 .when(missing, |this| {
-                    this.child(ui::icon(icons::WARNING, 12.0, theme.warning))
+                    // A missing worktree directory keeps its warning icon,
+                    // now with a tooltip explaining what it means — an icon
+                    // alone with no accessible name is exactly the defect
+                    // COMPONENTS.md calls out. `.tooltip(..)` is only on
+                    // `StatefulInteractiveElement` (gpui-0.2.2's
+                    // `elements/div.rs`), so this needs an `.id(..)` to
+                    // become `Stateful<Div>` before it's callable.
+                    this.child(
+                        div()
+                            .id(SharedString::from(format!(
+                                "repo-missing-{}",
+                                entry.path.display()
+                            )))
+                            .child(ui::icon(icons::WARNING, 12.0, theme.warning))
+                            .tooltip(ui::tooltip("This repository's folder could not be found.")),
+                    )
                 }),
         )
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .text_size(px(11.5))
-                .line_height(px(15.0))
-                .child(ui::meta(icons::FOLDER, parent_label(&entry.path), theme)),
-        )
+        .child(div().flex().min_w_0().items_center().child(ui::meta(
+            icons::FOLDER,
+            parent_label(&entry.path),
+            theme,
+        )))
         .on_click(cx.listener({
             let path = path.clone();
             move |this, _, _window, cx| {
@@ -247,8 +279,8 @@ impl WtmApp {
             .flex()
             .flex_none()
             .items_center()
-            .gap(px(8.0))
-            .px(px(10.0))
+            .gap(px(theme::SPACE_8))
+            .px(px(theme::SPACE_8))
             // Only the collapsed sidebar leaves the traffic lights over this
             // strip; when the sidebar is open they sit above it instead.
             // macOS only — on Linux this space belongs to content, whether
@@ -260,11 +292,15 @@ impl WtmApp {
                 this.pl(px(ui::TRAFFIC_LIGHT_CLEARANCE))
             })
             .child(
-                ui::icon_button("toggle-sidebar", icons::PANEL_LEFT, &theme).on_click(cx.listener(
-                    |this, _, window, cx| {
-                        this.on_toggle_sidebar(&ToggleSidebar, window, cx);
-                    },
-                )),
+                ui::icon_button_with_tooltip(
+                    "toggle-sidebar",
+                    icons::PANEL_LEFT,
+                    "Toggle Sidebar · ⌘B",
+                    &theme,
+                )
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.on_toggle_sidebar(&ToggleSidebar, window, cx);
+                })),
             )
             .child(
                 div()
@@ -272,12 +308,13 @@ impl WtmApp {
                     .min_w_0()
                     .flex()
                     .items_center()
-                    .gap(px(6.0))
+                    .gap(px(theme::SPACE_6))
                     .child(
                         div()
                             .min_w_0()
                             .truncate()
-                            .text_size(px(13.0))
+                            .text_size(px(ui::TEXT_BASE))
+                            .font_weight(gpui::FontWeight::MEDIUM)
                             .text_color(theme.text)
                             .child(title),
                     )
@@ -287,8 +324,8 @@ impl WtmApp {
                                 .flex()
                                 .min_w_0()
                                 .items_center()
-                                .gap(px(6.0))
-                                .text_size(px(12.5))
+                                .gap(px(theme::SPACE_6))
+                                .text_size(px(ui::TEXT_SM))
                                 .child(div().text_color(theme.text_ghost).child("/"))
                                 .child(ui::meta(icons::GIT_BRANCH, branch, &theme)),
                         )
@@ -318,36 +355,126 @@ impl WtmApp {
                     }),
             )
             .child(
-                ui::icon_button("open-selected", icons::OPEN_EXTERNAL, &theme).on_click(
-                    cx.listener(|this, _, window, cx| {
-                        this.on_open_selected(&OpenSelected, window, cx);
-                    }),
-                ),
+                ui::icon_button_with_tooltip(
+                    "open-selected",
+                    icons::OPEN_EXTERNAL,
+                    "Open in Editor · ⏎",
+                    &theme,
+                )
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.on_open_selected(&OpenSelected, window, cx);
+                })),
             )
+            .child(self.render_reload_button(&theme, cx))
             .child(
-                ui::icon_button("reload", icons::REFRESH, &theme).on_click(cx.listener(
-                    |this, _, window, cx| {
-                        this.on_reload(&Reload, window, cx);
-                    },
-                )),
-            )
-            .child(
-                // No dedicated "inspector"/"panel-right" icon is embedded in
-                // `assets.rs` (owned elsewhere, not extended for this task);
-                // reusing the sidebar's own panel glyph is the closest
-                // available fit rather than adding a mismatched one.
-                ui::icon_button("toggle-detail-panel", icons::PANEL_LEFT, &theme).on_click(
-                    cx.listener(|this, _, window, cx| {
-                        this.on_toggle_detail_panel(&ToggleDetailPanel, window, cx);
-                    }),
-                ),
+                // `panel-right` now exists in `assets.rs` — the sidebar's own
+                // `panel-left` glyph was only ever a stand-in reused because
+                // no dedicated icon existed yet (see git history); this uses
+                // the real one.
+                ui::icon_button_with_tooltip(
+                    "toggle-detail-panel",
+                    icons::PANEL_RIGHT,
+                    "Toggle Detail Panel · ⌘I",
+                    &theme,
+                )
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.on_toggle_detail_panel(&ToggleDetailPanel, window, cx);
+                })),
             )
             .when(csd, |this| this.child(render_window_controls(&theme, cx)))
+    }
+
+    /// The titlebar's reload button. Unlike every other titlebar icon (built
+    /// through [`ui::icon_button_with_tooltip`]), this one swaps its glyph
+    /// for a spinning one while `self.loading` is true and stops the instant
+    /// it lands — SURFACES §2: "Reload gets a spin animation while a reload
+    /// is actually running and stops when it finishes. This is the one place
+    /// a spinner is honest." `self.loading` is exactly that signal: it's set
+    /// at the start of every `reload_impl` (manual ⌘R, a repo switch, the
+    /// filesystem watcher) and cleared once the status-bearing pass lands —
+    /// see `loading.rs`.
+    ///
+    /// `ui::icon_button`/`icon_button_with_tooltip` hard-code a static icon
+    /// child and have no animated variant, so this rebuilds their exact look
+    /// (26×26, `RADIUS_CONTROL`, `element_hover` hover, `press_feedback`) by
+    /// hand instead of through them — `ui.rs` is outside this task's file
+    /// scope (see the redesign report) so a real animated variant belongs
+    /// there, not here.
+    fn render_reload_button(&self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        const TOOLTIP: &str = "Reload · ⌘R";
+
+        let glyph: AnyElement = if self.loading {
+            let icon_svg = gpui::svg()
+                .path(icons::REFRESH)
+                .size(px(14.0))
+                .flex_none()
+                .text_color(theme.text_muted);
+            motion::spin("reload-spin", icon_svg, cx)
+        } else {
+            ui::icon(icons::REFRESH, 14.0, theme.text_muted).into_any_element()
+        };
+
+        let styled = div()
+            .id("reload")
+            .w(px(26.0))
+            .h(px(26.0))
+            .flex()
+            .flex_none()
+            .items_center()
+            .justify_center()
+            .rounded(px(theme::RADIUS_CONTROL))
+            .cursor_default()
+            .hover(|this| this.bg(theme.element_hover))
+            .child(glyph);
+
+        ui::press_feedback(styled, theme)
+            .tooltip(ui::tooltip(TOOLTIP))
+            .on_click(cx.listener(|this, _, window, cx| {
+                this.on_reload(&Reload, window, cx);
+            }))
+            .into_any_element()
     }
 
     fn selected_branch(&self) -> Option<String> {
         let info = self.rows.get(self.selected?)?;
         Some(info.display_name().to_string())
+    }
+
+    /// The live pixel width `worktree_list::render_row` actually gets for
+    /// one row's card, this frame — not the flat, worst-case-only character
+    /// budget the row used before (Task 1: "a fixed character cap does not
+    /// adapt to width"). Recomputed once per `uniform_list` render pass
+    /// (nothing in this formula varies row to row, so the call site does it
+    /// once rather than once per visible row) from the window's *real*
+    /// drawable width, minus whichever side panels are actually showing
+    /// this frame, minus [`LIST_MAX_WIDTH`]'s centering cap, minus every
+    /// fixed-size wrapper between the content column and the row card
+    /// itself: the list's own `SPACE_8` inset, the per-row wrapper's own
+    /// `SPACE_8` inset, and the selection checkbox
+    /// ([`ROW_CHECKBOX_SIZE`]) plus its `SPACE_6` gap to the card — see
+    /// `render_list`'s own `uniform_list` child for each of those in
+    /// context.
+    ///
+    /// `worktree_list::render_row` turns this into per-row budgets (branch
+    /// name / path / sha / age) using the same char-width approximation
+    /// `diff_view::GUTTER_CHAR_WIDTH`/`detail_panel::FACT_VALUE_MAX_CHARS`
+    /// already use — see its own doc for why an approximation is the only
+    /// option (gpui has no API to measure real shaped text outside of an
+    /// actual layout pass).
+    fn worktree_row_card_width(&self, window: &Window) -> f32 {
+        let mut content_column = f32::from(window.viewport_size().width);
+        if self.sidebar_visible {
+            content_column -= theme::SIDEBAR_WIDTH;
+        }
+        if self.show_detail_panel() {
+            content_column -= self.detail_panel_width();
+        }
+        let content_column = content_column.min(LIST_MAX_WIDTH);
+        content_column
+            - theme::SPACE_8 * 2.0 // the list's own `.px(px(theme::SPACE_8))`
+            - theme::SPACE_8 * 2.0 // the per-row wrapper's own `.px(px(theme::SPACE_8))`
+            - ROW_CHECKBOX_SIZE
+            - theme::SPACE_6 // the row wrapper's `.gap(px(theme::SPACE_6))` to the card
     }
 
     pub(super) fn render_list(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -386,8 +513,8 @@ impl WtmApp {
                 .on_mouse_down(MouseButton::Right, empty_space_menu)
                 .child(
                     div()
-                        .text_size(px(13.0))
-                        .text_color(theme.text_secondary)
+                        .text_size(px(ui::TEXT_BASE))
+                        .text_color(theme.text_muted)
                         .child("Listing worktrees…"),
                 )
                 .into_any_element();
@@ -426,29 +553,65 @@ impl WtmApp {
         div()
             .flex_1()
             .min_h_0()
+            .min_w_0()
             .flex()
             .justify_center()
             .child(
                 div()
                     .w_full()
-                    .max_w(px(1040.0))
+                    .max_w(px(LIST_MAX_WIDTH))
                     .min_h_0()
+                    .min_w_0()
                     .flex()
                     .flex_col()
                     .child(
-                        // The count on the left grows to fill the row; the
-                        // toolbar buttons, filter field, and its clear
-                        // button stay fixed-size on the right — real,
-                        // labeled affordances for New Worktree and Prune
-                        // rather than actions only a shortcut table names,
-                        // and a persistent, always-discoverable search box
-                        // rather than one hidden until ⌘F.
+                        // FINDINGS.md G1: at 900×600 (the window's own
+                        // minimum) this row used to lose the sort control
+                        // and the filter field off the right edge entirely —
+                        // `flex_wrap()` was already here but never fired.
+                        // Root cause (see FINDINGS-2.md's "mechanism"
+                        // section): a flex child never shrinks below its own
+                        // content width unless `min_w_0()` is set on *every*
+                        // element in the chain down to the text node: this
+                        // row, its `max_w(1040)` and `flex_1` ancestors
+                        // above, the count (now truncating for real —
+                        // `worktree_list::render_header` grew its own
+                        // `min_w_0`/`.truncate()` this phase instead of
+                        // relying on this wrapper's `overflow_hidden` to
+                        // hard-clip it), and the actions group below. Without
+                        // that chain, nothing ever reported as "out of room",
+                        // so the wrap this row already asked for never had a
+                        // reason to trigger.
+                        //
+                        // Chosen degrade strategy: **wrap**, not
+                        // priority-collapse. Every control here (New
+                        // Worktree, Fetch, Prune, the sort segmented control,
+                        // the filter field) is something a user reaches for
+                        // regularly — there's no single "lowest-value"
+                        // control to demote into an overflow menu without
+                        // that menu becoming just as likely to be reached
+                        // for, and building one would mean new interactive
+                        // surface in `ui.rs`, which this phase does not own.
+                        // Wrapping keeps every control reachable with a
+                        // fixed, predictable set of elements: the count
+                        // gives way first (it already shrinks/truncates),
+                        // then the actions group drops to its own line, then
+                        // — since even a full line is not always wide enough
+                        // for five controls at once — the actions group's
+                        // own `flex_wrap()` (below) lets individual controls
+                        // spill onto a third line rather than clip. The
+                        // `SPACE_16` gap between the two top-level children
+                        // is 2× the `SPACE_8` gap used *within* the actions
+                        // group, per `better-layout` §1.
                         div()
                             .flex()
+                            .flex_wrap()
+                            .min_w_0()
                             .items_center()
-                            .gap(px(10.0))
-                            .px(px(16.0))
-                            .pb(px(8.0))
+                            .justify_between()
+                            .gap(px(theme::SPACE_16))
+                            .px(px(theme::SPACE_16))
+                            .pb(px(theme::SPACE_8))
                             .child(div().flex_1().min_w_0().child(worktree_list::render_header(
                                 shown,
                                 total,
@@ -456,72 +619,105 @@ impl WtmApp {
                                 cx,
                             )))
                             .child(
-                                toolbar_button(
-                                    "toolbar-new-worktree",
-                                    icons::PLUS,
-                                    "New Worktree",
-                                    &theme,
-                                )
-                                .on_click(cx.listener(
-                                    |this, _, window, cx| {
-                                        this.on_new_worktree(&NewWorktree, window, cx);
-                                    },
-                                )),
-                            )
-                            .child(
-                                // Label and appearance both change while a
-                                // fetch is running, but the real guard
-                                // against a second concurrent `git fetch` is
-                                // `on_fetch_remote`'s own `self.fetching`
-                                // check — this is only the visible half of
-                                // that promise.
-                                toolbar_button(
-                                    "toolbar-fetch",
-                                    icons::REFRESH,
-                                    if self.fetching {
-                                        "Fetching…"
-                                    } else {
-                                        "Fetch"
-                                    },
-                                    &theme,
-                                )
-                                .when(self.fetching, |this| this.opacity(0.6))
-                                .on_click(cx.listener(
-                                    |this, _, window, cx| {
-                                        this.on_fetch_remote(&FetchRemote, window, cx);
-                                    },
-                                )),
-                            )
-                            .child(
-                                // Opens the same confirm-with-toggles dialog
-                                // as the shortcut/menu path always has —
-                                // pruning without a confirmation step would
-                                // be destructive, so this button is a
-                                // discoverable door to that dialog, not a
-                                // way around it. The count in the label is
-                                // what lets a user see there is something to
-                                // clean without opening anything.
-                                toolbar_button("toolbar-prune", icons::TRASH, prune_label, &theme)
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.on_prune_repo(&PruneRepo, window, cx);
-                                    })),
-                            )
-                            .child(self.render_sort_control(&theme, cx))
-                            .child(
                                 div()
-                                    .w(px(200.0))
-                                    .flex_none()
-                                    .child(self.filter_input.clone()),
-                            )
-                            .when(filter_active, |this| {
-                                this.child(
-                                    ui::icon_button("clear-filter", icons::CLOSE, &theme).on_click(
-                                        cx.listener(|this, _, window, cx| {
-                                            this.clear_filter(window, cx)
-                                        }),
-                                    ),
-                                )
-                            }),
+                                    .flex()
+                                    .flex_wrap()
+                                    .min_w_0()
+                                    .items_center()
+                                    .gap(px(theme::SPACE_8))
+                                    .child(
+                                        // The view's one filled control —
+                                        // SURFACES §3: "New Worktree is the
+                                        // only filled button in the view."
+                                        ui::toolbar_button(
+                                            "toolbar-new-worktree",
+                                            icons::PLUS,
+                                            "New Worktree",
+                                            ButtonVariant::Primary,
+                                            &theme,
+                                        )
+                                        .on_click(
+                                            cx.listener(|this, _, window, cx| {
+                                                this.on_new_worktree(&NewWorktree, window, cx);
+                                            }),
+                                        ),
+                                    )
+                                    .child(
+                                        // Label and appearance both change while a
+                                        // fetch is running, but the real guard
+                                        // against a second concurrent `git fetch` is
+                                        // `on_fetch_remote`'s own `self.fetching`
+                                        // check — this is only the visible half of
+                                        // that promise.
+                                        ui::toolbar_button(
+                                            "toolbar-fetch",
+                                            icons::REFRESH,
+                                            if self.fetching {
+                                                "Fetching…"
+                                            } else {
+                                                "Fetch"
+                                            },
+                                            ButtonVariant::Secondary,
+                                            &theme,
+                                        )
+                                        .when(self.fetching, |this| this.opacity(0.6))
+                                        .on_click(
+                                            cx.listener(|this, _, window, cx| {
+                                                this.on_fetch_remote(&FetchRemote, window, cx);
+                                            }),
+                                        ),
+                                    )
+                                    .child(
+                                        // Opens the same confirm-with-toggles dialog
+                                        // as the shortcut/menu path always has —
+                                        // pruning without a confirmation step would
+                                        // be destructive, so this button is a
+                                        // discoverable door to that dialog, not a
+                                        // way around it. The count in the label is
+                                        // what lets a user see there is something to
+                                        // clean without opening anything. Secondary,
+                                        // never filled — SURFACES §3.
+                                        ui::toolbar_button(
+                                            "toolbar-prune",
+                                            icons::TRASH,
+                                            prune_label,
+                                            ButtonVariant::Secondary,
+                                            &theme,
+                                        )
+                                        .on_click(
+                                            cx.listener(|this, _, window, cx| {
+                                                this.on_prune_repo(&PruneRepo, window, cx);
+                                            }),
+                                        ),
+                                    )
+                                    .child(self.render_sort_control(&theme, cx))
+                                    .child(
+                                        // `200.0` is a deliberate field width,
+                                        // not a spacing/radius/text value, so
+                                        // it has no `SPACE_*` token to draw
+                                        // from — left as-is; see the redesign
+                                        // report.
+                                        div()
+                                            .w(px(200.0))
+                                            .flex_none()
+                                            .child(self.filter_input.clone()),
+                                    )
+                                    .when(filter_active, |this| {
+                                        this.child(
+                                            ui::icon_button_with_tooltip(
+                                                "clear-filter",
+                                                icons::CLOSE,
+                                                "Clear Filter",
+                                                &theme,
+                                            )
+                                            .on_click(
+                                                cx.listener(|this, _, window, cx| {
+                                                    this.clear_filter(window, cx)
+                                                }),
+                                            ),
+                                        )
+                                    }),
+                            ),
                     )
                     .when(multi_count > 1, |this| {
                         this.child(self.render_selection_bar(multi_count, &theme, cx))
@@ -530,7 +726,7 @@ impl WtmApp {
                         uniform_list(
                             "worktrees",
                             shown,
-                            cx.processor(|this, range: std::ops::Range<usize>, _window, cx| {
+                            cx.processor(|this, range: std::ops::Range<usize>, window, cx| {
                                 let visible = this.visible_row_indices(cx);
                                 let theme = Theme::of(cx);
                                 // Computed once per visible range rather
@@ -548,6 +744,10 @@ impl WtmApp {
                                 // 2-or-more multi-selection" test the footer
                                 // chip and the selection bar above use.
                                 let force_checkbox_visible = !this.multi_selected.is_empty();
+                                // Nothing in this formula varies row to row
+                                // (Task 1) — computed once per visible range,
+                                // like `now` above, not once per row.
+                                let card_width = this.worktree_row_card_width(window);
                                 range
                                     .map(|display_ix| {
                                         let ix = visible[display_ix];
@@ -565,11 +765,11 @@ impl WtmApp {
                                         // moment any one of them is hovered.
                                         let group_name = SharedString::from(format!("wt-row-{ix}"));
                                         div()
-                                            .px(px(8.0))
+                                            .px(px(theme::SPACE_8))
                                             .pb(px(2.0))
                                             .flex()
                                             .items_center()
-                                            .gap(px(6.0))
+                                            .gap(px(theme::SPACE_6))
                                             .group(group_name.clone())
                                             .child(Self::render_row_checkbox(
                                                 ix,
@@ -586,6 +786,7 @@ impl WtmApp {
                                                     selected,
                                                     this.awaiting_status,
                                                     age,
+                                                    card_width,
                                                     cx,
                                                 )
                                                 .flex_1()
@@ -638,7 +839,7 @@ impl WtmApp {
                             }),
                         )
                         .flex_1()
-                        .px(px(8.0))
+                        .px(px(theme::SPACE_8))
                         .on_mouse_down(MouseButton::Right, empty_space_menu),
                     ),
             )
@@ -646,48 +847,32 @@ impl WtmApp {
     }
 
     /// The list toolbar's sort-mode switch: a compact three-way segmented
-    /// control (Name / Recent / Status) reusing `render_detail_tab`'s
-    /// active/inactive visual language at a smaller size. Clicking a
-    /// segment goes through `selection::set_sort_mode`, which re-sorts
-    /// immediately and keeps the current selection on the same worktree —
-    /// this control itself has nothing to do about that, or about the main
-    /// worktree staying pinned first (both are `worktree_list::sort_rows`'s
-    /// own guarantees).
-    fn render_sort_control(&self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .flex()
-            .flex_none()
-            .items_center()
-            .gap(px(2.0))
-            .p(px(2.0))
-            .rounded(px(ui::RADIUS))
-            .bg(theme.item_wash)
-            .children(
-                worktree_list::SortMode::ALL
-                    .into_iter()
-                    .enumerate()
-                    .map(|(idx, mode)| {
-                        let active = self.sort_mode == mode;
-                        div()
-                            .id(("sort-mode", idx))
-                            .px(px(8.0))
-                            .h(px(24.0))
-                            .flex()
-                            .items_center()
-                            .rounded(px(ui::RADIUS))
-                            .cursor_default()
-                            .text_size(px(12.0))
-                            .when(active, |d| d.bg(theme.item_selected).text_color(theme.text))
-                            .when(!active, |d| {
-                                d.text_color(theme.text_tertiary)
-                                    .hover(|s| s.bg(theme.item_selected))
-                            })
-                            .child(worktree_list::sort_mode_label(mode))
-                            .on_click(cx.listener(move |this, _, _window, cx| {
-                                this.set_sort_mode(mode, cx);
-                            }))
-                    }),
-            )
+    /// control (Name / Recent / Status). Clicking a segment goes through
+    /// `selection::set_sort_mode`, which re-sorts immediately and keeps the
+    /// current selection on the same worktree — this control itself has
+    /// nothing to do about that, or about the main worktree staying pinned
+    /// first (both are `worktree_list::sort_rows`'s own guarantees).
+    ///
+    /// Now literally `ui::segmented`: its generic `on_select` closure is
+    /// exactly the shape `cx.listener` produces (`impl Fn(&E, &mut Window,
+    /// &mut App)`), so wiring the real `set_sort_mode` click through it
+    /// needs no signature change to `ui.rs` — the hand-rolled copy this
+    /// used to be is gone.
+    fn render_sort_control(&self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let options: Vec<(SortMode, &str)> = SortMode::ALL
+            .into_iter()
+            .map(|mode| (mode, worktree_list::sort_mode_label(mode)))
+            .collect();
+        ui::segmented(
+            "sort-mode",
+            &options,
+            &self.sort_mode,
+            theme,
+            cx.listener(|this, mode: &SortMode, _window, cx| {
+                this.set_sort_mode(*mode, cx);
+            }),
+        )
+        .into_any_element()
     }
 
     /// The mouse-discoverable equivalent of a ⌘-click: a small checkbox at
@@ -710,28 +895,35 @@ impl WtmApp {
         div()
             .id(("row-checkbox", row_ix))
             .flex_none()
-            .w(px(15.0))
-            .h(px(15.0))
+            .w(px(ROW_CHECKBOX_SIZE))
+            .h(px(ROW_CHECKBOX_SIZE))
             .flex()
             .items_center()
             .justify_center()
             .rounded(px(4.0))
             .cursor_default()
             .border_1()
+            // FINDINGS F4: the accent is identity/focus only (SPEC §3) and
+            // must never be a structural fill — a checked checkbox is a
+            // selection state, already carried by the row's own wash and
+            // leading bar. So the plate stays neutral (`element_active`,
+            // the same wash every other selected state in the app uses)
+            // and only the border and the check glyph itself carry the
+            // accent, rather than filling the whole square with it.
             .border_color(if checked {
                 theme.accent
             } else {
                 theme.border_strong
             })
             .bg(if checked {
-                theme.accent
+                theme.element_active
             } else {
                 gpui::transparent_black()
             })
             .when(!checked && !force_visible, |this| this.opacity(0.0))
             .group_hover(group_name, |style| style.opacity(1.0))
             .when(checked, |this| {
-                this.child(ui::icon(icons::CHECK, 10.0, theme.canvas))
+                this.child(ui::icon(icons::CHECK, 10.0, theme.accent))
             })
             .on_click(cx.listener(move |this, _event: &ClickEvent, _window, cx| {
                 this.toggle_row_selection(row_ix, cx);
@@ -760,18 +952,26 @@ impl WtmApp {
             .flex()
             .items_center()
             .justify_between()
-            .gap(px(10.0))
-            .px(px(16.0))
-            .pb(px(8.0))
+            .gap(px(theme::SPACE_8))
+            .px(px(theme::SPACE_16))
+            .pb(px(theme::SPACE_8))
             .child(ui::meta(icons::CHECK, format!("{count} selected"), theme))
             .child(
                 div()
                     .flex()
+                    .min_w_0()
                     .items_center()
-                    .gap(px(10.0))
+                    .gap(px(theme::SPACE_8))
                     .child(
+                        // Lowest-priority text in this row — the reminder
+                        // shrinks and clips before either button does
+                        // (`ui::button` is already `flex_none`), the same
+                        // "give up space gracefully" discipline FINDINGS F1
+                        // asked for in the toolbar above.
                         div()
-                            .text_size(px(11.0))
+                            .min_w_0()
+                            .truncate()
+                            .text_size(px(ui::TEXT_XS))
                             .text_color(theme.text_ghost)
                             .child("⇧-click extends · ⌘-click toggles · ⎋ clears"),
                     )
@@ -801,45 +1001,54 @@ impl WtmApp {
     }
 
     /// The footer: the current message on the left, context chips on the
-    /// right, in the spirit of a status line that never shouts.
+    /// right, in the spirit of a status line that never shouts (SURFACES
+    /// §5: "ambient information — it must never out-shout the list").
     pub(super) fn render_footer(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::of(cx);
 
         div()
-            .h(px(34.0))
+            .h(px(theme::FOOTER_HEIGHT))
             .w_full()
             .flex()
             .flex_none()
             .items_center()
             .justify_between()
-            .gap(px(12.0))
-            .px(px(16.0))
+            .gap(px(theme::SPACE_12))
+            .px(px(theme::SPACE_16))
+            // Chrome, like the sidebar/titlebar — was unpainted before,
+            // showing the content plane's `bg` straight through, which
+            // flattened the footer onto the same plane as the list above
+            // it (SPEC §3 puts sidebar/titlebar/footer all on `surface`).
+            .bg(theme.surface)
             .border_t_1()
             .border_color(theme.border)
-            .text_size(px(11.5))
-            .child(match &self.status {
-                Some(message) => div()
+            .text_size(px(ui::TEXT_SM))
+            .child(
+                div()
+                    .flex_1()
                     .min_w_0()
-                    .truncate()
-                    .text_color(if message.error {
-                        theme.danger
-                    } else {
-                        theme.text_tertiary
-                    })
-                    .child(message.text.clone()),
-                None => div()
-                    .min_w_0()
-                    .truncate()
-                    .text_color(theme.text_ghost)
-                    .child("↑↓ select · ⏎ open in editor · ⌘R reload"),
-            })
+                    .overflow_hidden()
+                    .child(match &self.status {
+                        Some(message) => div()
+                            .min_w_0()
+                            .truncate()
+                            .text_color(if message.error {
+                                theme.danger
+                            } else {
+                                theme.text_faint
+                            })
+                            .child(message.text.clone())
+                            .into_any_element(),
+                        None => render_footer_hints(&theme),
+                    }),
+            )
             .when_some(self.active.as_ref(), |this, repo| {
                 this.child(
                     div()
                         .flex()
                         .flex_none()
                         .items_center()
-                        .gap(px(12.0))
+                        .gap(px(theme::SPACE_12))
                         // "N selected" only when a real multi-selection is
                         // active (`multi_selected` is never exactly one
                         // element — see `apply_selection_set`), so a plain
@@ -907,20 +1116,30 @@ impl WtmApp {
         cx.notify();
     }
 
+    /// The detail panel's own current width — `detail_panel::WIDTH` for the
+    /// Details tab, `detail_panel::WIDE_WIDTH` for Files/Changes, since a
+    /// diff needs real room (see that constant's doc). Its own function
+    /// (rather than inlined at [`render_detail_panel`]'s own call site) so
+    /// [`worktree_row_card_width`](Self::worktree_row_card_width) can ask
+    /// the same question the panel's own frame does, instead of a second
+    /// copy of this match that could silently drift from it.
+    fn detail_panel_width(&self) -> f32 {
+        match self.detail_tab {
+            DetailTab::Details => detail_panel::WIDTH,
+            DetailTab::Files | DetailTab::Changes => detail_panel::WIDE_WIDTH,
+        }
+    }
+
     /// The detail panel: a persistent header (branch/main badge/lock),
     /// then the tab bar, then whichever tab's content is active. The outer
-    /// frame's width tracks the active tab — `detail_panel::WIDTH` for
-    /// Details, `detail_panel::WIDE_WIDTH` for Files/Changes, since a diff
-    /// needs real room (see that constant's doc).
+    /// frame's width tracks the active tab (see
+    /// [`detail_panel_width`](Self::detail_panel_width)).
     pub(super) fn render_detail_panel(&self, cx: &mut Context<Self>) -> AnyElement {
         let Some(info) = self.selected.and_then(|ix| self.rows.get(ix)) else {
             return div().into_any_element();
         };
         let theme = Theme::of(cx);
-        let width = match self.detail_tab {
-            DetailTab::Details => detail_panel::WIDTH,
-            DetailTab::Files | DetailTab::Changes => detail_panel::WIDE_WIDTH,
-        };
+        let width = self.detail_panel_width();
         let worktree_path = info.path.clone();
 
         let content: AnyElement = match self.detail_tab {
@@ -937,7 +1156,30 @@ impl WtmApp {
             .flex_none()
             .flex()
             .flex_col()
-            .bg(theme.raised)
+            // FINDINGS-2.md G1/G2: a fixed `w(px(width))` plus `flex_none()`
+            // guarantees this container's own box never grows or shrinks —
+            // it does *not* guarantee its children stop there. Without
+            // `min_w_0()` here, `content` (Details/Files/Changes) was still
+            // free to stretch past `width` following its own widest,
+            // unshrunk descendant (a long commit subject, in practice), and
+            // `overflow_hidden()` is what actually clips that back down to
+            // the pane's real edge — the `min_w_0()` a level down in
+            // `detail_panel::render_details` narrows the *available* width
+            // this container hands down, but only this container's own
+            // overflow behavior stops content from bleeding past it when
+            // something is still wider than that. Every `content` variant
+            // below already carries its own `min_w_0()`/scroll handling
+            // internally; this is the pane boundary that makes those
+            // guarantees actually bite.
+            .min_w_0()
+            .overflow_hidden()
+            // A chrome pane like the sidebar, not a plate proud of one —
+            // `surface_raised` (this used to read) is SPEC §3's token for
+            // "opaque pills/chips proud of the panel," not for a whole
+            // panel's own background; the fourth pane SURFACES' "Global"
+            // section groups alongside sidebar/content reads correctly as
+            // `surface`, the same chrome tone titlebar/sidebar/footer use.
+            .bg(theme.surface)
             .border_l_1()
             .border_color(theme.border)
             .child(detail_panel::render_header(info, &theme))
@@ -946,14 +1188,16 @@ impl WtmApp {
             .into_any_element()
     }
 
+    /// The Details/Files/Changes switch, as a segmented control rather than
+    /// three plain text buttons (SURFACES §4).
     fn render_detail_tab_bar(&self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .flex_none()
             .flex()
             .items_center()
-            .gap(px(4.0))
-            .px(px(12.0))
-            .py(px(8.0))
+            .gap(px(theme::SPACE_4))
+            .px(px(theme::SPACE_12))
+            .py(px(theme::SPACE_8))
             .border_b_1()
             .border_color(theme.border)
             .child(self.render_detail_tab(DetailTab::Details, "Details", theme, cx))
@@ -961,6 +1205,13 @@ impl WtmApp {
             .child(self.render_detail_tab(DetailTab::Changes, "Changes", theme, cx))
     }
 
+    /// One tab segment. SURFACES §4: "the selected tab carries the wash +
+    /// accent underline; unselected are `text_muted`" — a wash alone would
+    /// read the same as `render_sort_control`'s segments, so the 2px accent
+    /// underline (the same thickness `ui::row`'s own leading selection bar
+    /// uses) is what tells a tab apart from a sort option at a glance,
+    /// while still keeping the accent off the fill (SPEC §3: identity/focus
+    /// only, never structural).
     fn render_detail_tab(
         &self,
         tab: DetailTab,
@@ -971,17 +1222,31 @@ impl WtmApp {
         let active = self.detail_tab == tab;
         div()
             .id(label)
-            .px(px(10.0))
-            .py(px(5.0))
-            .rounded(px(ui::RADIUS))
+            .relative()
+            .px(px(theme::SPACE_12))
+            .py(px(theme::SPACE_6))
+            .rounded(px(theme::RADIUS_CONTROL))
             .cursor_default()
-            .text_size(px(12.0))
-            .when(active, |d| d.bg(theme.item_selected).text_color(theme.text))
+            .text_size(px(ui::TEXT_SM))
+            .when(active, |d| {
+                d.bg(theme.element_active).text_color(theme.text)
+            })
             .when(!active, |d| {
-                d.text_color(theme.text_tertiary)
-                    .hover(|s| s.bg(theme.item_wash))
+                d.text_color(theme.text_muted)
+                    .hover(|s| s.bg(theme.element_hover))
             })
             .child(label)
+            .when(active, |d| {
+                d.child(
+                    div()
+                        .absolute()
+                        .bottom_0()
+                        .left(px(theme::SPACE_12))
+                        .right(px(theme::SPACE_12))
+                        .h(px(2.0))
+                        .bg(theme.accent),
+                )
+            })
             .on_click(cx.listener(move |this, _, _window, cx| {
                 this.set_detail_tab(tab, cx);
             }))
@@ -1064,6 +1329,7 @@ impl WtmApp {
                 div()
                     .flex()
                     .flex_col()
+                    .min_w_0()
                     .children(rows.into_iter().map(|row| {
                         let rel_path = row.rel_path.to_path_buf();
                         let is_dir = row.is_dir;
@@ -1111,6 +1377,7 @@ impl WtmApp {
         div()
             .id("changes-scroll")
             .flex_1()
+            .min_w_0()
             .min_h_0()
             .flex()
             .flex_col()
@@ -1121,17 +1388,34 @@ impl WtmApp {
     }
 }
 
+/// Character budget for a sidebar repo row's path — see
+/// `worktree_list::ROW_PATH_MAX_CHARS`'s doc for why this is an
+/// approximate, always-fits-the-narrow-case budget rather than exact pixel
+/// arithmetic, and `detail_panel::LABEL_WIDTH`'s doc for why any of this is
+/// necessary instead of gpui's own `.truncate()`. `SIDEBAR_WIDTH` (248) is
+/// fixed, so in principle this could be exact the way the detail panel's
+/// fact values are — left approximate anyway since the icon glyph beside
+/// it isn't a clean constant the way `LABEL_WIDTH`/`COMMIT_SHA_WIDTH` are,
+/// and an approximate budget already comfortably fits this narrower,
+/// simpler row.
+const SIDEBAR_PATH_MAX_CHARS: usize = 28;
+
 /// Where a repository lives, home-relative and without the repo's own
 /// directory name — the sidebar already shows that on the line above, and
-/// what disambiguates two repos with the same name is the folder holding them.
+/// what disambiguates two repos with the same name is the folder holding
+/// them. Capped at [`SIDEBAR_PATH_MAX_CHARS`] with a leading ellipsis (the
+/// tail — the folder actually holding the repo — is what disambiguates, so
+/// it's what has to survive), via the same `truncate_path_tail` mechanism
+/// `detail_panel`/`worktree_list` use for their own paths.
 fn parent_label(path: &std::path::Path) -> String {
     let parent = path.parent().unwrap_or(path).display().to_string();
-    match std::env::var("HOME") {
+    let home_relative = match std::env::var("HOME") {
         Ok(home) if !home.is_empty() && parent.starts_with(&home) => {
             format!("~{}", &parent[home.len()..])
         }
         _ => parent,
-    }
+    };
+    detail_panel::truncate_path_tail(&home_relative, SIDEBAR_PATH_MAX_CHARS)
 }
 
 /// Missing/prunable worktrees the active repository has right now, using the
@@ -1143,39 +1427,6 @@ fn parent_label(path: &std::path::Path) -> String {
 /// reachable through a live `WtmApp`.
 fn prunable_count(repo: &OpenRepo, rows: &[WorktreeInfo]) -> usize {
     data::prune_candidates(repo, rows.to_vec(), false, false).len()
-}
-
-/// A compact icon+label toolbar button. `ui::button` has no icon slot and
-/// `ui.rs` is not owned by this task to add one, so this reuses its exact
-/// visual language instead — the `Secondary` variant's `item_wash`/
-/// `item_selected` wash and `ui::RADIUS`, at the same 28px height — for the
-/// list toolbar's New Worktree / Prune… actions.
-fn toolbar_button(
-    id: impl Into<gpui::ElementId>,
-    icon_path: &'static str,
-    label: impl Into<SharedString>,
-    theme: &Theme,
-) -> Stateful<Div> {
-    div()
-        .id(id.into())
-        .h(px(28.0))
-        .px(px(10.0))
-        .flex()
-        .flex_none()
-        .items_center()
-        .gap(px(6.0))
-        .rounded(px(ui::RADIUS))
-        .cursor_default()
-        .bg(theme.item_wash)
-        .hover(|this| this.bg(theme.item_selected))
-        .active(|this| this.bg(theme.item_selected))
-        .child(ui::icon(icon_path, 13.0, theme.text_secondary))
-        .child(
-            div()
-                .text_size(px(12.5))
-                .text_color(theme.text)
-                .child(label.into()),
-        )
 }
 
 /// The window controls Linux draws in its own title bar when the compositor
@@ -1202,7 +1453,7 @@ fn render_window_controls(theme: &Theme, cx: &mut Context<WtmApp>) -> impl IntoE
         )
         .child(
             window_control_button("win-close", theme)
-                .child(ui::icon(icons::CLOSE, 12.0, theme.text_tertiary))
+                .child(ui::icon(icons::CLOSE, 12.0, theme.text_faint))
                 .on_click(cx.listener(|_this, _, window, cx| {
                     // A client-side close button is not the OS-level close
                     // gesture `main.rs`'s `on_window_should_close` is
@@ -1232,9 +1483,9 @@ fn window_control_button(id: &'static str, theme: &Theme) -> Stateful<Div> {
         .flex_none()
         .items_center()
         .justify_center()
-        .rounded(px(6.0))
+        .rounded(px(theme::RADIUS_CONTROL))
         .cursor_default()
-        .hover(|this| this.bg(theme.item_wash))
+        .hover(|this| this.bg(theme.element_hover))
 }
 
 /// A minimize glyph: a single horizontal line, the shape every desktop
@@ -1242,7 +1493,7 @@ fn window_control_button(id: &'static str, theme: &Theme) -> Stateful<Div> {
 /// svg asset — `assets.rs` is owned elsewhere and not extended for this
 /// task, and it has nothing shaped like this to begin with.
 fn minimize_glyph(theme: &Theme) -> impl IntoElement {
-    div().w(px(10.0)).h(px(1.0)).bg(theme.text_tertiary)
+    div().w(px(10.0)).h(px(1.0)).bg(theme.text_faint)
 }
 
 /// A maximize/restore glyph: a small square outline, composed the same way
@@ -1252,7 +1503,41 @@ fn maximize_glyph(theme: &Theme) -> impl IntoElement {
         .w(px(9.0))
         .h(px(9.0))
         .border_1()
-        .border_color(theme.text_tertiary)
+        .border_color(theme.text_faint)
+}
+
+/// The footer's default (no active status message) hint line: the highest-
+/// value keybindings as [`ui::kbd`] chips rather than plain text (SPEC §1's
+/// `kbd` vocabulary), so a shortcut named in the footer looks like the same
+/// shortcut everywhere else in the app instead of a bare string.
+fn render_footer_hints(theme: &Theme) -> AnyElement {
+    // FINDINGS-2.md G1: this row used to hard-clip its trailing hints with
+    // no ellipsis at 900×600. An earlier attempt made the last hint
+    // `min_w_0()`/`.truncate()` so it would shrink and ellipsize instead —
+    // that made things *worse* (gpui 0.2.2's text-measurement caching bug,
+    // documented once at `detail_panel::LABEL_WIDTH`, meant it collapsed to
+    // 2-3 characters with no ellipsis and a large unused gap, rather than
+    // clipping cleanly). The actual fix: every hint here is a short, fixed,
+    // known-at-compile-time string, not user content, and all of them
+    // together comfortably fit even at the narrowest supported window
+    // (900×600) — confirmed by screenshot. So this row does not need to
+    // shrink or truncate at all; every child stays at its natural size
+    // (gpui's default for a `flex()` child with no `min_w_0()`), which is
+    // both simpler and correct here, unlike the genuinely-long, unbounded
+    // strings elsewhere in this app (paths, commit subjects) that do need
+    // one of the truncation strategies `detail_panel::LABEL_WIDTH` explains.
+    div()
+        .flex()
+        .items_center()
+        .gap(px(theme::SPACE_6))
+        .text_color(theme.text_ghost)
+        .child(ui::kbd("↑↓", theme))
+        .child("select")
+        .child(ui::kbd("⏎", theme))
+        .child("open in editor")
+        .child(ui::kbd("⌘R", theme))
+        .child("reload")
+        .into_any_element()
 }
 
 #[cfg(test)]

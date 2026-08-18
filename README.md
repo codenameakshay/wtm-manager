@@ -115,7 +115,7 @@ and exits `0`; it never opens a window any more than it opens a full-screen
 UI.
 
 <p align="center">
-  <img src="assets/app.png" alt="wtm's main window: a sidebar listing three repositories (one flagged missing), a worktree list with New Worktree/Prune…/Filter controls, a selected row with its multi-select checkbox checked and dirty/20 behind/gone status pills, and a detail panel open on the Details tab showing path, HEAD, upstream, remote, ahead/behind, and recent commits" width="840">
+  <img src="assets/app.png" alt="wtm's main window: a sidebar listing three repositories (one flagged missing), a worktree list with New Worktree/Fetch/Prune…/Filter controls, four worktree rows showing dirty/merged and gone/merged status pills, and a detail panel open on the Details tab showing path, HEAD, upstream, remote, ahead/behind, and recent commits" width="840">
 </p>
 
 **Installing it.** macOS and Linux are both supported now; Windows is not.

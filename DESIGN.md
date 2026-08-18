@@ -410,3 +410,168 @@ cancellation is a silent success. No other logic.
 - The ignored release-mode gate builds 64 linked worktrees (65 including
   main), measures first-load latency against 1 second, and measures the median
   of 11 warm loads against 500ms.
+
+## crates/wtm-gui/src/{theme,motion,ui}.rs — visual system
+
+A separate crate from everything above (`crates/wtm-gui/`, the desktop app;
+depends on `gpui = "0.2.2"` from crates.io, not a Zed git fork). The `src/`
+conventions at the top of this file (`crate::error::Result`, no `anyhow`
+outside `main.rs`) do not apply here — `wtm-gui` is a `gpui::App` with its
+own error handling. This section is the contract for its token/motion
+system, the thing most likely to be "simplified" back into a defect by a
+future edit.
+
+### Token layers
+
+```
+oklch(l, c, h) / neutral(l) / grey(u8)      color primitives (theme.rs)
+        -> Theme::dark() / Theme::light()   the token set: bg, surface,
+           surface_raised, ..., accent, warning, danger, success, ...
+        -> ink(a) / hairline(a) / wash(a) / scrim(a)   paint helpers
+```
+
+`oklch`/`neutral`/`grey` convert OKLCH/8-bit input to gpui `Hsla` (OKLab
+matrices ported from Zeron/comet). `Theme::dark()`/`Theme::light()` build
+the two concrete token sets; every render call site reads `Theme::of(cx)`
+(an installed gpui `Global`) and paints from its fields — never from the
+primitives directly. `ink`/`hairline`/`wash` are **free functions**, not
+`Theme` methods: they read a process-wide `AtomicU8` appearance mirror
+instead of `cx`, for element builders with no `&Theme` in scope.
+`scrim(alpha_dark)` is the modal backdrop, same pattern.
+
+**Alphas passed to `ink`/`hairline`/`wash`/`scrim` are always quoted in
+dark-mode terms.** The dark palette is the tuned one; light derives from it
+— `INK_FILL_SCALE` (1.0, fills: only the tone flips, not the number) and
+`INK_HAIRLINE_SCALE` (1.35, hairlines: a 1px edge needs *more* ink on a
+bright field). Never author a light-specific alpha at a call site.
+
+### Numbers drive layout, colors are paint
+
+`RADIUS_*`/`SPACE_*`/`TEXT_*`/`ROW_HEIGHT`/`SIDEBAR_WIDTH`/etc. are plain
+`f32` `const`s in `theme.rs` — never fields on `Theme`, never conditioned on
+appearance. There is deliberately no `if dark { px(8) } else { px(10) }`
+anywhere in this crate; `theme::tests::layout_constants_are_appearance_independent`
+pins the concrete values down so a regression is a failing assertion, not a
+silent drift.
+
+### Light is designed, not inverted
+
+1. **Surface order flips.** Dark: the content plane (`bg`) is deepest,
+   chrome (`surface`) sits one step up. Light: content is pure white,
+   chrome is grey — chrome recedes in *both* appearances, the direction a
+   naive invert gets backwards.
+2. **The elevation ladder cannot climb past white.** Dark separates
+   `surface_card`/`surface_dialog`/`surface_overlay` by small lightness
+   steps; light has nothing lighter than white to climb to, so all three
+   land on white and `border` + the shadow ladder carry the separation.
+3. **Accents move down the scale.** wtm's orange stays orange in both
+   appearances, but light uses a darker, more saturated step
+   (`oklch(0.553, 0.195, 45)` vs dark's `oklch(0.750, 0.150, 52)`) to clear
+   WCAG AA on a white field.
+
+### Accent, status, and the hue-separation floor
+
+The accent (`Theme::accent`/`accent_strong`) is wtm's brand orange — the app
+icon's `#F97316 -> #EF4444` gradient — reserved for **identity and focus
+only**: the focus ring, the primary button, the selected-repo indicator. It
+is never a status color and never structural.
+
+Four status hues carry the app's actual meaning (`warning` dirty, `info`
+ahead/behind, `danger` gone, `success` merged/clean) and each means nothing
+else anywhere in the UI. `warning`/`danger` sit close enough to accent's
+orange to collapse into "two oranges" on a dense row if untuned —
+`theme::tests::status_hues_are_separable` enforces a floor of accent/warning
+≥ 30° and accent/danger ≥ 20°, in both appearances, measured in **OKLab
+hue** (`oklch_hue` — the hue of the color actually *painted* after the sRGB
+gamut clamp; `Hsla::h`/HSL hue is not perceptually uniform and was the
+metric an earlier version of this test used by mistake). If tuning ever
+pushes them together, move the *status* hue, never the accent.
+
+### Motion catalog and its restraint rule
+
+`motion.rs`'s catalog (`FADE_IN`/`FADE_QUICK`/`MENU_IN`/`DIALOG_IN`/
+`RESIZE`/`COLLAPSE`/`SPINNER`, each a duration + `CubicBezier`) is the
+complete set named by the redesign spec
+(`motion::tests::catalog_timings_match_spec`); not every entry has a call
+site yet (`motion.rs`'s "Catalog completeness" doc explains which and why).
+
+**The rule that matters:** the worktree list and sidebar rows — touched on
+every scroll and refresh — run **no entrance animations**; selection and
+hover are instant `.hover()`/`.active()` states. Overlays — dialogs, the
+command palette, context menus, the settings sheet — are touched rarely and
+animate properly through the catalog (`motion::dialog_in`/`menu_in`/
+`fade_quick`). Every animated call site routes through a helper
+(`motion::animate` and friends) that honors `motion::reduced` internally by
+collapsing the animation's duration to zero; call sites never branch on it
+themselves. `reduce_motion` is a real, persisted `Prefs` field, applied at
+startup and on toggle exactly like `appearance`.
+
+### The two gpui 0.2.2 text bugs
+
+The single easiest way to reintroduce a real defect here is to "clean up"
+the manual truncation below back into a plain `.truncate()`. Don't — gpui
+0.2.2 has two independent text bugs, neither fixed in a later release
+(0.2.2 is the newest `gpui` on crates.io as of this writing, so there is no
+upgrade path out of either). Full mechanism trace lives on
+`detail_panel.rs`'s `LABEL_WIDTH` doc; summary:
+
+1. **Measurement caching.** The text element caches its measured size keyed
+   on `wrap_width`, but `wrap_width` is *unconditionally* `None` for
+   `nowrap` text (which `.truncate()` sets via `whitespace_nowrap()`), so
+   the cache guard is trivially true on every call. Taffy measures a flex
+   child's intrinsic size at least twice — once with indefinite available
+   space (full content width, no truncation — cached), then again with the
+   real resolved width, which just replays the cached, untruncated size.
+   `.truncate()` silently never ellipsizes inside a flex chain measured
+   more than once — nearly every real chain a couple of panels deep. The
+   fix: give the text element a width gpui can resolve on its *first*
+   measurement (an explicit `.w(px(..))`), so the ambiguous multi-pass
+   measurement — and the bug it triggers — never happens.
+2. **The ellipsis glyph itself is unreliable**, even once a definite width
+   sidesteps bug 1 — `.truncate()`'s `text_ellipsis()` does not reliably
+   paint a "…" glyph.
+
+The mitigation used everywhere in this crate: where a value's container is
+a genuinely fixed pixel width (`detail_panel.rs`'s fact/commit columns),
+give the text element that exact width so bug 1 never triggers, and keep
+`.truncate()` only as a clip backstop. Where the width is fluid (a worktree
+row's path, a sidebar repo path, the footer hint line), truncation is
+computed **by hand in Rust** — count characters against a budget, slice,
+append `…` explicitly (`truncate_path_tail`/`truncate_tail`, shared by
+`detail_panel.rs`/`worktree_list.rs`/`app::chrome`) — sidestepping both
+bugs at once, since the result never asks gpui's own ellipsis mechanism to
+do anything. This stacks on top of, and is unrelated to, the ordinary
+flexbox rule that every ancestor in a shrinking chain needs `min_w_0()` or
+its child refuses to shrink at all — that part is normal flexbox, not a
+gpui defect, and still applies everywhere underneath the two bugs above.
+
+### The palette tests (`theme.rs::tests`)
+
+What each protects against a redesign-by-accident:
+
+- `neutral_950_is_0a0a0a`, `oklch_accents_match_reference` — the OKLCH→sRGB
+  math against independently-computed anchors.
+- `hsl_roundtrips_through_rgb` — HSL↔RGB round-trip drift < 1e-3.
+- `contrast_ratio_hits_known_anchors` — WCAG contrast math (white/black =
+  21:1, symmetric).
+- `text_contrast_is_paired_across_appearances` — dark and light `text`/
+  `text_muted`/`text_faint` land within 1.0 contrast ratio of each other
+  against their own `bg` — a matched pair, not a mirror.
+- `text_tones_clear_wcag_aa` — every text tone clears its WCAG floor (4.5:1
+  body, 4.1:1 placeholder/disabled, 3.0:1 the quietest tier) against
+  **both** `bg` and `surface`, both appearances.
+- `accents_clear_contrast_on_their_background` — light `accent` ≥ 4.5:1 on
+  `bg`; every status color ≥ 3:1 (the non-text UI floor) on `bg`/`surface`,
+  both appearances.
+- `status_hues_are_separable` — the accent/warning/danger hue-separation
+  floor above.
+- `elevation_ladder_is_ordered` — dark's plane order is strictly increasing
+  in lightness; light's top three planes are all exactly white.
+- `layout_constants_are_appearance_independent` — pins the `RADIUS_*`/
+  density constants so a regression is a failing assertion.
+- `selection_keeps_text_readable_on_every_surface`,
+  `caret_clears_non_text_contrast_on_every_surface` — the text-selection
+  band and caret clear their contrast floor composited over every real
+  surface a text field can rest on, not just one picked by hand.
+
+Run with `cargo test -p wtm-gui`.

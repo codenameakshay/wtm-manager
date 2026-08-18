@@ -11,13 +11,17 @@
 //!
 //! ## Font
 //!
-//! The diff body uses "SF Mono" — macOS's own system monospace face (also
-//! what Terminal.app, Xcode, and Console set their monospace text in), with
-//! "Menlo" and "Monaco" — macOS's two long-standing built-in monospace
-//! fonts — as fallbacks, then "Courier New" as a last resort present on
-//! effectively every platform. `gpui`'s font resolution falls through this
-//! list if an earlier name doesn't resolve in the current font context,
-//! rather than silently substituting the UI's proportional face for code.
+//! The diff body uses [`ui::FONT_MONO`] (Geist Mono, bundled — SPEC §6: diff
+//! content is one of the things that gets the app's own mono face, the same
+//! one paths/shas/branch names use in meta position). Pre-redesign this used
+//! the platform's own "SF Mono", falling through "Menlo"/"Monaco"/"Courier
+//! New" — those four now sit *after* the bundled face in the fallback list
+//! (see [`MONOSPACE_FALLBACKS`]) rather than being the primary, so a
+//! diff still renders in something reasonably monospace on the rare path
+//! where font registration fails (SPEC §6: that failure is non-fatal).
+//! `gpui`'s font resolution falls through this list if an earlier name
+//! doesn't resolve in the current font context, rather than silently
+//! substituting the UI's proportional face for code.
 //!
 //! ## Long lines
 //!
@@ -37,23 +41,25 @@ use gpui::{div, font, px, AnyElement, Font, FontFallbacks, Hsla, SharedString};
 
 use crate::data::{DiffHunk, DiffLine, DiffLineKind, FileDiff};
 use crate::file_browser::{status_color, status_label};
-use crate::theme::Theme;
+use crate::theme::{Theme, RADIUS_CONTROL, SPACE_16, SPACE_24, SPACE_4, SPACE_8};
 use crate::ui;
 
-const MONOSPACE_FONT: &str = "SF Mono";
-const MONOSPACE_FALLBACKS: &[&str] = &["Menlo", "Monaco", "Courier New"];
+/// Platform monospace fallbacks, tried in order after [`ui::FONT_MONO`] (see
+/// the module doc's "Font" section) if the bundled face fails to register.
+const MONOSPACE_FALLBACKS: &[&str] = &["SF Mono", "Menlo", "Monaco", "Courier New"];
 
 /// Estimated advance width, in pixels, of one monospace character at the
-/// diff body's 12px text size — used only to size the line-number gutter
-/// (see [`gutter_width`]); gpui has no API to measure real shaped text
-/// outside of an actual layout pass, so this is a deliberate approximation
-/// (roughly 0.6em, typical for a monospace face) rather than an exact value.
+/// diff body's `TEXT_SM` text size — used only to size the line-number
+/// gutter (see [`gutter_width`]); gpui has no API to measure real shaped
+/// text outside of an actual layout pass, so this is a deliberate
+/// approximation (roughly 0.6em, typical for a monospace face — including
+/// Geist Mono) rather than an exact value.
 const GUTTER_CHAR_WIDTH: f32 = 7.2;
 /// Horizontal padding inside a gutter column, both sides combined.
 const GUTTER_PADDING: f32 = 10.0;
 
 fn diff_font() -> Font {
-    let mut f = font(MONOSPACE_FONT);
+    let mut f = font(ui::FONT_MONO);
     f.fallbacks = Some(FontFallbacks::from_fonts(
         MONOSPACE_FALLBACKS.iter().map(|s| s.to_string()).collect(),
     ));
@@ -103,28 +109,25 @@ pub fn lineno_cell(n: Option<u32>) -> String {
     n.map(|n| n.to_string()).unwrap_or_default()
 }
 
-/// Low-alpha background tint for a line's kind, so the color reads as "this
-/// line changed" without turning into a saturated block that fights with
-/// the text sitting on top of it. `None` for context lines — they get no
-/// tint at all, not even a neutral one, so the eye lands on what changed.
+/// Background wash for a line's kind — `theme.diff_add_wash`/
+/// `diff_del_wash` (SPEC §3's tuned per-appearance alphas), not an ad-hoc
+/// tint: washing the *background* and tinting only the `+`/`-` marker
+/// ([`marker_color`]) is what keeps a long diff's body text readable
+/// (SURFACES §4 — "do not color the whole line's text"). `None` for context
+/// lines — they get no tint at all, not even a neutral one, so the eye
+/// lands on what changed.
 fn line_tint(kind: DiffLineKind, theme: &Theme) -> Option<Hsla> {
     match kind {
-        DiffLineKind::Added => Some(Hsla {
-            a: 0.14,
-            ..theme.success
-        }),
-        DiffLineKind::Removed => Some(Hsla {
-            a: 0.14,
-            ..theme.danger
-        }),
+        DiffLineKind::Added => Some(theme.diff_add_wash),
+        DiffLineKind::Removed => Some(theme.diff_del_wash),
         DiffLineKind::Context => None,
     }
 }
 
 fn marker_color(kind: DiffLineKind, theme: &Theme) -> Hsla {
     match kind {
-        DiffLineKind::Added => theme.success,
-        DiffLineKind::Removed => theme.danger,
+        DiffLineKind::Added => theme.diff_add,
+        DiffLineKind::Removed => theme.diff_del,
         DiffLineKind::Context => theme.text_ghost,
     }
 }
@@ -145,7 +148,8 @@ pub fn render_diff(diff: &FileDiff, theme: &Theme) -> AnyElement {
     div()
         .flex()
         .flex_col()
-        .gap(px(8.0))
+        .min_w_0()
+        .gap(px(SPACE_8))
         .w_full()
         .child(render_header(diff, theme))
         .when(diff.truncated, |d| d.child(truncated_banner(theme)))
@@ -169,10 +173,14 @@ pub fn render_changes(diffs: &[FileDiff], theme: &Theme) -> AnyElement {
     if diffs.is_empty() {
         return empty_note("No uncommitted changes", theme);
     }
+    // Between-file gap (`SPACE_24`) vs. a header/hunks within-file gap of
+    // `SPACE_8` — a `better-layout` §1 group-vs-within ratio, same as
+    // `detail_panel::render_details`.
     div()
         .flex()
         .flex_col()
-        .gap(px(22.0))
+        .min_w_0()
+        .gap(px(SPACE_24))
         .w_full()
         .children(diffs.iter().map(|diff| render_diff(diff, theme)))
         .into_any_element()
@@ -181,17 +189,26 @@ pub fn render_changes(diffs: &[FileDiff], theme: &Theme) -> AnyElement {
 fn render_header(diff: &FileDiff, theme: &Theme) -> impl IntoElement {
     div()
         .flex()
+        .min_w_0()
         .items_center()
         .justify_between()
-        .gap(px(8.0))
+        .gap(px(SPACE_8))
         .child(
+            // `.id(..)` (keyed on the file's own path, unique per diff) so
+            // `.tooltip(..)` — `StatefulInteractiveElement`-only in gpui
+            // 0.2.2 — is available on this div.
             div()
+                .id(SharedString::from(format!(
+                    "diff-header-path:{}",
+                    diff.path
+                )))
                 .flex_1()
                 .min_w_0()
                 .truncate()
-                .text_size(px(12.5))
+                .text_size(px(ui::TEXT_SM))
                 .text_color(theme.text)
-                .child(diff.path.clone()),
+                .child(diff.path.clone())
+                .tooltip(ui::tooltip(diff.path.clone())),
         )
         .child(ui::pill(
             status_label(diff.status),
@@ -202,14 +219,19 @@ fn render_header(diff: &FileDiff, theme: &Theme) -> impl IntoElement {
 fn truncated_banner(theme: &Theme) -> impl IntoElement {
     div()
         .w_full()
-        .px(px(10.0))
-        .py(px(6.0))
-        .rounded(px(6.0))
+        .px(px(SPACE_8))
+        .py(px(SPACE_4))
+        .rounded(px(RADIUS_CONTROL))
+        // No general-purpose "warning wash" token exists in `theme.rs` yet
+        // (only the diff-specific `diff_add_wash`/`diff_del_wash`) — this
+        // keeps the same 0.10 alpha those use, for consistency, rather than
+        // the previous ad-hoc 0.14. Worth promoting to a real
+        // `warning_wash`-style token in a later phase.
         .bg(Hsla {
-            a: 0.14,
+            a: 0.10,
             ..theme.warning
         })
-        .text_size(px(11.0))
+        .text_size(px(ui::TEXT_XS))
         .text_color(theme.warning)
         .child("Diff truncated at 2,000 lines for this file — later changes in it aren't shown.")
 }
@@ -217,12 +239,12 @@ fn truncated_banner(theme: &Theme) -> impl IntoElement {
 fn empty_note(text: &'static str, theme: &Theme) -> AnyElement {
     div()
         .w_full()
-        .py(px(24.0))
+        .py(px(SPACE_24))
         .flex()
         .items_center()
         .justify_center()
-        .text_size(px(12.5))
-        .text_color(theme.text_tertiary)
+        .text_size(px(ui::TEXT_SM))
+        .text_color(theme.text_faint)
         .child(text)
         .into_any_element()
 }
@@ -235,10 +257,14 @@ fn render_hunks(diff: &FileDiff, theme: &Theme) -> AnyElement {
     let id = SharedString::from(format!("diff-body:{}", diff.path));
     div()
         .id(id)
+        // Radius arithmetic (SPEC §4/COMPONENTS.md): the diff body is a
+        // self-contained bordered block at `RADIUS_CONTROL` (6) — the
+        // nearest token to the pre-redesign literal `6.0`, so this was
+        // already on-scale.
+        .rounded(px(RADIUS_CONTROL))
         .flex()
         .flex_col()
         .w_full()
-        .rounded(px(6.0))
         .border_1()
         .border_color(theme.border)
         .overflow_x_scroll()
@@ -256,14 +282,17 @@ fn render_hunk(hunk: &DiffHunk, gutter_px: f32, theme: &Theme) -> impl IntoEleme
         .flex()
         .flex_col()
         .child(
+            // Hunk headers get `diff_hunk_bg` (SPEC §3/SURFACES §4) — a
+            // dedicated token, not the generic hover wash (`item_wash`) this
+            // used before.
             div()
                 .w_full()
-                .px(px(10.0))
-                .py(px(4.0))
-                .bg(theme.item_wash)
+                .px(px(SPACE_8))
+                .py(px(SPACE_4))
+                .bg(theme.diff_hunk_bg)
                 .whitespace_nowrap()
-                .text_size(px(11.0))
-                .text_color(theme.text_tertiary)
+                .text_size(px(ui::TEXT_XS))
+                .text_color(theme.text_faint)
                 .child(hunk.header.clone()),
         )
         .children(
@@ -273,19 +302,28 @@ fn render_hunk(hunk: &DiffHunk, gutter_px: f32, theme: &Theme) -> impl IntoEleme
         )
 }
 
+/// Fixed width of the `+`/`-`/` ` marker column — sized for one monospace
+/// glyph at the diff body's `TEXT_SM` text size, the same "named because it
+/// doesn't fit the `SPACE_*` scale" precedent as [`GUTTER_CHAR_WIDTH`].
+const MARKER_COLUMN_WIDTH: f32 = 14.0;
+
 fn render_line(line: &DiffLine, gutter_px: f32, theme: &Theme) -> impl IntoElement {
     div()
         .flex()
         .items_start()
         .w_full()
+        // Wash the line's *background*; the marker color below is the only
+        // thing that carries the added/removed tint into the text itself
+        // (SURFACES §4 — coloring the whole line's text makes a long diff
+        // unreadable).
         .when_some(line_tint(line.kind, theme), |d, c| d.bg(c))
         .child(lineno_col(line.old_lineno, gutter_px, theme))
         .child(lineno_col(line.new_lineno, gutter_px, theme))
         .child(
             div()
                 .flex_none()
-                .w(px(14.0))
-                .text_size(px(12.0))
+                .w(px(MARKER_COLUMN_WIDTH))
+                .text_size(px(ui::TEXT_SM))
                 .text_color(marker_color(line.kind, theme))
                 .child(line_marker(line.kind)),
         )
@@ -293,12 +331,14 @@ fn render_line(line: &DiffLine, gutter_px: f32, theme: &Theme) -> impl IntoEleme
             // Deliberately no `min_w_0()`/`truncate()` here — see the module
             // doc's "Long lines" section for why that's what lets this row
             // overflow into the ancestor's horizontal scroll instead of
-            // wrapping or clipping.
+            // wrapping or clipping. Body text always stays `theme.text`
+            // regardless of `line.kind` — see `line_tint`'s doc for why the
+            // background wash (not the text) is what signals a change.
             div()
                 .flex_1()
                 .whitespace_nowrap()
-                .pr(px(16.0))
-                .text_size(px(12.0))
+                .pr(px(SPACE_16))
+                .text_size(px(ui::TEXT_SM))
                 .text_color(theme.text)
                 .child(if line.text.is_empty() {
                     " ".to_string()
@@ -312,8 +352,12 @@ fn lineno_col(n: Option<u32>, width: f32, theme: &Theme) -> impl IntoElement {
     div()
         .flex_none()
         .w(px(width))
-        .px(px(4.0))
-        .text_size(px(11.0))
+        .px(px(SPACE_4))
+        // Right-aligned so a run of different-width line numbers still
+        // lines up on their trailing digit (SURFACES §4: "digits aligned"),
+        // rather than only sharing a left edge.
+        .text_right()
+        .text_size(px(ui::TEXT_XS))
         .text_color(theme.text_ghost)
         .child(lineno_cell(n))
 }
