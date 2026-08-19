@@ -176,6 +176,13 @@ pub const LIST_ROW_HEIGHT: f32 = 56.0;
 pub const SIDEBAR_WIDTH: f32 = 248.0;
 /// Footer strip height.
 pub const FOOTER_HEIGHT: f32 = 28.0;
+/// Square icon-button hit area (titlebar, sidebar, toolbars). Was 26 — a
+/// macOS toolbar button reads closer to ~28, and at `TITLEBAR_HEIGHT` (44)
+/// this still leaves 8px of clearance above and below, so the bump costs no
+/// layout. The one source of truth for every hand-built copy of this
+/// control (`ui::icon_button`, `app/chrome.rs`'s reload button and its
+/// Linux window-control buttons).
+pub const ICON_BUTTON_SIZE: f32 = 28.0;
 
 /// Text scale (SPEC §6). Moved here from `ui.rs` per SPEC §8's module-layout
 /// doc, which places these alongside the other density constants; `ui.rs`
@@ -1331,6 +1338,7 @@ mod tests {
         assert_eq!(LIST_ROW_HEIGHT, 56.0);
         assert_eq!(SIDEBAR_WIDTH, 248.0);
         assert_eq!(FOOTER_HEIGHT, 28.0);
+        assert_eq!(ICON_BUTTON_SIZE, 28.0);
     }
 
     // 11. ------------------------------------------------------------

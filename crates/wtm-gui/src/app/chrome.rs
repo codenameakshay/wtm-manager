@@ -223,7 +223,14 @@ impl WtmApp {
                                 entry.path.display()
                             )))
                             .child(ui::icon(icons::WARNING, 12.0, theme.warning))
-                            .tooltip(ui::tooltip("This repository's folder could not be found.")),
+                            .tooltip(ui::tooltip(
+                                // Names the problem and the recovery
+                                // (`better-writing`) — right-click already
+                                // offers "Remove from Sidebar" for exactly
+                                // this case (`open_repo_context_menu`).
+                                "This repository's folder could not be found. \
+                                 Right-click to remove it from the sidebar.",
+                            )),
                     )
                 }),
         )
@@ -396,10 +403,10 @@ impl WtmApp {
     ///
     /// `ui::icon_button`/`icon_button_with_tooltip` hard-code a static icon
     /// child and have no animated variant, so this rebuilds their exact look
-    /// (26×26, `RADIUS_CONTROL`, `element_hover` hover, `press_feedback`) by
-    /// hand instead of through them — `ui.rs` is outside this task's file
-    /// scope (see the redesign report) so a real animated variant belongs
-    /// there, not here.
+    /// (`theme::ICON_BUTTON_SIZE`, `RADIUS_CONTROL`, `element_hover` hover,
+    /// `press_feedback`) by hand instead of through them — `ui.rs` is
+    /// outside this task's file scope (see the redesign report) so a real
+    /// animated variant belongs there, not here.
     fn render_reload_button(&self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
         const TOOLTIP: &str = "Reload · ⌘R";
 
@@ -416,8 +423,8 @@ impl WtmApp {
 
         let styled = div()
             .id("reload")
-            .w(px(26.0))
-            .h(px(26.0))
+            .w(px(theme::ICON_BUTTON_SIZE))
+            .h(px(theme::ICON_BUTTON_SIZE))
             .flex()
             .flex_none()
             .items_center()
@@ -529,6 +536,13 @@ impl WtmApp {
         }
 
         let theme = self.chrome_theme(cx);
+        // The filter field stays mounted (and painted) behind an open
+        // dialog/palette/context menu, exactly like every `ui.rs` row and
+        // button on this surface — see `TextInput::set_tab_stop`'s doc for
+        // why it needs its own per-render toggle rather than picking this
+        // up from `theme.tab_stops` automatically the way those do.
+        self.filter_input
+            .update(cx, |input, cx| input.set_tab_stop(theme.tab_stops, cx));
         let visible = self.visible_row_indices(cx);
         let shown = visible.len();
         let total = self.rows.len();
@@ -1392,7 +1406,7 @@ impl WtmApp {
                 ui::empty_hint("Loading files…", theme).into_any_element()
             }
             Some(file_browser::DirState::Error(e)) => {
-                ui::empty_hint(format!("Could not list files: {e}"), theme).into_any_element()
+                ui::empty_hint_error(format!("Could not list files: {e}"), theme).into_any_element()
             }
             Some(file_browser::DirState::Loaded(entries)) if entries.is_empty() => {
                 ui::empty_hint("This worktree has no files.", theme).into_any_element()
@@ -1432,7 +1446,7 @@ impl WtmApp {
                 ui::empty_hint("This file has no uncommitted changes.", theme).into_any_element()
             }
             SelectedFileDiff::Error(e) => {
-                ui::empty_hint(format!("Could not load diff: {e}"), theme).into_any_element()
+                ui::empty_hint_error(format!("Could not load diff: {e}"), theme).into_any_element()
             }
             SelectedFileDiff::Changed(diff) => diff_view::render_diff(diff, theme),
         }
@@ -1444,7 +1458,8 @@ impl WtmApp {
         let content: AnyElement = match &self.changes {
             ChangesState::Loading => ui::empty_hint("Computing changes…", theme).into_any_element(),
             ChangesState::Error(e) => {
-                ui::empty_hint(format!("Could not compute changes: {e}"), theme).into_any_element()
+                ui::empty_hint_error(format!("Could not compute changes: {e}"), theme)
+                    .into_any_element()
             }
             ChangesState::Loaded(diffs) => diff_view::render_changes(diffs, theme),
         };
@@ -1544,15 +1559,16 @@ fn render_window_controls(theme: &Theme, cx: &mut Context<WtmApp>) -> impl IntoE
         )
 }
 
-/// The base of a Linux window-control button: the same 26×26 hover square
-/// `ui::icon_button` uses, but built here directly rather than through it,
-/// since minimize/maximize need a caller-supplied glyph in place of an svg
-/// icon — see `minimize_glyph`/`maximize_glyph` below for why.
+/// The base of a Linux window-control button: the same hover square
+/// `ui::icon_button` uses (`theme::ICON_BUTTON_SIZE`), but built here
+/// directly rather than through it, since minimize/maximize need a
+/// caller-supplied glyph in place of an svg icon — see
+/// `minimize_glyph`/`maximize_glyph` below for why.
 fn window_control_button(id: &'static str, theme: &Theme) -> Stateful<Div> {
     div()
         .id(id)
-        .w(px(26.0))
-        .h(px(26.0))
+        .w(px(theme::ICON_BUTTON_SIZE))
+        .h(px(theme::ICON_BUTTON_SIZE))
         .flex()
         .flex_none()
         .items_center()

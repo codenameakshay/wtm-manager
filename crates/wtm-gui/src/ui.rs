@@ -54,8 +54,8 @@ use gpui::{
 
 use crate::motion;
 use crate::theme::{
-    scrim, Theme, RADIUS_CHIP, RADIUS_CONTROL, RADIUS_DIALOG, RADIUS_PANEL, RADIUS_ROW,
-    SCRIM_ALPHA_DARK, SPACE_12, SPACE_16, SPACE_2, SPACE_32, SPACE_4, SPACE_6, SPACE_8,
+    scrim, Theme, ICON_BUTTON_SIZE, RADIUS_CHIP, RADIUS_CONTROL, RADIUS_DIALOG, RADIUS_PANEL,
+    RADIUS_ROW, SCRIM_ALPHA_DARK, SPACE_12, SPACE_16, SPACE_2, SPACE_32, SPACE_4, SPACE_6, SPACE_8,
 };
 
 // ---------------------------------------------------------------------------
@@ -171,6 +171,34 @@ pub fn focus_ring<E: Styled>(theme: &Theme) -> impl Fn(E) -> E {
 pub fn press_feedback(el: Stateful<Div>, theme: &Theme) -> Stateful<Div> {
     let active_wash = theme.element_active;
     el.active(move |style| motion::press_feedback(style, active_wash))
+}
+
+/// Marks an already-built [`row`]/[`button`]/[`icon_button`]/[`toolbar_button`]
+/// as unavailable: removes it from keyboard reach via gpui's own
+/// `InteractiveElement::tab_stop(false)` (its doc: "the element remains in
+/// tab-index order but cannot be reached via keyboard navigation" — verified
+/// against `gpui-0.2.2/src/elements/div.rs`), without touching the slot the
+/// component already claimed in the tab order, so disabling a control never
+/// reshuffles the sequence around it.
+///
+/// A harden-pass finding: an unavailable Prune/Create/Remove/Run confirm
+/// button and a checked-out branch row were all still real Tab stops — they
+/// painted dim (or, for the branch row, just never got a click handler) but
+/// Tab still landed on them and Enter/Space silently did nothing. Every one
+/// of those call sites built its own "does this control actually have an
+/// action" branch already (`if can_submit { .. } else { button.opacity(0.4)
+/// }`); this is the component-layer half those branches were missing, not a
+/// new per-component `disabled: bool` parameter — COMPONENTS.md's rule 1
+/// ("a component owns its look; the caller owns behaviour") puts exactly
+/// this decision (is there a click handler behind this or not) at the call
+/// site, which is the only place that already knows the answer.
+///
+/// Visual dimming stays the call site's job too: the button call sites above
+/// already chain `.opacity(0.4)`, and [`crate::dialogs::render_branch_row`]
+/// mutes its own text color directly — this function only owns the focus
+/// half.
+pub fn disabled(el: Stateful<Div>) -> Stateful<Div> {
+    el.tab_stop(false)
 }
 
 // ---------------------------------------------------------------------------
@@ -511,8 +539,8 @@ pub fn icon_button(
 ) -> Stateful<Div> {
     let styled = div()
         .id(id.into())
-        .w(px(26.0))
-        .h(px(26.0))
+        .w(px(ICON_BUTTON_SIZE))
+        .h(px(ICON_BUTTON_SIZE))
         .flex()
         .flex_none()
         .items_center()
@@ -878,6 +906,30 @@ pub fn empty_hint(text: impl Into<SharedString>, theme: &Theme) -> impl IntoElem
         .text_size(px(TEXT_SM))
         .text_color(theme.text_muted)
         .child(text.into())
+}
+
+/// [`empty_hint`]'s error sibling: the same centered, panel-filling layout,
+/// but in `theme.danger` with a leading alert icon so an error reads as
+/// distinct from "loading…"/"nothing here" at a glance rather than only in
+/// its wording — color is never the only channel (SPEC §5), hence the icon,
+/// same rule [`inline_error`] already follows for a dialog field.
+/// `detail_panel`'s Files/Changes tabs (`app/chrome.rs::render_file_tree`/
+/// `render_selected_file_diff`/`render_changes_tab`) were rendering "Could
+/// not list files: …"/"Could not load diff: …"/"Could not compute changes:
+/// …" through plain [`empty_hint`] — indistinguishable from every loading
+/// and empty state around them except by reading the sentence — until this
+/// existed.
+pub fn empty_hint_error(message: impl Into<SharedString>, theme: &Theme) -> impl IntoElement {
+    div()
+        .flex_1()
+        .flex()
+        .items_center()
+        .justify_center()
+        .gap(px(SPACE_6))
+        .text_size(px(TEXT_SM))
+        .text_color(theme.danger)
+        .child(icon(crate::assets::icons::CIRCLE_ALERT, 12.0, theme.danger))
+        .child(div().min_w_0().child(message.into()))
 }
 
 /// A designed empty state: icon above headline, a supporting hint line, and

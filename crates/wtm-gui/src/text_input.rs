@@ -112,6 +112,13 @@ pub struct TextInput {
     /// When set, [`TextInput::render`] skips its own background/border
     /// entirely — see [`TextInput::borderless`]'s doc.
     borderless: bool,
+    /// Whether this field is a real Tab stop (harden-pass finding: `.
+    /// track_focus(&self.focus_handle)` alone never was one — see
+    /// [`TextInput::render`]'s doc for the mechanism). Defaults to `true`;
+    /// [`TextInput::set_tab_stop`] is the one guarded, change-detected way
+    /// to flip it live, for the one field that must — see that method's
+    /// doc.
+    tab_stop: bool,
 }
 
 impl TextInput {
@@ -135,6 +142,36 @@ impl TextInput {
             is_selecting: false,
             cursor_visible: true,
             borderless: false,
+            tab_stop: true,
+        }
+    }
+
+    /// Live-toggle whether this field is reachable by Tab, without
+    /// requiring the caller to know or care whether the value actually
+    /// changed — a no-op (no `cx.notify()`) when `enabled` already matches,
+    /// which is what makes it safe to call unconditionally from a `render`
+    /// method that runs every frame.
+    ///
+    /// Every `TextInput` in this crate except one only ever exists while
+    /// its own overlay (a dialog, the palette, the run-command sheet) is
+    /// open, so it can stay a tab stop unconditionally — [`Self::new`]
+    /// already defaults `tab_stop` to `true` and nothing needs to call
+    /// this. The one exception is `WtmApp`'s worktree-list filter field: it
+    /// stays mounted (and painted) behind an open dialog/palette/context
+    /// menu, exactly like `ui.rs`'s row/button/icon_button components —
+    /// SURFACES' "the shell paints underneath overlays, it doesn't
+    /// unmount" and [`crate::theme::Theme::tab_stops`]'s doc both explain
+    /// why gpui's own `tab_group()` can't keep Tab inside the overlay on
+    /// its own. Those components get their per-frame `false` from
+    /// `WtmApp::chrome_theme`'s `Theme` copy, threaded in as an explicit
+    /// `&Theme` parameter; a `TextInput` is a separate `Entity` rendered by
+    /// gpui on its own schedule with no such parameter to receive, so
+    /// `app/chrome.rs::render_list` calls this instead, every render, with
+    /// that same `chrome_theme(cx).tab_stops` value.
+    pub fn set_tab_stop(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        if self.tab_stop != enabled {
+            self.tab_stop = enabled;
+            cx.notify();
         }
     }
 
@@ -809,6 +846,26 @@ impl Render for TextInput {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::of(cx);
         let focused = self.focus_handle.is_focused(window);
+
+        // `.track_focus(&self.focus_handle)` below hands gpui an
+        // *already-built* `FocusHandle`, which bypasses the auto-create-and-
+        // apply-tab_index path `InteractiveElement::tab_index`/`tab_stop`
+        // normally goes through (verified against gpui-0.2.2's
+        // `elements/div.rs`: that path only runs when `tracked_focus_handle`
+        // is still `None`, and `track_focus` sets it unconditionally) — so
+        // chaining `.tab_index(..)` on `field` below would silently do
+        // nothing. `FocusHandle::tab_stop`/`tab_index` (gpui-0.2.2's
+        // `window.rs`) are the ones that actually take effect here: both
+        // write straight through to the shared focus map keyed by this
+        // handle's id, so re-deriving `self.focus_handle` from itself on
+        // every render (rather than only at construction) is what lets
+        // [`Self::set_tab_stop`] change live behavior an already-existing
+        // handle, not just a fresh one.
+        self.focus_handle = self
+            .focus_handle
+            .clone()
+            .tab_stop(self.tab_stop)
+            .tab_index(0);
 
         let field = div()
             .key_context("TextInput")

@@ -387,7 +387,7 @@ fn render_form(
                             }))
                             .into_any_element()
                     } else {
-                        button.opacity(0.4).into_any_element()
+                        ui::disabled(button.opacity(0.4)).into_any_element()
                     }
                 }),
         )

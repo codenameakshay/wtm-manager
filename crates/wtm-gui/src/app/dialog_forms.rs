@@ -103,7 +103,7 @@ impl WtmApp {
                             .map(|branch| {
                                 let row = dialogs::render_branch_row(branch, theme);
                                 if branch.is_checked_out {
-                                    row.into_any_element()
+                                    ui::disabled(row).into_any_element()
                                 } else {
                                     let name = branch.name.clone();
                                     row.on_click(cx.listener(move |this, _, window, cx| {
@@ -157,7 +157,7 @@ impl WtmApp {
                                 }))
                                 .into_any_element()
                         } else {
-                            button.opacity(0.4).into_any_element()
+                            ui::disabled(button.opacity(0.4)).into_any_element()
                         }
                     }),
             )
@@ -234,6 +234,24 @@ impl WtmApp {
                     .map(|(ix, r)| {
                         let name = r.name.clone();
                         dialogs::render_ref_row(r, ix == highlighted, theme)
+                            // Not a Tab stop: this list is arrow-key
+                            // navigated (`on_create_dialog_key_down`'s
+                            // Up/Down) and mouse-clickable, the same
+                            // contract `context_menu.rs`'s items have — and
+                            // it *must* stay out of the Tab order, not just
+                            // skip it by convention. The picker closes the
+                            // instant `base_input` blurs (`dialogs.rs`'s
+                            // `cx.on_blur`), so if Tab from Base ever
+                            // landed here, the just-focused row would
+                            // unmount on the very next frame (this `when`
+                            // is gated on `state.base_picker_open`,
+                            // already false by then), stranding focus on a
+                            // handle nothing paints anymore — found by
+                            // walking this dialog with the keyboard after
+                            // giving `TextInput` real Tab stops (harden-
+                            // pass follow-up, see `ui::disabled`'s doc for
+                            // the mechanism this reuses).
+                            .tab_stop(false)
                             .on_hover(cx.listener(move |this, hovered: &bool, _window, cx| {
                                 if *hovered {
                                     this.set_base_picker_highlight(ix, cx);
@@ -467,7 +485,7 @@ impl WtmApp {
                     .on_click(cx.listener(|this, _, _window, cx| this.confirm_remove_dialog(cx)))
                     .into_any_element()
             } else {
-                confirm.opacity(0.4).into_any_element()
+                ui::disabled(confirm.opacity(0.4)).into_any_element()
             };
             footer = footer.child(confirm);
         }
@@ -566,7 +584,7 @@ impl WtmApp {
                         .on_click(cx.listener(|this, _, _window, cx| this.confirm_prune_dialog(cx)))
                         .into_any_element()
                 } else {
-                    confirm.opacity(0.4).into_any_element()
+                    ui::disabled(confirm.opacity(0.4)).into_any_element()
                 };
                 footer.child(confirm)
             });
@@ -703,7 +721,7 @@ impl WtmApp {
                 .on_click(cx.listener(|this, _, _window, cx| this.confirm_bulk_remove(cx)))
                 .into_any_element()
         } else {
-            confirm.opacity(0.4).into_any_element()
+            ui::disabled(confirm.opacity(0.4)).into_any_element()
         };
         body = body.child(footer.child(confirm));
 
