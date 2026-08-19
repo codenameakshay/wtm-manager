@@ -831,15 +831,21 @@ impl WtmApp {
             return;
         };
         let query = state.input.read(cx).value().to_string();
-        let len = palette::compute_results(&query, &self.rows).len();
-        if len == 0 {
+        let results = palette::compute_results(&query, &self.rows);
+        if results.is_empty() {
             return;
         }
+        let worktree_count = results
+            .iter()
+            .filter(|e| matches!(e, palette::PaletteEntry::Worktree { .. }))
+            .count();
+        let command_count = results.len() - worktree_count;
         let Some(state) = &mut self.palette else {
             return;
         };
-        let next = (state.highlighted as i32 + delta).rem_euclid(len as i32) as usize;
+        let next = (state.highlighted as i32 + delta).rem_euclid(results.len() as i32) as usize;
         state.highlighted = next;
+        state.scroll_highlighted_into_view(worktree_count, command_count);
         cx.notify();
     }
 

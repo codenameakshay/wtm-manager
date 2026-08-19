@@ -414,6 +414,38 @@ pub fn compute_results(query: &str, rows: &[WorktreeInfo]) -> Vec<PaletteEntry> 
         .collect()
 }
 
+/// Position of the flat result index `highlighted` (as `compute_results`
+/// numbers it: worktrees then commands, see that function's own doc) within
+/// the `results_list` div `render` actually paints, once section headers
+/// are accounted for — `render` puts a `section_header` row ahead of each
+/// non-empty group, so the DOM child index runs one or two rows ahead of
+/// the flat result index the moment `highlighted` reaches the worktrees
+/// section (offset by the worktrees header) or the commands section
+/// (offset by both headers). Pure, and given plain counts rather than the
+/// `PaletteEntry` list itself, so `palette_move_highlight` can call it
+/// without `render`'s own borrow of `self.palette`. Returns `None` for an
+/// out-of-range `highlighted` (an empty results list, or a stale highlight
+/// left over from a shorter query).
+pub fn results_scroll_child_index(
+    worktree_count: usize,
+    command_count: usize,
+    highlighted: usize,
+) -> Option<usize> {
+    if highlighted >= worktree_count + command_count {
+        return None;
+    }
+    if highlighted < worktree_count {
+        Some(1 + highlighted)
+    } else {
+        let header_offset = if worktree_count > 0 {
+            1 + worktree_count
+        } else {
+            0
+        };
+        Some(header_offset + 1 + (highlighted - worktree_count))
+    }
+}
+
 // ---------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------
@@ -472,6 +504,24 @@ impl PaletteState {
             _input_sub: sub,
             highlighted: 0,
             scroll: ScrollHandle::new(),
+        }
+    }
+
+    /// Scroll `self.scroll` so the currently highlighted result is inside
+    /// the results column's viewport — Bug 3's "arrow keys scroll the
+    /// selection into view" rule, extended to the palette's own list.
+    /// `worktree_count`/`command_count` describe the *current* query's
+    /// results (`palette_move_highlight` computed them a moment ago to
+    /// clamp `highlighted` itself); `results_scroll_child_index` is the
+    /// pure translation from flat result index to DOM child index.
+    /// `ScrollHandle::scroll_to_item`'s default strategy (`FirstVisible`)
+    /// already no-ops when the row is already on screen, so this is safe
+    /// to call unconditionally.
+    pub(crate) fn scroll_highlighted_into_view(&self, worktree_count: usize, command_count: usize) {
+        if let Some(child_ix) =
+            results_scroll_child_index(worktree_count, command_count, self.highlighted)
+        {
+            self.scroll.scroll_to_item(child_ix);
         }
     }
 }
@@ -601,6 +651,11 @@ pub fn render(
         .flex_col()
         .items_center()
         .bg(scrim(SCRIM_ALPHA_DARK))
+        // Covers the whole window; without this a scroll wheel anywhere
+        // over the backdrop (or over `card`, which itself occludes via
+        // `ui::popover`) would fall through to the worktree list behind
+        // it — see `ui::modal_backdrop`'s doc for the same reasoning.
+        .occlude()
         .on_click(cx.listener(|this, _, window, cx| this.close_palette(window, cx)))
         .child(div().h(px(TOP_OFFSET)).flex_none())
         .child(card)
@@ -859,5 +914,34 @@ mod tests {
             is_prunable: false,
             status: None,
         }
+    }
+
+    // -------------------------------------------------------------
+    // `results_scroll_child_index` — Bug 3: palette highlight scrolling
+    // -------------------------------------------------------------
+
+    #[test]
+    fn results_scroll_child_index_skips_the_worktrees_header() {
+        // 2 worktrees, 1 command: DOM is [header, wt0, wt1, header, cmd0].
+        assert_eq!(results_scroll_child_index(2, 1, 0), Some(1));
+        assert_eq!(results_scroll_child_index(2, 1, 1), Some(2));
+    }
+
+    #[test]
+    fn results_scroll_child_index_skips_both_headers_for_a_command() {
+        assert_eq!(results_scroll_child_index(2, 1, 2), Some(4));
+    }
+
+    #[test]
+    fn results_scroll_child_index_has_no_worktrees_header_when_that_group_is_empty() {
+        // DOM is [header, cmd0, cmd1] — no worktrees section at all.
+        assert_eq!(results_scroll_child_index(0, 2, 0), Some(1));
+        assert_eq!(results_scroll_child_index(0, 2, 1), Some(2));
+    }
+
+    #[test]
+    fn results_scroll_child_index_is_none_when_out_of_range() {
+        assert_eq!(results_scroll_child_index(2, 1, 3), None);
+        assert_eq!(results_scroll_child_index(0, 0, 0), None);
     }
 }

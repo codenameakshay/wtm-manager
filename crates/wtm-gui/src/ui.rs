@@ -795,6 +795,16 @@ pub fn popover(theme: &Theme) -> Div {
         .border_color(theme.border_strong)
         .rounded(px(RADIUS_PANEL))
         .shadow(theme.shadow_popover())
+        // `.occlude()`, not `.block_mouse_except_scroll()`: this panel sits
+        // over a scrollable surface (the worktree list, a dialog card) and
+        // must swallow the scroll wheel too, or scrolling inside a popover
+        // (the palette's results, a context menu, the base-ref picker)
+        // also scrolls whatever is stacked behind it. gpui's own doc on
+        // `block_mouse_except_scroll` says to prefer it in general — that
+        // advice does not apply here, because blocking scroll from
+        // reaching what's behind is exactly the point. Do not "simplify"
+        // this back to `block_mouse_except_scroll`.
+        .occlude()
 }
 
 /// A full-window scrim behind a modal, centering whatever dialog sits on
@@ -812,6 +822,12 @@ pub fn modal_backdrop() -> Div {
         .items_center()
         .justify_center()
         .bg(scrim(SCRIM_ALPHA_DARK))
+        // Covers the whole window, so `.occlude()` here is what stops a
+        // scroll wheel over the backdrop (or over the card sitting on top
+        // of it) from reaching the worktree list painted underneath — see
+        // `popover`'s doc for why `.occlude()`, not
+        // `block_mouse_except_scroll`, is correct for a modal surface.
+        .occlude()
 }
 
 /// The dialog surface itself: a raised panel with enough shadow to read as
@@ -828,6 +844,11 @@ pub fn modal_card(width: f32, theme: &Theme) -> Div {
         .border_color(theme.border_strong)
         .rounded(px(RADIUS_DIALOG))
         .shadow(theme.shadow_dialog())
+        // See `popover`'s doc: `.occlude()` (not `block_mouse_except_scroll`)
+        // stops a scroll wheel over the card — including over any part of
+        // it that isn't itself a scroll region — from reaching the
+        // worktree list behind the backdrop.
+        .occlude()
         // Its own tab-index namespace (gpui-0.2.2's `tab_group()`), so Tab
         // inside an open dialog cycles the card's own fields/toggles/footer
         // buttons in paint order without interleaving with whatever's

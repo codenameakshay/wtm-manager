@@ -78,8 +78,8 @@ use gpui::prelude::*;
 use gpui::{
     actions, deferred, div, px, uniform_list, AnyElement, App, ClickEvent, Context, Decorations,
     Div, Entity, FocusHandle, Focusable, KeyDownEvent, MouseButton, MouseDownEvent, Pixels, Point,
-    ScrollHandle, SharedString, Stateful, Subscription, UniformListScrollHandle, Window,
-    WindowAppearance,
+    ScrollHandle, ScrollStrategy, SharedString, Stateful, Subscription, UniformListScrollHandle,
+    Window, WindowAppearance,
 };
 use wtm::commands::prune::{PruneCandidate, PruneReport};
 use wtm::model::WorktreeInfo;
@@ -546,6 +546,9 @@ pub(crate) fn render_modal_backdrop(cx: &mut Context<WtmApp>) -> Stateful<Div> {
     ui::modal_backdrop()
         .id("dialog-backdrop")
         .on_click(cx.listener(|this, _, window, cx| this.close_dialog(window, cx)))
+    // `ui::modal_backdrop()` already carries `.occlude()` — see its doc —
+    // so the worktree list behind every dialog is safe from both the
+    // click and the scroll-wheel leak this function's own doc describes.
 }
 
 impl Focusable for WtmApp {

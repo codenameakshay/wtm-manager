@@ -1657,6 +1657,64 @@ fn selection_survives_a_sort_mode_change_by_path_not_index(cx: &mut TestAppConte
     });
 }
 
+/// Bug 2's actual reproduction: a background `RepoWatcher` tick (modeled
+/// here by calling `WtmApp::reload` directly — the same path the watcher's
+/// `on_watcher_change` and the manual ⌘R both take) that lands while a
+/// *different* worktree's status changed can reorder rows under
+/// `SortMode::Status` without the user touching the selected row at all.
+/// `apply_rows` used to keep the selection's raw index rather than its
+/// identity, so a reorder like this would silently re-point `selected` at
+/// whatever row happened to shift into that same slot.
+#[gpui::test]
+fn selection_survives_a_reload_that_reorders_rows_by_path_not_index(cx: &mut TestAppContext) {
+    let fx = Fixture::new();
+    fx.add_worktree("clean-one");
+    let other = fx.add_worktree("other");
+    let repo = fx.open();
+    let (view, cx) = open_app(cx, Some(repo));
+    cx.run_until_parked();
+
+    view.update_in(cx, |app, _window, cx| {
+        app.set_sort_mode(SortMode::Status, cx)
+    });
+    cx.run_until_parked();
+
+    // Status mode: main, feature-x (dirty, from the fixture's own setup),
+    // then the clean rows alphabetically — clean-one, other.
+    let (clean_ix_before, clean_path) = view.read_with(cx, |app, _| {
+        let ix = app
+            .rows
+            .iter()
+            .position(|r| r.display_name() == "clean-one")
+            .unwrap();
+        (ix, app.rows[ix].path.clone())
+    });
+    view.update_in(cx, |app, _window, cx| app.select(clean_ix_before, cx));
+
+    // Dirty a DIFFERENT worktree that currently sorts *after* clean-one —
+    // under Status mode it jumps ahead of clean-one the moment it's dirty,
+    // so clean-one's index necessarily shifts once the list re-sorts.
+    fx.write_untracked(&other, "scratch.txt", "uncommitted\n");
+
+    view.update_in(cx, |app, _window, cx| app.reload(cx));
+    cx.run_until_parked();
+
+    view.read_with(cx, |app, _| {
+        let new_ix = app
+            .selected
+            .expect("still something selected after the reload");
+        assert_ne!(
+            new_ix, clean_ix_before,
+            "the index changing is the whole point of this test"
+        );
+        assert_eq!(
+            app.rows[new_ix].path, clean_path,
+            "the SAME worktree, by path, must still be selected — not whichever \
+             row shifted into its old slot"
+        );
+    });
+}
+
 #[gpui::test]
 fn multi_selection_survives_a_sort_mode_change_by_path_not_index(cx: &mut TestAppContext) {
     let fx = Fixture::new();

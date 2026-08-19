@@ -57,6 +57,17 @@ impl WtmApp {
         if !selected_visible {
             self.selected = visible.first().copied();
         }
+        // Type-to-filter is a keyboard interaction, same as ↑/↓ — the
+        // newly (re)selected row must stay on screen as the filter
+        // narrows or widens the list out from under it. See
+        // `scroll_selected_into_view`'s doc for why mouse-driven selection
+        // never calls this.
+        if let Some(display_ix) = self
+            .selected
+            .and_then(|sel| visible.iter().position(|&r| r == sel))
+        {
+            self.scroll_selected_into_view(display_ix);
+        }
         self.load_details_for_selection(cx);
         cx.notify();
     }
@@ -212,15 +223,16 @@ impl WtmApp {
         let Some(&first) = visible.first() else {
             return;
         };
-        let next = match self
+        let (next, display_ix) = match self
             .selected
             .and_then(|ix| visible.iter().position(|&r| r == ix))
         {
-            Some(pos) if pos + 1 < visible.len() => visible[pos + 1],
-            Some(pos) => visible[pos],
-            None => first,
+            Some(pos) if pos + 1 < visible.len() => (visible[pos + 1], pos + 1),
+            Some(pos) => (visible[pos], pos),
+            None => (first, 0),
         };
         self.select(next, cx);
+        self.scroll_selected_into_view(display_ix);
     }
 
     pub(super) fn on_select_prev(
@@ -236,15 +248,74 @@ impl WtmApp {
         let Some(&first) = visible.first() else {
             return;
         };
-        let prev = match self
+        let (prev, display_ix) = match self
             .selected
             .and_then(|ix| visible.iter().position(|&r| r == ix))
         {
-            Some(pos) if pos > 0 => visible[pos - 1],
-            Some(pos) => visible[pos],
-            None => first,
+            Some(pos) if pos > 0 => (visible[pos - 1], pos - 1),
+            Some(pos) => (visible[pos], pos),
+            None => (first, 0),
         };
         self.select(prev, cx);
+        self.scroll_selected_into_view(display_ix);
+    }
+
+    /// Whether the row at `display_ix` — its 0-based position in the
+    /// *visible* (filtered) list the `uniform_list` is currently painting,
+    /// not an index into `self.rows` — is already fully inside the list's
+    /// last-painted viewport. Pure so Bug 3's "don't scroll a row that's
+    /// already on screen" rule has one tested home instead of being
+    /// re-derived at each keyboard-selection call site; `viewport_height`
+    /// of `0.0` (nothing painted yet) always reports "not visible", so the
+    /// very first keyboard move after launch still establishes a sane
+    /// scroll position rather than silently no-op-ing.
+    pub(super) fn row_needs_scroll(
+        display_ix: usize,
+        scroll_offset_y: f32,
+        viewport_height: f32,
+    ) -> bool {
+        if viewport_height <= 0.0 {
+            return true;
+        }
+        let item_top = theme::LIST_ROW_HEIGHT * display_ix as f32;
+        let item_bottom = item_top + theme::LIST_ROW_HEIGHT;
+        let scroll_top = -scroll_offset_y;
+        item_top < scroll_top || item_bottom > scroll_top + viewport_height
+    }
+
+    /// Bring the worktree list's row at `display_ix` into view. Called only
+    /// from *keyboard*-driven selection moves (`on_select_next`/
+    /// `on_select_prev`, the type-to-filter field's
+    /// `clamp_selection_to_filter`) — never from a mouse click's own
+    /// `select` call, because a clicked row is already on screen and
+    /// scrolling on click would be motion with no purpose.
+    ///
+    /// `row_needs_scroll` decides up front whether anything needs to move:
+    /// `UniformListScrollHandle::scroll_to_item` (non-strict) already
+    /// no-ops internally when the row is visible, but checking first means
+    /// an already-visible selection move schedules no deferred scroll (and
+    /// so no extra relayout) at all, in the spirit of the motion catalog's
+    /// "no repaint loops" restraint rule. `ScrollStrategy::Top` only ever
+    /// matters as a fallback for a jump larger than one row (e.g. a filter
+    /// keystroke that moves the selection many rows at once); for a
+    /// single-step ↑/↓ the non-strict edge-alignment gpui does internally
+    /// already produces the minimal scroll regardless of which strategy is
+    /// named here.
+    pub(super) fn scroll_selected_into_view(&mut self, display_ix: usize) {
+        let (offset_y, viewport_height) = {
+            let state = self.list_scroll.0.borrow();
+            (
+                f32::from(state.base_handle.offset().y),
+                state
+                    .last_item_size
+                    .map(|size| f32::from(size.item.height))
+                    .unwrap_or(0.0),
+            )
+        };
+        if Self::row_needs_scroll(display_ix, offset_y, viewport_height) {
+            self.list_scroll
+                .scroll_to_item(display_ix, ScrollStrategy::Top);
+        }
     }
 
     /// Move keyboard focus to the next Tab stop (`FocusNext`'s doc explains
@@ -340,6 +411,48 @@ impl WtmApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -------------------------------------------------------------
+    // `row_needs_scroll` — Bug 3: arrow-key selection scrolling
+    // -------------------------------------------------------------
+
+    #[test]
+    fn row_needs_scroll_is_false_for_a_row_already_fully_in_view() {
+        // Viewport shows exactly 3 rows (3 * 56.0 = 168.0), scrolled to
+        // the very top: rows 0, 1, 2 are all fully visible.
+        assert!(!WtmApp::row_needs_scroll(0, 0.0, 168.0));
+        assert!(!WtmApp::row_needs_scroll(2, 0.0, 168.0));
+    }
+
+    #[test]
+    fn row_needs_scroll_is_true_when_the_row_is_below_the_viewport() {
+        // Row 3 starts at y=168.0, exactly at the bottom edge of a 168.0
+        // viewport scrolled to the top — its bottom edge (224.0) is off
+        // screen, so it needs a scroll.
+        assert!(WtmApp::row_needs_scroll(3, 0.0, 168.0));
+    }
+
+    #[test]
+    fn row_needs_scroll_is_true_when_the_row_is_above_the_viewport() {
+        // Scrolled down by 3 rows (offset -168.0): row 2 (y=112.0..168.0)
+        // sits entirely above the now-visible window.
+        assert!(WtmApp::row_needs_scroll(2, -168.0, 168.0));
+    }
+
+    #[test]
+    fn row_needs_scroll_is_false_once_scrolled_to_show_it() {
+        // Same scroll position as above, but row 3 (y=168.0..224.0) is now
+        // exactly the top row of the viewport.
+        assert!(!WtmApp::row_needs_scroll(3, -168.0, 168.0));
+    }
+
+    #[test]
+    fn row_needs_scroll_is_true_before_any_layout_has_painted() {
+        // `viewport_height <= 0.0` models the first frame, before
+        // `UniformListScrollHandle` has recorded any real geometry — never
+        // trust "already visible" against numbers that were never real.
+        assert!(WtmApp::row_needs_scroll(0, 0.0, 0.0));
+    }
 
     #[test]
     fn toggled_selection_adds_an_unselected_row() {
