@@ -5,6 +5,66 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **App: visual redesign.** The desktop app's colors, type, icons, and
+  motion are rebuilt from a real design system instead of one-off
+  values scattered across the codebase. Light mode is designed on its
+  own terms rather than an inverted dark mode. The app now bundles its
+  own typeface (Geist and Geist Mono) instead of relying on the
+  platform default, so it looks the same on Linux as it does on macOS.
+  The icon set grows from 15 to 43, and animations follow a
+  deliberate, restrained catalog — a new **Reduce motion** setting
+  turns them off and is remembered across restarts. **Caveat:**
+  verified on macOS; the Linux rendering path (fonts especially) is
+  covered by CI builds and tests but has not yet been run on a real
+  Linux desktop by the maintainer.
+
+### Added
+
+- **App: dirty file counts.** Every worktree row now shows how many
+  files are dirty (`3 dirty`), and the detail panel and Changes tab
+  show the same count. `wtm list --json` gains a `dirty_count` field
+  alongside the existing `dirty` boolean.
+- **App: a scrollbar**, in every scrollable region — there wasn't one
+  anywhere before.
+- **App: keyboard navigation.** Tab moves focus around the app with a
+  visible focus ring, and an open dialog traps Tab inside it instead
+  of leaking focus to the app behind it.
+- **App: the detail panel auto-collapses** on narrow windows to keep
+  the worktree list usable, and restores itself once there's room
+  again.
+- **App: empty states offer their next action directly** (e.g. "Add
+  Repository") instead of just describing what's missing.
+
+### Fixed
+
+- **App: selecting a worktree could silently select a different one.**
+  Under Status or Recent sort, a background refresh that reordered the
+  list kept the selection by row position rather than by worktree
+  identity — the highlighted row could quietly become a different
+  worktree, with a destructive action (Remove) one keystroke away. The
+  selection is now looked up by worktree path after every reload.
+- **App: scrolling inside a dialog, menu, or the command palette also
+  scrolled the list behind it.** Overlays now block the scroll wheel
+  from reaching whatever they're covering.
+- **App: arrow-key selection didn't scroll the list to follow it**, so
+  ↑/↓ could walk the highlight off either edge of the visible list.
+- **App: the repository sidebar reordered itself when you selected a
+  repo** (it sorted most-recently-opened first). It's now stable and
+  alphabetical; the CLI still uses recency to pick a default repo.
+- **App: toolbar controls (the filter field, the sort control) were
+  unreachable at the smallest supported window size.**
+- **App: the Changes tab's diff bodies hijacked vertical scrolling**
+  and jittered sideways instead of scrolling the tab normally.
+- **App: long paths, branch names, and commit subjects were clipped
+  mid-word** instead of ellipsised, and could split an emoji or an
+  accented character in half.
+- Bumped `h2` to 0.4.16 for RUSTSEC-2026-0258 (transitive, through
+  gpui's HTTP client; low-severity denial of service).
+
 ## [0.6.0] - 2026-08-16
 
 ### Added
