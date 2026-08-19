@@ -278,12 +278,11 @@ fn compute_status(
         .include_untracked(true)
         .include_ignored(false)
         .exclude_submodules(true);
-    let dirty = repo
-        .statuses(Some(&mut status_opts))
-        .ok()?
-        .iter()
-        .next()
-        .is_some();
+    // `.len()` on the already-collected statuses gives the exact count for
+    // free — `compute_status` already pays for this scan, so there is no
+    // second pass just to count instead of merely testing non-emptiness.
+    let dirty_count = repo.statuses(Some(&mut status_opts)).ok()?.len();
+    let dirty = dirty_count > 0;
 
     let mut ahead = None;
     let mut behind = None;
@@ -342,6 +341,7 @@ fn compute_status(
 
     Some(WorktreeStatus {
         dirty,
+        dirty_count,
         ahead,
         behind,
         upstream_gone,
@@ -586,7 +586,9 @@ mod tests {
 
         // Clean right after creation.
         let infos = list(&ctx, &status_opts()).unwrap();
-        assert!(!entry(&infos, "feat").status.as_ref().unwrap().dirty);
+        let status = entry(&infos, "feat").status.clone().unwrap();
+        assert!(!status.dirty);
+        assert_eq!(status.dirty_count, 0);
 
         // Ignored files do not count as dirty.
         fs::write(dest.join(".gitignore"), "ignored.txt\n").unwrap();
@@ -594,12 +596,23 @@ mod tests {
         git(&dest, &["commit", "-m", "gitignore"]);
         fs::write(dest.join("ignored.txt"), "x").unwrap();
         let infos = list(&ctx, &status_opts()).unwrap();
-        assert!(!entry(&infos, "feat").status.as_ref().unwrap().dirty);
+        let status = entry(&infos, "feat").status.clone().unwrap();
+        assert!(!status.dirty);
+        assert_eq!(status.dirty_count, 0);
 
         // An untracked file does.
         fs::write(dest.join("untracked.txt"), "x").unwrap();
         let infos = list(&ctx, &status_opts()).unwrap();
-        assert!(entry(&infos, "feat").status.as_ref().unwrap().dirty);
+        let status = entry(&infos, "feat").status.clone().unwrap();
+        assert!(status.dirty);
+        assert_eq!(status.dirty_count, 1);
+
+        // A second untracked file grows the exact count, not just the bool.
+        fs::write(dest.join("untracked2.txt"), "x").unwrap();
+        let infos = list(&ctx, &status_opts()).unwrap();
+        let status = entry(&infos, "feat").status.clone().unwrap();
+        assert!(status.dirty);
+        assert_eq!(status.dirty_count, 2);
     }
 
     #[test]

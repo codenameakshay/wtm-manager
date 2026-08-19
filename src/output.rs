@@ -203,6 +203,7 @@ mod tests {
     ) -> WorktreeStatus {
         WorktreeStatus {
             dirty,
+            dirty_count: usize::from(dirty),
             ahead,
             behind,
             upstream_gone,

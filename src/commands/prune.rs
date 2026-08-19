@@ -315,6 +315,7 @@ mod tests {
                 // Deliberately stale "clean" status: execute must re-check.
                 status: Some(WorktreeStatus {
                     dirty: false,
+                    dirty_count: 0,
                     ahead: None,
                     behind: None,
                     upstream_gone: false,

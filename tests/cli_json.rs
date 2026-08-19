@@ -19,7 +19,14 @@ const EXPECTED_FIELDS: &[&str] = &[
     "status",
 ];
 
-const STATUS_FIELDS: &[&str] = &["dirty", "ahead", "behind", "upstream_gone", "merged"];
+const STATUS_FIELDS: &[&str] = &[
+    "dirty",
+    "dirty_count",
+    "ahead",
+    "behind",
+    "upstream_gone",
+    "merged",
+];
 
 #[test]
 fn json_has_stable_shape_with_status_by_default() {
@@ -58,6 +65,7 @@ fn json_has_stable_shape_with_status_by_default() {
     }
     // Clean fresh repo without a remote: not dirty, no upstream.
     assert_eq!(status["dirty"], false);
+    assert_eq!(status["dirty_count"], 0);
     assert!(status["ahead"].is_null(), "no upstream => ahead is null");
     assert!(status["behind"].is_null(), "no upstream => behind is null");
 }

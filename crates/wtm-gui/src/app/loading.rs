@@ -41,7 +41,7 @@ impl WtmApp {
             // the session still works, so say so and carry on.
             self.set_status(format!("could not save the repo list: {e}"), true);
         }
-        self.repos = registry::load().entries();
+        self.repos = sidebar_sorted(registry::load().entries());
         self.prefs.last_repo = Some(repo.path().to_path_buf());
         self.save_prefs();
         self.active = Some(repo);
@@ -172,6 +172,36 @@ impl WtmApp {
 
         match result {
             Ok(rows) => {
+                // Capture the current selection by *worktree identity*
+                // (path), not by index, before `self.rows` is replaced —
+                // this reload (a manual ⌘R, the fast/with-status pass pair
+                // every reload runs, or a background `RepoWatcher` tick the
+                // user never asked for) can reorder rows out from under an
+                // unchanged selection the moment a status change moves one
+                // under `SortMode::Status`/`Recent`, or resize the set
+                // entirely if a worktree was added/removed outside the app.
+                // The old rule — "keep index `ix` if it's still in range" —
+                // silently re-points `selected` at whatever row now happens
+                // to occupy that slot, which reads to the user as the
+                // selection randomly jumping to an unrelated worktree after
+                // an idle moment. `resort_preserving_selection` already
+                // solved this same problem for a sort-mode change by
+                // looking the selection back up by path; this mirrors it.
+                // Switching to a *different* repository is unaffected:
+                // `begin_activate_repo` always clears `self.rows`/
+                // `self.selected` first, so `anchor_path` is `None` here
+                // and the legitimate "no previous selection → start at the
+                // top" branch below still runs.
+                let anchor_path = self
+                    .selected
+                    .and_then(|ix| self.rows.get(ix))
+                    .map(|row| row.path.clone());
+                let multi_paths: Vec<PathBuf> = self
+                    .multi_selected
+                    .iter()
+                    .filter_map(|&ix| self.rows.get(ix).map(|row| row.path.clone()))
+                    .collect();
+
                 self.rows = rows;
                 // Every listing is shown in the currently active sort mode,
                 // not whatever order the backend happened to return — this
@@ -179,21 +209,36 @@ impl WtmApp {
                 // indices against the final row order.
                 worktree_list::sort_rows(&mut self.rows, self.sort_mode, &self.activity);
                 // A pending selection (set right after a create) wins over
-                // the ordinary "keep the previous index in range" rule —
+                // both the identity lookup and the index-clamp fallback —
                 // but only once: `take()` consumes it so a later manual
                 // reload falls back to the normal behavior.
                 let pending = self
                     .pending_select
                     .take()
                     .and_then(|branch| self.rows.iter().position(|r| r.display_name() == branch));
-                self.selected = pending.or_else(|| match self.selected {
-                    // The list is the focus of the window, and an empty
-                    // selection makes every keyboard action a no-op.
-                    _ if self.rows.is_empty() => None,
-                    Some(ix) if ix < self.rows.len() => Some(ix),
-                    Some(_) => Some(self.rows.len() - 1),
-                    None => Some(0),
+                self.selected = pending.or_else(|| {
+                    anchor_path
+                        .and_then(|path| self.rows.iter().position(|r| r.path == path))
+                        .or_else(|| match self.selected {
+                            // The previously selected worktree is genuinely
+                            // gone — removed or pruned outside the app, or
+                            // by this very reload — so there is no identity
+                            // left to look up. Falling back to the clamped
+                            // index (not the top) is deliberate: it keeps
+                            // "remove the selected worktree" landing on
+                            // whichever row took its place, the same
+                            // behavior this app has always had for that
+                            // case.
+                            _ if self.rows.is_empty() => None,
+                            Some(ix) if ix < self.rows.len() => Some(ix),
+                            Some(_) => Some(self.rows.len() - 1),
+                            None => Some(0),
+                        })
                 });
+                self.multi_selected = multi_paths
+                    .iter()
+                    .filter_map(|path| self.rows.iter().position(|r| &r.path == path))
+                    .collect();
                 // Rows just changed wholesale (a reload) — a filter that
                 // matched some of the old set may match a different subset
                 // of the new one, and the pending-selection branch above

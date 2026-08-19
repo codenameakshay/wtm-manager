@@ -24,6 +24,7 @@ mod detail_panel;
 mod dialogs;
 mod diff_view;
 mod file_browser;
+mod motion;
 mod palette;
 mod prefs;
 mod run_panel;
@@ -113,11 +114,23 @@ key_bindings! {
     "cmd-f", app::FocusFilter, Some("WtmApp"), "⌘F", "Filter Worktrees";
     "cmd-shift-o", app::AddRepository, Some("WtmApp"), "⌘⇧O", "Add Repository";
     "cmd-e", app::RunCommand, Some("WtmApp"), "⌘E", "Run Command";
+    // gpui-0.2.2 ships the tab-stop machinery (`Window::focus_next`/
+    // `focus_prev`, `elements/div.rs`'s `tab_stop`/`tab_index`/
+    // `tab_group`) but binds no key to it (verified: no default keymap
+    // anywhere in the vendored source) — these two entries are what make
+    // Tab/Shift-Tab actually move focus. See `app::FocusNext`'s doc.
+    "tab", app::FocusNext, Some("WtmApp"), "⇥", "Focus Next Control";
+    "shift-tab", app::FocusPrev, Some("WtmApp"), "⇧⇥", "Focus Previous Control";
 }
 
 /// The default window size and position, used when no saved frame exists or
 /// the saved one no longer lands on a connected display.
-const DEFAULT_WINDOW_SIZE: (f32, f32) = (1180.0, 760.0);
+///
+/// `pub(crate)`, not private: `app::layout::MIN_CONTENT_COLUMN` derives the
+/// width-adaptation breakpoints from `DEFAULT_WINDOW_SIZE.0` directly
+/// rather than repeating `1180.0` as a second, independently-typed literal
+/// that could silently drift from this one.
+pub(crate) const DEFAULT_WINDOW_SIZE: (f32, f32) = (1180.0, 760.0);
 
 /// The titlebar `WindowOptions` asks for, per platform.
 ///
@@ -235,6 +248,10 @@ fn main() {
     Application::new()
         .with_assets(Assets)
         .run(move |cx: &mut App| {
+            // Register the bundled Geist/Geist Mono faces before anything
+            // paints. Failure is non-fatal (see `assets::register_fonts`) —
+            // this is best-effort, not a gate on startup.
+            assets::register_fonts(cx);
             theme::init(cx);
             // `theme::init` already resolved the OS appearance; a forced
             // Light/Dark preference overrides that immediately by handing
@@ -246,6 +263,10 @@ fn main() {
                 prefs::Appearance::Light => theme::refresh(gpui::WindowAppearance::Light, cx),
                 prefs::Appearance::Dark => theme::refresh(gpui::WindowAppearance::Dark, cx),
             }
+            // Same "apply the persisted preference at startup" treatment as
+            // appearance above — see `WtmApp::set_reduce_motion` for the
+            // runtime toggle that keeps this in sync after launch.
+            motion::set_reduced(cx, prefs.reduce_motion);
             cx.activate(true);
 
             cx.on_action(|_: &Quit, cx: &mut App| cx.quit());

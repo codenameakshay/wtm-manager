@@ -92,7 +92,8 @@ use gpui::{
     Pixels, Point, SharedString, Window,
 };
 
-use crate::theme::Theme;
+use crate::motion;
+use crate::theme::{Theme, RADIUS_CONTROL, ROW_HEIGHT, SPACE_2, SPACE_4, SPACE_8};
 use crate::ui;
 
 /// Renders above everything painted normally — see `gpui::deferred`. There is
@@ -102,9 +103,6 @@ const OVERLAY_PRIORITY: usize = 100;
 
 /// Wide enough that a shortcut hint never collides with a label.
 const MIN_WIDTH: f32 = 200.0;
-const ITEM_HEIGHT: f32 = 26.0;
-const ITEM_RADIUS: f32 = 6.0;
-const PANEL_RADIUS: f32 = 8.0;
 
 /// The shape a host's selection callback takes, named so it does not have to
 /// be spelled out (and re-triggers `clippy::type_complexity`) at every call
@@ -317,7 +315,12 @@ impl<T: 'static> ContextMenu<T> {
 
         let key_state = self.state.clone();
         let key_on_select = on_select.clone();
-        let panel = div()
+        // `ui::popover`: the shared menu/palette/context-menu surface —
+        // `RADIUS_PANEL`, `shadow_popover`, `surface_overlay` — replaces
+        // this file's former hand-rolled `theme.raised` + `shadow_lg()`
+        // plate (SURFACES §8, COMPONENTS.md's "delete the hand-rolled
+        // duplicates").
+        let panel = ui::popover(theme)
             .id("context-menu-panel")
             .track_focus(&focus_handle)
             .on_key_down(move |event, window, cx| {
@@ -325,16 +328,15 @@ impl<T: 'static> ContextMenu<T> {
             })
             .occlude()
             .min_w(px(MIN_WIDTH))
-            .p(px(4.0))
-            .flex()
-            .flex_col()
-            .gap(px(1.0))
-            .rounded(px(PANEL_RADIUS))
-            .bg(theme.raised)
-            .border_1()
-            .border_color(theme.border_strong)
-            .shadow_lg()
+            .p(px(SPACE_4))
+            .gap(px(SPACE_2))
             .children(rows);
+
+        // SPEC §5's restraint rule: the list beneath never animates (it's
+        // touched on every scroll/refresh), but this menu is touched
+        // rarely, so it enters with `MENU_IN` — the motion is what tells
+        // the eye where it came from.
+        let panel = motion::menu_in("context-menu-panel-motion", panel, cx);
 
         Some(
             deferred(
@@ -342,7 +344,7 @@ impl<T: 'static> ContextMenu<T> {
                     anchored()
                         .position(position)
                         .anchor(Corner::TopLeft)
-                        .snap_to_window_with_margin(px(8.0))
+                        .snap_to_window_with_margin(px(SPACE_8))
                         .child(panel),
                 ),
             )
@@ -490,12 +492,11 @@ impl<T: 'static> ContextMenu<T> {
         None
     }
 
+    /// A hairline rule with `SPACE_4` clearance above and below (SURFACES
+    /// §8) — reuses [`ui::divider`] rather than hand-rolling the same
+    /// `theme.border` fill a second time.
     fn render_separator(theme: &Theme) -> AnyElement {
-        div()
-            .h(px(1.0))
-            .my(px(4.0))
-            .bg(theme.border)
-            .into_any_element()
+        ui::divider(theme).my(px(SPACE_4)).into_any_element()
     }
 
     fn render_item(
@@ -518,20 +519,26 @@ impl<T: 'static> ContextMenu<T> {
         } else if item.danger {
             theme.danger
         } else {
-            theme.text_tertiary
+            theme.text_faint
         };
 
+        // `RADIUS_CONTROL`: concentric with the popover's own `RADIUS_PANEL`
+        // (10) at `SPACE_4` (4) padding — `10 - 4 == 6 == RADIUS_CONTROL`
+        // exactly (`ui::concentric_inner_radius`'s own worked example).
+        // `ROW_HEIGHT` per SURFACES §8 ("Items at ROW_HEIGHT").
         let mut row = div()
             .id(("context-menu-item", ix))
-            .h(px(ITEM_HEIGHT))
+            .h(px(ROW_HEIGHT))
             .w_full()
-            .px(px(8.0))
+            .px(px(SPACE_8))
             .flex()
             .items_center()
-            .gap(px(8.0))
-            .rounded(px(ITEM_RADIUS))
+            .gap(px(SPACE_8))
+            .rounded(px(RADIUS_CONTROL))
             .cursor_default()
-            .when(highlighted && item.enabled, |this| this.bg(theme.item_wash));
+            .when(highlighted && item.enabled, |this| {
+                this.bg(theme.element_hover)
+            });
 
         // Disabled items get no listener at all, not just a disabled-looking
         // one — the same structural guarantee `selectable_id` gives the
@@ -540,11 +547,11 @@ impl<T: 'static> ContextMenu<T> {
             let state = state.clone();
             let on_select = on_select.clone();
             let id = item.id.clone();
-            row = row
-                .hover(|this| this.bg(theme.item_wash))
-                .on_click(move |_event, window, cx| {
+            row = row.hover(|this| this.bg(theme.element_hover)).on_click(
+                move |_event, window, cx| {
                     Self::select(&state, &on_select, id.as_ref(), window, cx);
-                });
+                },
+            );
         }
 
         row.when_some(item.icon, |this, path| {
@@ -555,18 +562,12 @@ impl<T: 'static> ContextMenu<T> {
                 .flex_1()
                 .min_w_0()
                 .truncate()
-                .text_size(px(12.5))
+                .text_size(px(ui::TEXT_BASE))
                 .text_color(label_color)
                 .child(item.label.clone()),
         )
         .when_some(item.shortcut.clone(), |this, hint| {
-            this.child(
-                div()
-                    .flex_none()
-                    .text_size(px(11.0))
-                    .text_color(theme.text_ghost)
-                    .child(hint),
-            )
+            this.child(ui::kbd(&hint, theme))
         })
         .into_any_element()
     }

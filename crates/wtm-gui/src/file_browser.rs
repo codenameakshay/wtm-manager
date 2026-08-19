@@ -24,18 +24,27 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use gpui::prelude::*;
-use gpui::{div, px, AnyElement, Div, Hsla, SharedString, Stateful};
+use gpui::{div, px, svg, AnyElement, App, Div, Hsla, SharedString, Stateful};
 
 use crate::assets::icons;
 use crate::data::{FileEntry, FileStatus};
-use crate::theme::Theme;
+use crate::motion;
+use crate::theme::{Theme, SPACE_6, SPACE_8};
 use crate::ui;
 
 /// Indentation added per tree depth level.
 const INDENT: f32 = 14.0;
-/// Height of one tree row — slightly tighter than a worktree list row
-/// (32px) since a file tree reads better dense.
-const ROW_HEIGHT: f32 = 24.0;
+/// Fixed width of the disclosure-chevron column — reserved for every row
+/// (file rows just leave it empty) so names still line up under their
+/// siblings instead of drifting left when a row has no chevron to show.
+const DISCLOSURE_WIDTH: f32 = 10.0;
+/// Height of one tree row. Pre-redesign this was a bespoke, tighter 24px
+/// ("a file tree reads better dense") — SURFACES §4 standardizes Files-tab
+/// rows on the shared [`ui::ROW_HEIGHT`] token (32px) instead, so a tree row
+/// and a sidebar action row share a height for the same "literally the same
+/// function" reason `ui.rs`'s own module doc gives for the rest of the
+/// component vocabulary.
+const ROW_HEIGHT: f32 = ui::ROW_HEIGHT;
 
 /// What's known about one directory's contents: nothing requested yet
 /// (absent from [`FileBrowserState`]'s map), a request in flight, a
@@ -62,6 +71,9 @@ pub struct FileBrowserState {
     expanded: HashSet<PathBuf>,
     dirs: HashMap<PathBuf, DirState>,
     selected_file: Option<PathBuf>,
+    /// How many times each directory has been toggled, ever — see
+    /// [`toggle_generation`](Self::toggle_generation) for why this exists.
+    toggle_gen: HashMap<PathBuf, u32>,
 }
 
 impl FileBrowserState {
@@ -74,14 +86,28 @@ impl FileBrowserState {
     /// which rows are *visible* changes, not what's known; re-expanding the
     /// same directory later is then free (see [`dirs_needing_load`]).
     ///
+    /// Also bumps this directory's [`toggle_generation`](Self::toggle_generation).
+    ///
     /// [`dirs_needing_load`]: FileBrowserState::dirs_needing_load
     pub fn toggle_expanded(&mut self, rel_dir: PathBuf) -> bool {
+        *self.toggle_gen.entry(rel_dir.clone()).or_insert(0) += 1;
         if self.expanded.remove(&rel_dir) {
             false
         } else {
             self.expanded.insert(rel_dir);
             true
         }
+    }
+
+    /// How many times `rel_dir` has been expanded/collapsed this session —
+    /// `0` if it has never been toggled by hand (only ever set to its
+    /// initial state, or never touched at all). Folded into
+    /// `motion::disclosure_chevron`'s element id at the render site
+    /// (`app::chrome::WtmApp::render_file_tree`) so every toggle is a fresh
+    /// element identity and the chevron's rotation animates every time, not
+    /// just the first — see that function's own doc for the full "why".
+    pub fn toggle_generation(&self, rel_dir: &Path) -> u32 {
+        self.toggle_gen.get(rel_dir).copied().unwrap_or(0)
     }
 
     pub fn dir_state(&self, rel_dir: &Path) -> Option<&DirState> {
@@ -140,10 +166,13 @@ pub struct VisibleRow<'a> {
     pub is_dir: bool,
     pub depth: usize,
     pub status: Option<FileStatus>,
-    /// `Some((expanded, state))` for a directory row; `None` for a file.
-    /// `state` is `None` when the directory hasn't been requested yet (a
-    /// row can be expanded and still awaiting its first load).
-    pub dir: Option<(bool, Option<&'a DirState>)>,
+    /// `Some((expanded, state, toggle_generation))` for a directory row;
+    /// `None` for a file. `state` is `None` when the directory hasn't been
+    /// requested yet (a row can be expanded and still awaiting its first
+    /// load). `toggle_generation` is
+    /// [`FileBrowserState::toggle_generation`] for this directory — see
+    /// that method's doc.
+    pub dir: Option<(bool, Option<&'a DirState>, u32)>,
 }
 
 /// Depth-first flatten of `state`'s tree starting at the worktree root.
@@ -177,7 +206,11 @@ fn push_entries<'a>(
                 is_dir: true,
                 depth,
                 status: entry.status,
-                dir: Some((expanded, state.dir_state(&entry.rel_path))),
+                dir: Some((
+                    expanded,
+                    state.dir_state(&entry.rel_path),
+                    state.toggle_generation(&entry.rel_path),
+                )),
             });
             if expanded {
                 if let Some(DirState::Loaded(children)) = state.dir_state(&entry.rel_path) {
@@ -200,7 +233,7 @@ fn push_entries<'a>(
 /// Map a [`FileStatus`] to the same semantic colors `worktree_list`/
 /// `detail_panel` already use for a worktree's own status pills — modified
 /// reads as "dirty" (warning), added as success, deleted/conflicted as
-/// danger, untracked as the neutral `text_tertiary` a new, not-yet-tracked
+/// danger, untracked as the neutral `text_faint` a new, not-yet-tracked
 /// file deserves rather than an alarm color. `Renamed` has no existing
 /// worktree-level precedent to match (there is no per-worktree "renamed"
 /// status); `info` is used for it here as the same "structurally different,
@@ -216,7 +249,7 @@ pub fn status_color(status: FileStatus, theme: &Theme) -> Hsla {
         FileStatus::Added => theme.success,
         FileStatus::Deleted => theme.danger,
         FileStatus::Renamed => theme.info,
-        FileStatus::Untracked => theme.text_tertiary,
+        FileStatus::Untracked => theme.text_faint,
         FileStatus::Conflicted => theme.danger,
     }
 }
@@ -237,18 +270,26 @@ pub fn status_label(status: FileStatus) -> &'static str {
 /// One tree row. Returns a stateful element with no click handler attached
 /// — see the module doc for why the caller (`crate::app::chrome`) attaches
 /// one, the same split `worktree_list::render_row` uses for the main list.
+///
+/// Built on [`ui::row`] (SURFACES §4: "selected row uses the standard row
+/// selection") rather than a hand-rolled `item_selected`/`item_wash`
+/// pairing — the same wash-based selection every other selectable row in
+/// the app uses, in place of what used to be this module's own copy of
+/// that logic.
 pub fn render_row(
     row: &VisibleRow<'_>,
     selected_file: Option<&Path>,
     theme: &Theme,
+    cx: &App,
 ) -> Stateful<Div> {
     let id = SharedString::from(format!("file-row:{}", row.rel_path.display()));
     let is_selected = !row.is_dir && selected_file == Some(row.rel_path);
-    let expanded = row.dir.is_some_and(|(expanded, _)| expanded);
+    let expanded = row.dir.is_some_and(|(expanded, ..)| expanded);
+    let toggle_gen = row.dir.map(|(_, _, gen)| gen).unwrap_or(0);
     let name_color = match row.status {
         Some(status) => status_color(status, theme),
         None if row.is_dir => theme.text,
-        None => theme.text_secondary,
+        None => theme.text_muted,
     };
 
     // A directory that's open but still loading (or failed) gets a small
@@ -256,11 +297,11 @@ pub fn render_row(
     // row with a spinner-less wait, or worse, an open folder that just
     // never shows anything, would both read as broken rather than pending.
     let trailing: Option<AnyElement> = if row.is_dir && expanded {
-        match row.dir.and_then(|(_, s)| s) {
+        match row.dir.and_then(|(_, s, _)| s) {
             Some(DirState::Loading) => Some(
                 div()
                     .flex_none()
-                    .text_size(px(10.5))
+                    .text_size(px(ui::TEXT_XS))
                     .text_color(theme.text_ghost)
                     .child("loading…")
                     .into_any_element(),
@@ -270,7 +311,7 @@ pub fn render_row(
                     .flex_none()
                     .max_w(px(140.0))
                     .truncate()
-                    .text_size(px(10.5))
+                    .text_size(px(ui::TEXT_XS))
                     .text_color(theme.danger)
                     .child(format!("error: {e}"))
                     .into_any_element(),
@@ -281,49 +322,77 @@ pub fn render_row(
         None
     };
 
-    div()
-        .id(id)
+    // A real chevron icon in place of the pre-redesign "▸"/"▾" text glyph
+    // (SURFACES §4), rotating through `motion::COLLAPSE` (SPEC §5 candidate
+    // 4) rather than snapping between its two fixed angles. `toggle_gen`
+    // (folded into the animation's element id) is what makes every toggle
+    // — not just the first — actually animate; see
+    // `FileBrowserState::toggle_generation`'s doc for why a plain
+    // `expanded`-keyed id can't do that on its own.
+    let disclosure: Option<AnyElement> = row.is_dir.then(|| {
+        let chevron_id =
+            SharedString::from(format!("chevron:{}:{toggle_gen}", row.rel_path.display()));
+        let icon = svg()
+            .path(icons::CHEVRON_RIGHT)
+            .size(px(10.0))
+            .flex_none()
+            .text_color(theme.text_ghost);
+        motion::disclosure_chevron(chevron_id, icon, expanded, cx)
+    });
+
+    ui::row(id, is_selected, theme)
+        // `ui::row` already rounds at `RADIUS_ROW` internally — no need to
+        // restate it here.
         .h(px(ROW_HEIGHT))
-        .w_full()
-        .min_w_0()
-        .pl(px(8.0 + row.depth as f32 * INDENT))
-        .pr(px(8.0))
+        .pl(px(SPACE_8 + row.depth as f32 * INDENT))
         .flex()
         .items_center()
-        .gap(px(6.0))
-        .rounded(px(ui::RADIUS))
-        .cursor_default()
-        .when(is_selected, |d| d.bg(theme.item_selected))
-        .when(!is_selected, |d| d.hover(|s| s.bg(theme.item_wash)))
+        .gap(px(SPACE_6))
         .child(
-            // Fixed-width disclosure glyph column: a directory shows
-            // ▸/▾ for collapsed/expanded, a file shows nothing, but the
-            // column is always reserved so file rows still line up under
-            // their siblings' names instead of drifting left.
+            // Fixed-width disclosure column: reserved for every row (see
+            // `DISCLOSURE_WIDTH`'s doc) so file rows still line up under
+            // their siblings' names.
             div()
                 .flex_none()
-                .w(px(10.0))
-                .text_size(px(9.0))
-                .text_color(theme.text_ghost)
-                .child(if !row.is_dir {
-                    ""
-                } else if expanded {
-                    "▾"
-                } else {
-                    "▸"
-                }),
+                .w(px(DISCLOSURE_WIDTH))
+                .flex()
+                .items_center()
+                .justify_center()
+                .children(disclosure),
         )
         .when(row.is_dir, |d| {
-            d.child(ui::icon(icons::FOLDER, 12.0, theme.text_tertiary))
+            // File icon by kind (SURFACES §4): a directory reads open/closed
+            // through `FOLDER_OPEN`/`FOLDER`, matching its own disclosure
+            // state.
+            d.child(ui::icon(
+                if expanded {
+                    icons::FOLDER_OPEN
+                } else {
+                    icons::FOLDER
+                },
+                12.0,
+                theme.text_faint,
+            ))
+        })
+        .when(!row.is_dir, |d| {
+            d.child(ui::icon(icons::FILE, 12.0, theme.text_faint))
         })
         .child(
+            // `.id(..)` (keyed on the row's own rel path, unique per row) so
+            // `.tooltip(..)` — `StatefulInteractiveElement`-only in gpui
+            // 0.2.2 — is available on this div.
             div()
+                .id(SharedString::from(format!(
+                    "file-row-name:{}",
+                    row.rel_path.display()
+                )))
                 .flex_1()
                 .min_w_0()
                 .truncate()
-                .text_size(px(12.5))
+                .text_size(px(ui::TEXT_SM))
                 .text_color(name_color)
-                .child(row.name.to_string()),
+                .child(row.name.to_string())
+                .tooltip(ui::tooltip(row.rel_path.display().to_string())),
         )
         .when_some(trailing, |d, el| d.child(el))
 }
@@ -383,6 +452,21 @@ mod tests {
         assert!(state.is_expanded(&dir));
         assert!(!state.toggle_expanded(dir.clone()));
         assert!(!state.is_expanded(&dir));
+    }
+
+    #[test]
+    fn toggle_generation_starts_at_zero_and_bumps_on_every_toggle() {
+        let mut state = FileBrowserState::default();
+        let dir = PathBuf::from("src");
+        // Never toggled: 0, so a never-touched row's chevron element id
+        // stays stable frame to frame (no spurious animation replay).
+        assert_eq!(state.toggle_generation(&dir), 0);
+        state.toggle_expanded(dir.clone());
+        assert_eq!(state.toggle_generation(&dir), 1);
+        state.toggle_expanded(dir.clone());
+        assert_eq!(state.toggle_generation(&dir), 2);
+        // A different directory's count is independent.
+        assert_eq!(state.toggle_generation(&PathBuf::from("other")), 0);
     }
 
     #[test]
@@ -502,7 +586,10 @@ mod tests {
         let rows = visible_rows(&state);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].name, "src");
-        assert!(matches!(rows[0].dir, Some((true, Some(DirState::Loading)))));
+        assert!(matches!(
+            rows[0].dir,
+            Some((true, Some(DirState::Loading), _))
+        ));
     }
 
     // ---------------- status_color / status_label ----------------
@@ -516,7 +603,7 @@ mod tests {
         assert_eq!(status_color(FileStatus::Conflicted, &theme), theme.danger);
         assert_eq!(
             status_color(FileStatus::Untracked, &theme),
-            theme.text_tertiary
+            theme.text_faint
         );
     }
 

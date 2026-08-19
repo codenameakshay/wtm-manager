@@ -35,13 +35,18 @@
 use std::collections::HashSet;
 
 use gpui::prelude::*;
-use gpui::{div, hsla, px, AnyElement, Context, Entity, SharedString, Subscription, Window};
+use gpui::{
+    div, px, AnyElement, Context, Entity, ScrollHandle, SharedString, Subscription, Window,
+};
 use wtm::model::WorktreeInfo;
 
 use crate::app::WtmApp;
 use crate::assets::icons;
+use crate::motion;
 use crate::text_input::{InputEvent, TextInput};
-use crate::theme::Theme;
+use crate::theme::{
+    scrim, Theme, RADIUS_CONTROL, SCRIM_ALPHA_DARK, SPACE_12, SPACE_2, SPACE_4, SPACE_6, SPACE_8,
+};
 use crate::ui;
 
 /// Width of the palette card. Deliberately wider than the ~400-440px
@@ -409,6 +414,36 @@ pub fn compute_results(query: &str, rows: &[WorktreeInfo]) -> Vec<PaletteEntry> 
         .collect()
 }
 
+/// Position of the flat result index `highlighted` (as `compute_results`
+/// numbers it: worktrees then commands, see that function's own doc) within
+/// the `results_list` div `render` actually paints. `render` no longer opens
+/// each group with a `section_header` row (the eyebrow labels are gone —
+/// see the redesign report); the only extra DOM child is a single
+/// `ui::divider` between the two groups, and only when both are non-empty.
+/// So the DOM child index matches the flat result index exactly until
+/// `highlighted` reaches the commands section, where it is offset by one
+/// for that divider (but only if there were worktrees ahead of it to
+/// divide from). Pure, and given plain counts rather than the
+/// `PaletteEntry` list itself, so `palette_move_highlight` can call it
+/// without `render`'s own borrow of `self.palette`. Returns `None` for an
+/// out-of-range `highlighted` (an empty results list, or a stale highlight
+/// left over from a shorter query).
+pub fn results_scroll_child_index(
+    worktree_count: usize,
+    command_count: usize,
+    highlighted: usize,
+) -> Option<usize> {
+    if highlighted >= worktree_count + command_count {
+        return None;
+    }
+    if highlighted < worktree_count {
+        Some(highlighted)
+    } else {
+        let divider_offset = if worktree_count > 0 { 1 } else { 0 };
+        Some(worktree_count + divider_offset + (highlighted - worktree_count))
+    }
+}
+
 // ---------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------
@@ -423,11 +458,20 @@ pub struct PaletteState {
     /// so this is the only piece of navigation state that persists between
     /// keystrokes.
     pub highlighted: usize,
+    /// The results column's own scroll position — `ui::scrollbar` needs a
+    /// handle that survives across renders (Task 2: "wire it to every
+    /// scroll region that can overflow ... the palette results").
+    scroll: ScrollHandle,
 }
 
 impl PaletteState {
     pub fn new(window: &mut Window, cx: &mut Context<WtmApp>) -> Self {
-        let input = cx.new(|cx| TextInput::new("Search worktrees and commands…", window, cx));
+        // `.borderless()`: the palette's search field sits inside the
+        // `ui::popover` card's own well (SURFACES §6: "a borderless inset
+        // well") rather than drawing a second box of its own — see
+        // `TextInput::borderless`'s doc.
+        let input =
+            cx.new(|cx| TextInput::new("Search worktrees and commands…", window, cx).borderless());
         let sub = cx.subscribe_in(&input, window, {
             // Only ever calls back through `WtmApp`'s own `pub(crate)`
             // methods, never reaches into its fields directly — the same
@@ -457,6 +501,25 @@ impl PaletteState {
             input,
             _input_sub: sub,
             highlighted: 0,
+            scroll: ScrollHandle::new(),
+        }
+    }
+
+    /// Scroll `self.scroll` so the currently highlighted result is inside
+    /// the results column's viewport — Bug 3's "arrow keys scroll the
+    /// selection into view" rule, extended to the palette's own list.
+    /// `worktree_count`/`command_count` describe the *current* query's
+    /// results (`palette_move_highlight` computed them a moment ago to
+    /// clamp `highlighted` itself); `results_scroll_child_index` is the
+    /// pure translation from flat result index to DOM child index.
+    /// `ScrollHandle::scroll_to_item`'s default strategy (`FirstVisible`)
+    /// already no-ops when the row is already on screen, so this is safe
+    /// to call unconditionally.
+    pub(crate) fn scroll_highlighted_into_view(&self, worktree_count: usize, command_count: usize) {
+        if let Some(child_ix) =
+            results_scroll_child_index(worktree_count, command_count, self.highlighted)
+        {
+            self.scroll.scroll_to_item(child_ix);
         }
     }
 }
@@ -484,47 +547,115 @@ pub fn render(
         .into_iter()
         .partition(|(_, e)| matches!(e, PaletteEntry::Worktree { .. }));
 
-    let results_col = div()
+    let results_list = div()
         .id("palette-results")
         .flex()
         .flex_col()
-        .gap(px(2.0))
+        .gap(px(SPACE_2))
         .max_h(px(MAX_RESULTS_HEIGHT))
         .overflow_y_scroll()
-        .px(px(6.0))
-        .py(px(6.0))
+        .track_scroll(&state.scroll)
+        .px(px(SPACE_6))
+        .py(px(SPACE_6))
         .when(!worktree_entries.is_empty(), |this| {
-            this.child(ui::section_header("Worktrees", theme)).children(
+            this.children(
                 worktree_entries
                     .iter()
                     .map(|(ix, e)| render_entry(*ix, e, *ix == highlighted, theme, cx)),
             )
         })
+        // The only thing that used to separate the two kinds of result —
+        // the "Worktrees" / "Commands" eyebrows — is gone; a hairline
+        // divider between the groups (only when both are present) carries
+        // the grouping instead, alongside the per-row icon that already
+        // differs (branch glyph vs. command glyph, see `render_entry`).
+        .when(
+            !worktree_entries.is_empty() && !command_entries.is_empty(),
+            |this| {
+                this.child(
+                    div()
+                        .px(px(SPACE_6))
+                        .py(px(SPACE_4))
+                        .child(ui::divider(theme)),
+                )
+            },
+        )
         .when(!command_entries.is_empty(), |this| {
-            this.child(ui::section_header("Commands", theme)).children(
+            this.children(
                 command_entries
                     .iter()
                     .map(|(ix, e)| render_entry(*ix, e, *ix == highlighted, theme, cx)),
             )
         })
         .when(results.is_empty(), |this| {
+            // A one-line empty state (SURFACES §6), not the full
+            // icon+headline `ui::empty_state` — that component is sized for
+            // a panel filling its own space (COMPONENTS.md), which would
+            // dwarf a "no matches" hint inside an already-open search
+            // overlay. Same primitives (`ui::icon`, muted text), composed
+            // at a scale that fits here.
             this.child(
                 div()
-                    .px(px(8.0))
-                    .py(px(10.0))
-                    .text_size(px(12.5))
-                    .text_color(theme.text_ghost)
+                    .flex()
+                    .items_center()
+                    .gap(px(SPACE_6))
+                    .px(px(SPACE_8))
+                    .py(px(SPACE_8))
+                    .text_size(px(ui::TEXT_SM))
+                    .text_color(theme.text_muted)
+                    .child(ui::icon(icons::SEARCH, 13.0, theme.text_faint))
                     .child("No matches"),
             )
         });
 
-    let card = ui::modal_card(WIDTH, theme)
+    // `.relative()` wrapper, sibling of `results_list` itself — same
+    // reasoning as `app::chrome`'s scroll regions (`ui::scrollbar`'s own
+    // doc): the overlay must never be a descendant of the div it scrolls
+    // with, or it scrolls away with the very results it's annotating.
+    let results_col = div().relative().child(results_list).child(ui::scrollbar(
+        "palette-results-scrollbar",
+        &state.scroll,
+        ui::ScrollAxis::Vertical,
+    ));
+
+    // Search field: a borderless inset well with a leading search icon
+    // (SURFACES §6). `TextInput` itself paints no background/border in
+    // `.borderless()` mode (see `PaletteState::new`), so this wrapper is
+    // the well: `surface_inset` at `RADIUS_CONTROL`, concentric with the
+    // card's own `RADIUS_PANEL` (10) at `SPACE_4` (4) padding —
+    // `10 - 4 == 6 == RADIUS_CONTROL` (`ui::concentric_inner_radius`'s own
+    // worked example).
+    let search = div().p(px(SPACE_4)).child(
+        div()
+            .id("palette-search")
+            .flex()
+            .items_center()
+            .gap(px(SPACE_8))
+            .h(px(ui::ROW_HEIGHT))
+            .px(px(SPACE_12))
+            .rounded(px(RADIUS_CONTROL))
+            .bg(theme.surface_inset)
+            .child(ui::icon(icons::SEARCH, 14.0, theme.text_faint))
+            .child(div().flex_1().min_w_0().child(state.input.clone())),
+    );
+
+    // `ui::popover`: `RADIUS_PANEL` + `shadow_popover`, the same overlay
+    // surface the context menu uses (SURFACES §6) — replaces the former
+    // `ui::modal_card` (`RADIUS_DIALOG`/`shadow_dialog`), which is the
+    // dialog ladder's step, not the popover ladder's.
+    let card = ui::popover(theme)
         .id("palette-card")
+        .w(px(WIDTH))
         .on_click(|_, _, cx| cx.stop_propagation())
         .on_key_down(cx.listener(WtmApp::on_palette_key_down))
-        .child(div().px(px(12.0)).py(px(10.0)).child(state.input.clone()))
-        .child(div().border_t_1().border_color(theme.border))
+        .child(search)
+        .child(ui::divider(theme))
         .child(results_col);
+
+    // SPEC §5: the results list beneath never animates (touched on every
+    // keystroke); the palette itself is touched rarely and enters with
+    // `MENU_IN` so the motion tells the eye where it came from.
+    let card = motion::menu_in("palette-card-motion", card, cx);
 
     div()
         .id("palette-backdrop")
@@ -533,7 +664,12 @@ pub fn render(
         .flex()
         .flex_col()
         .items_center()
-        .bg(hsla(0.0, 0.0, 0.0, 0.45))
+        .bg(scrim(SCRIM_ALPHA_DARK))
+        // Covers the whole window; without this a scroll wheel anywhere
+        // over the backdrop (or over `card`, which itself occludes via
+        // `ui::popover`) would fall through to the worktree list behind
+        // it — see `ui::modal_backdrop`'s doc for the same reasoning.
+        .occlude()
         .on_click(cx.listener(|this, _, window, cx| this.close_palette(window, cx)))
         .child(div().h(px(TOP_OFFSET)).flex_none())
         .child(card)
@@ -564,8 +700,8 @@ fn render_entry(
     ui::row(("palette-entry", ix), highlighted, theme)
         .flex()
         .items_center()
-        .gap(px(8.0))
-        .child(ui::icon(icon_path, 13.0, theme.text_tertiary))
+        .gap(px(SPACE_8))
+        .child(ui::icon(icon_path, 13.0, theme.text_faint))
         .child(
             div()
                 .flex_1()
@@ -630,7 +766,7 @@ fn highlighted_spans(label: &str, indices: &[usize], theme: &Theme) -> Vec<AnyEl
 fn span(text: &str, matched: bool, theme: &Theme) -> AnyElement {
     div()
         .flex_none()
-        .text_size(px(12.5))
+        .text_size(px(ui::TEXT_BASE))
         .text_color(if matched { theme.accent } else { theme.text })
         .child(text.to_string())
         .into_any_element()
@@ -792,5 +928,34 @@ mod tests {
             is_prunable: false,
             status: None,
         }
+    }
+
+    // -------------------------------------------------------------
+    // `results_scroll_child_index` — Bug 3: palette highlight scrolling
+    // -------------------------------------------------------------
+
+    #[test]
+    fn results_scroll_child_index_matches_the_flat_index_within_worktrees() {
+        // 2 worktrees, 1 command: DOM is [wt0, wt1, divider, cmd0].
+        assert_eq!(results_scroll_child_index(2, 1, 0), Some(0));
+        assert_eq!(results_scroll_child_index(2, 1, 1), Some(1));
+    }
+
+    #[test]
+    fn results_scroll_child_index_skips_the_divider_for_a_command() {
+        assert_eq!(results_scroll_child_index(2, 1, 2), Some(3));
+    }
+
+    #[test]
+    fn results_scroll_child_index_has_no_divider_when_worktrees_is_empty() {
+        // DOM is [cmd0, cmd1] — no worktrees section, so no divider either.
+        assert_eq!(results_scroll_child_index(0, 2, 0), Some(0));
+        assert_eq!(results_scroll_child_index(0, 2, 1), Some(1));
+    }
+
+    #[test]
+    fn results_scroll_child_index_is_none_when_out_of_range() {
+        assert_eq!(results_scroll_child_index(2, 1, 3), None);
+        assert_eq!(results_scroll_child_index(0, 0, 0), None);
     }
 }

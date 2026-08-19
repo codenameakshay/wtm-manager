@@ -33,8 +33,8 @@ use wtm::setup::SetupEvent;
 use crate::app::WtmApp;
 use crate::data::{BranchInfo, OpenRepo, RefInfo, RefKind};
 use crate::text_input::{InputEvent, TextInput};
-use crate::theme::Theme;
-use crate::ui;
+use crate::theme::{Theme, RADIUS_CHIP, RADIUS_ROW, SPACE_12, SPACE_2, SPACE_4, SPACE_6, SPACE_8};
+use crate::ui::{self, TEXT_BASE, TEXT_XS};
 
 /// The one dialog that may be open at a time.
 pub enum Dialog {
@@ -325,12 +325,12 @@ pub fn render_branch_row(branch: &BranchInfo, theme: &Theme) -> Stateful<Div> {
     .flex()
     .items_center()
     .justify_between()
-    .gap(px(8.0))
+    .gap(px(SPACE_8))
     .child(
         div()
             .min_w_0()
             .truncate()
-            .text_size(px(12.5))
+            .text_size(px(TEXT_BASE))
             .text_color(if disabled {
                 theme.text_ghost
             } else {
@@ -342,7 +342,7 @@ pub fn render_branch_row(branch: &BranchInfo, theme: &Theme) -> Stateful<Div> {
         this.child(
             div()
                 .flex_none()
-                .text_size(px(10.5))
+                .text_size(px(TEXT_XS))
                 .text_color(theme.text_ghost)
                 .child("checked out"),
         )
@@ -355,15 +355,19 @@ pub fn render_branch_row(branch: &BranchInfo, theme: &Theme) -> Stateful<Div> {
 /// A log line, tinted by what kind of setup step it reports: quiet info for
 /// bookkeeping (copy/command start), quieter still for the command's own
 /// output, and `theme.danger` for the one line that means setup didn't
-/// finish clean.
+/// finish clean. SURFACES §7: progress/log views are mono on
+/// `surface_inset`, so every line here takes [`ui::FONT_MONO`] regardless of
+/// kind — the whole log reads as one console, not a mix of proportional and
+/// monospace text.
 pub fn render_log_entry(entry: &LogEntry, theme: &Theme) -> impl IntoElement {
     let color = match entry.kind {
-        LogKind::Info => theme.text_tertiary,
+        LogKind::Info => theme.text_faint,
         LogKind::Output => theme.text_ghost,
         LogKind::Error => theme.danger,
     };
     div()
-        .text_size(px(11.5))
+        .font_family(ui::FONT_MONO)
+        .text_size(px(TEXT_XS))
         .line_height(px(16.0))
         .text_color(color)
         .child(entry.text.clone())
@@ -371,8 +375,9 @@ pub fn render_log_entry(entry: &LogEntry, theme: &Theme) -> impl IntoElement {
 
 /// A labeled toggle row: a checkbox glyph plus its label, dimmed and
 /// non-interactive-looking when `disabled`. Shared by every toggle across
-/// all three dialogs (run setup, force, delete branch, merged, gone) so
-/// they read as one control, not four reinvented ones.
+/// all three dialogs (run setup, force, delete branch, merged, gone) — and,
+/// since the redesign, the settings sheet's "Reduce motion" toggle too — so
+/// they read as one control, not five reinvented ones.
 pub fn render_toggle(
     id: impl Into<gpui::ElementId>,
     label: impl Into<SharedString>,
@@ -384,8 +389,8 @@ pub fn render_toggle(
         .id(id.into())
         .flex()
         .items_center()
-        .gap(px(8.0))
-        .py(px(3.0))
+        .gap(px(SPACE_8))
+        .py(px(SPACE_4))
         .cursor_default()
         .child(
             div()
@@ -395,7 +400,7 @@ pub fn render_toggle(
                 .flex()
                 .items_center()
                 .justify_center()
-                .rounded(px(4.0))
+                .rounded(px(RADIUS_CHIP))
                 .border_1()
                 .border_color(if disabled {
                     theme.border
@@ -416,14 +421,19 @@ pub fn render_toggle(
                         if disabled {
                             theme.text_ghost
                         } else {
-                            theme.canvas
+                            // The checkmark sits on an `accent`-filled plate
+                            // — `on_accent` is the token built for exactly
+                            // that (COMPONENTS.md: never `theme.text`/`bg`
+                            // on a colored plate, even implicitly via the
+                            // old `canvas` alias).
+                            theme.on_accent
                         },
                     ))
                 }),
         )
         .child(
             div()
-                .text_size(px(12.5))
+                .text_size(px(TEXT_BASE))
                 .text_color(if disabled {
                     theme.text_ghost
                 } else {
@@ -520,18 +530,18 @@ pub fn render_ref_row(r: &RefInfo, highlighted: bool, theme: &Theme) -> Stateful
     )
     .flex()
     .flex_col()
-    .gap(px(1.0))
+    .gap(px(SPACE_2))
     .child(
         div()
             .flex()
             .items_center()
             .justify_between()
-            .gap(px(8.0))
+            .gap(px(SPACE_8))
             .child(
                 div()
                     .min_w_0()
                     .truncate()
-                    .text_size(px(13.0))
+                    .text_size(px(TEXT_BASE))
                     .text_color(theme.text)
                     .child(r.display.clone()),
             )
@@ -539,8 +549,8 @@ pub fn render_ref_row(r: &RefInfo, highlighted: bool, theme: &Theme) -> Stateful
                 this.child(
                     div()
                         .flex_none()
-                        .text_size(px(11.5))
-                        .text_color(theme.text_tertiary)
+                        .text_size(px(TEXT_XS))
+                        .text_color(theme.text_faint)
                         .child(tag),
                 )
             }),
@@ -550,14 +560,31 @@ pub fn render_ref_row(r: &RefInfo, highlighted: bool, theme: &Theme) -> Stateful
             div()
                 .flex()
                 .min_w_0()
-                .gap(px(6.0))
-                .text_size(px(11.5))
-                .text_color(theme.text_tertiary)
+                .items_baseline()
+                .gap(px(SPACE_6))
+                .text_size(px(TEXT_XS))
+                // The short id is a sha — SPEC §6: shas take the bundled
+                // mono face, never the proportional one, so a column of
+                // them actually lines up. The subject stays proportional
+                // and a step quieter (`text_ghost`), since it's the "what"
+                // and the sha is the more scannable "which one".
                 .when_some(r.short_id.clone(), |this, id| {
-                    this.child(div().flex_none().child(id))
+                    this.child(
+                        div()
+                            .flex_none()
+                            .font_family(ui::FONT_MONO)
+                            .text_color(theme.text_ghost)
+                            .child(id),
+                    )
                 })
                 .when_some(r.subject.clone(), |this, subject| {
-                    this.child(div().min_w_0().truncate().child(subject))
+                    this.child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .text_color(theme.text_faint)
+                            .child(subject),
+                    )
                 }),
         )
     })
@@ -667,27 +694,31 @@ pub fn reason_color(reason: &str, theme: &Theme) -> Hsla {
     match reason {
         "missing" | "gone" => theme.danger,
         "merged" => theme.success,
-        _ => theme.text_tertiary,
+        _ => theme.text_faint,
     }
 }
 
 /// One prune candidate: its name, why it was selected, and whether its
-/// branch goes with it.
+/// branch goes with it. Rendered as a proud `surface_raised` plate rather
+/// than a plain wash — SURFACES §7: the remove/prune dialogs are the
+/// destructive ones, and "the affected worktree list gets real room" means
+/// each row reads as a real, weighty item about to be destroyed, not a
+/// throwaway list line.
 pub fn render_candidate_row(candidate: &PruneCandidate, theme: &Theme) -> impl IntoElement {
     div()
         .flex()
         .items_center()
         .justify_between()
-        .gap(px(8.0))
-        .px(px(8.0))
-        .py(px(6.0))
-        .rounded(px(ui::RADIUS))
-        .bg(theme.item_wash)
+        .gap(px(SPACE_8))
+        .px(px(SPACE_12))
+        .py(px(SPACE_8))
+        .rounded(px(RADIUS_ROW))
+        .bg(theme.surface_raised)
         .child(
             div()
                 .min_w_0()
                 .truncate()
-                .text_size(px(12.5))
+                .text_size(px(TEXT_BASE))
                 .text_color(theme.text)
                 .child(candidate.info.display_name().to_string()),
         )
@@ -696,7 +727,7 @@ pub fn render_candidate_row(candidate: &PruneCandidate, theme: &Theme) -> impl I
                 .flex()
                 .flex_none()
                 .items_center()
-                .gap(px(6.0))
+                .gap(px(SPACE_6))
                 .children(
                     candidate
                         .reasons
@@ -706,7 +737,7 @@ pub fn render_candidate_row(candidate: &PruneCandidate, theme: &Theme) -> impl I
                 .when(candidate.delete_branch, |this| {
                     this.child(
                         div()
-                            .text_size(px(10.5))
+                            .text_size(px(TEXT_XS))
                             .text_color(theme.text_ghost)
                             .child("+ branch"),
                     )
@@ -894,6 +925,7 @@ mod tests {
             is_prunable: false,
             status: Some(WorktreeStatus {
                 dirty,
+                dirty_count: usize::from(dirty),
                 ahead: None,
                 behind: None,
                 upstream_gone: false,
@@ -966,6 +998,7 @@ mod tests {
         let mut merged_row = worktree("feature", false, false);
         merged_row.status = Some(WorktreeStatus {
             dirty: false,
+            dirty_count: 0,
             ahead: None,
             behind: None,
             upstream_gone: false,
@@ -990,6 +1023,7 @@ mod tests {
         let mut main_row = worktree("main", true, false);
         main_row.status = Some(WorktreeStatus {
             dirty: false,
+            dirty_count: 0,
             ahead: None,
             behind: None,
             upstream_gone: true,

@@ -29,6 +29,12 @@ pub struct WorktreeInfo {
 pub struct WorktreeStatus {
     /// Uncommitted changes, including untracked files (ignored files excluded).
     pub dirty: bool,
+    /// Exact count of dirty/untracked entries (same semantics as `dirty`,
+    /// just uncapped) — `0` whenever `dirty` is `false`. Additive alongside
+    /// `dirty` rather than a replacement for it: `dirty` is the perf-critical,
+    /// widely-read boolean (CLI JSON contract, TUI), this is for callers that
+    /// want the exact number (e.g. the GUI's "N dirty" pill).
+    pub dirty_count: usize,
     /// Commits ahead of upstream; `None` when there is no upstream.
     pub ahead: Option<usize>,
     /// Commits behind upstream; `None` when there is no upstream.

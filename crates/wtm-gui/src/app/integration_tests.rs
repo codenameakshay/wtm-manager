@@ -793,7 +793,9 @@ fn remove_deletes_clean_worktree_from_disk(cx: &mut TestAppContext) {
             .unwrap()
     });
 
-    view.update_in(cx, |app, _window, cx| app.open_remove_dialog_for(info, cx));
+    view.update_in(cx, |app, window, cx| {
+        app.open_remove_dialog_for(info, window, cx)
+    });
     view.read_with(cx, |app, _| {
         let Some(Dialog::Remove(state)) = &app.dialog else {
             panic!("remove dialog must be open");
@@ -836,8 +838,8 @@ fn remove_refuses_main_worktree(cx: &mut TestAppContext) {
         app.rows.iter().find(|r| r.is_main).cloned().unwrap()
     });
 
-    view.update_in(cx, |app, _window, cx| {
-        app.open_remove_dialog_for(main_info, cx)
+    view.update_in(cx, |app, window, cx| {
+        app.open_remove_dialog_for(main_info, window, cx)
     });
     view.read_with(cx, |app, _| {
         let Some(Dialog::Remove(state)) = &app.dialog else {
@@ -881,7 +883,9 @@ fn remove_dirty_worktree_requires_force(cx: &mut TestAppContext) {
     });
     assert!(info.status.as_ref().unwrap().dirty);
 
-    view.update_in(cx, |app, _window, cx| app.open_remove_dialog_for(info, cx));
+    view.update_in(cx, |app, window, cx| {
+        app.open_remove_dialog_for(info, window, cx)
+    });
     view.read_with(cx, |app, _| {
         let Some(Dialog::Remove(state)) = &app.dialog else {
             panic!("remove dialog must be open");
@@ -1431,6 +1435,59 @@ fn add_repository_rejects_non_repository_directory_with_a_message(cx: &mut TestA
     });
 }
 
+/// `Registry::entries()` sorts most-recently-opened first, and selecting a
+/// repository calls `registry::remember`, which bumps `last_opened` — so if
+/// the sidebar rendered that order directly, the repo you just clicked
+/// would jump to the top and the whole list would reshuffle under your
+/// cursor. `app.repos` must stay in its own stable (alphabetical) order
+/// regardless of which repo was most recently selected.
+#[gpui::test]
+fn selecting_a_repo_does_not_reorder_the_sidebar(cx: &mut TestAppContext) {
+    let fx = Fixture::new();
+    let alpha = fx.sibling_repo("alpha-repo");
+    let zulu = fx.sibling_repo("zulu-repo");
+    // `fx.root()` is named "repo" — alphabetically between the two above.
+    let (view, cx) = open_app(cx, Some(fx.open()));
+    cx.run_until_parked();
+
+    // Add both siblings; each `finish_add_repository` call activates (and
+    // so `remember`s) the repo it adds, leaving `zulu-repo` the most
+    // recently opened of the three.
+    view.update_in(cx, |app, _window, cx| {
+        app.finish_add_repository(alpha.clone(), cx)
+    });
+    cx.run_until_parked();
+    view.update_in(cx, |app, _window, cx| {
+        app.finish_add_repository(zulu.clone(), cx)
+    });
+    cx.run_until_parked();
+
+    let order_before: Vec<PathBuf> = view.read_with(cx, |app, _| {
+        app.repos.iter().map(|r| r.path.clone()).collect()
+    });
+    assert_eq!(
+        order_before,
+        vec![alpha.clone(), fx.root().to_path_buf(), zulu.clone()],
+        "the sidebar must start alphabetical by name, not most-recently-opened"
+    );
+
+    // Select the repo furthest from the top of the most-recently-opened
+    // order (the fixture's own root, opened first of the three) — this is
+    // exactly the click the bug report described.
+    view.update_in(cx, |app, _window, cx| {
+        app.select_repo(fx.root().to_path_buf(), cx)
+    });
+    cx.run_until_parked();
+
+    let order_after: Vec<PathBuf> = view.read_with(cx, |app, _| {
+        app.repos.iter().map(|r| r.path.clone()).collect()
+    });
+    assert_eq!(
+        order_before, order_after,
+        "selecting a repo must not reorder the sidebar"
+    );
+}
+
 // ---------------------------------------------------------------------
 // 12. Escape layering
 // ---------------------------------------------------------------------
@@ -1649,6 +1706,64 @@ fn selection_survives_a_sort_mode_change_by_path_not_index(cx: &mut TestAppConte
         assert_eq!(
             app.rows[new_ix].path, newest_path,
             "the SAME worktree, by path, must still be selected"
+        );
+    });
+}
+
+/// Bug 2's actual reproduction: a background `RepoWatcher` tick (modeled
+/// here by calling `WtmApp::reload` directly — the same path the watcher's
+/// `on_watcher_change` and the manual ⌘R both take) that lands while a
+/// *different* worktree's status changed can reorder rows under
+/// `SortMode::Status` without the user touching the selected row at all.
+/// `apply_rows` used to keep the selection's raw index rather than its
+/// identity, so a reorder like this would silently re-point `selected` at
+/// whatever row happened to shift into that same slot.
+#[gpui::test]
+fn selection_survives_a_reload_that_reorders_rows_by_path_not_index(cx: &mut TestAppContext) {
+    let fx = Fixture::new();
+    fx.add_worktree("clean-one");
+    let other = fx.add_worktree("other");
+    let repo = fx.open();
+    let (view, cx) = open_app(cx, Some(repo));
+    cx.run_until_parked();
+
+    view.update_in(cx, |app, _window, cx| {
+        app.set_sort_mode(SortMode::Status, cx)
+    });
+    cx.run_until_parked();
+
+    // Status mode: main, feature-x (dirty, from the fixture's own setup),
+    // then the clean rows alphabetically — clean-one, other.
+    let (clean_ix_before, clean_path) = view.read_with(cx, |app, _| {
+        let ix = app
+            .rows
+            .iter()
+            .position(|r| r.display_name() == "clean-one")
+            .unwrap();
+        (ix, app.rows[ix].path.clone())
+    });
+    view.update_in(cx, |app, _window, cx| app.select(clean_ix_before, cx));
+
+    // Dirty a DIFFERENT worktree that currently sorts *after* clean-one —
+    // under Status mode it jumps ahead of clean-one the moment it's dirty,
+    // so clean-one's index necessarily shifts once the list re-sorts.
+    fx.write_untracked(&other, "scratch.txt", "uncommitted\n");
+
+    view.update_in(cx, |app, _window, cx| app.reload(cx));
+    cx.run_until_parked();
+
+    view.read_with(cx, |app, _| {
+        let new_ix = app
+            .selected
+            .expect("still something selected after the reload");
+        assert_ne!(
+            new_ix, clean_ix_before,
+            "the index changing is the whole point of this test"
+        );
+        assert_eq!(
+            app.rows[new_ix].path, clean_path,
+            "the SAME worktree, by path, must still be selected — not whichever \
+             row shifted into its old slot"
         );
     });
 }
@@ -1953,4 +2068,93 @@ fn recent_command_appears_after_a_run_and_filtering_narrows_the_suggestions(
             "filtering narrows out a non-matching query"
         );
     });
+}
+
+// ---------------------------------------------------------------------
+// Perf: the mount-transition animation's per-frame list-render cost
+// ---------------------------------------------------------------------
+//
+// The `animate`/`delight` redesign pass wraps the sidebar/detail-panel
+// mount in `motion::pane_in` (SPEC §5 candidate 1) and asked, specifically,
+// to verify the worktree list stays smooth at 45 worktrees before doing
+// anything width-related: an `AnimationElement`'s `request_animation_frame`
+// re-notifies the whole root view every frame for the animation's duration
+// (`gpui-0.2.2/src/elements/animation.rs`'s `request_layout`), so *any*
+// mount transition — however it is implemented — re-runs
+// `worktree_list::render_row` once per visible row on every frame it's
+// live, regardless of what is actually animating. That is the one piece of
+// "stays smooth" a headless environment can honestly measure: real
+// GPU/compositor frame time needs a live, unlocked display (not available
+// in this environment — see the redesign report), but the CPU-side cost of
+// rebuilding 45 rows' worth of element tree (string truncation, character-
+// width budgeting, the status-pill fade wrapper) is exactly the slice of
+// work `render()` repeats on every animation frame, and it is fully
+// reproducible here.
+#[gpui::test]
+fn rendering_45_rows_repeatedly_stays_well_under_one_animation_frame_budget(
+    cx: &mut TestAppContext,
+) {
+    use wtm::model::WorktreeStatus;
+
+    let theme = cx.update(|cx| {
+        theme::init(cx);
+        Theme::of(cx)
+    });
+
+    let rows: Vec<WorktreeInfo> = (0..45)
+        .map(|i| WorktreeInfo {
+            name: format!("worktree-{i}"),
+            path: PathBuf::from(format!("/tmp/repo/worktree-{i}")),
+            branch: Some(format!("feature/branch-{i}")),
+            head: Some("abc1234".to_string()),
+            is_main: i == 0,
+            is_missing: false,
+            is_locked: i % 7 == 0,
+            is_prunable: false,
+            status: Some(WorktreeStatus {
+                dirty: i % 3 == 0,
+                dirty_count: if i % 3 == 0 { 2 } else { 0 },
+                ahead: Some(1),
+                behind: Some(0),
+                upstream_gone: i % 11 == 0,
+                merged: i % 5 == 0,
+            }),
+        })
+        .collect();
+
+    // One `RESIZE`/`COLLAPSE` animation runs ~12 frames at 200ms/60fps;
+    // this simulates several full animations' worth of repeated re-render
+    // back to back, worst-casing well past what any single mount
+    // transition actually costs.
+    const FRAMES: usize = 60;
+    let start = std::time::Instant::now();
+    for frame in 0..FRAMES {
+        for (ix, info) in rows.iter().enumerate() {
+            cx.update(|cx| {
+                let _ = worktree_list::render_row(
+                    info,
+                    ix,
+                    ix == frame % rows.len(),
+                    false,
+                    Some("2h ago".to_string()),
+                    900.0,
+                    &theme,
+                    cx,
+                );
+            });
+        }
+    }
+    let elapsed = start.elapsed();
+
+    // 60 frames x 45 rows = 2700 row builds. Asserting that stays
+    // comfortably under one real second is many times any actual
+    // animation's total wall-clock duration (a `RESIZE` animation is 200ms
+    // end to end) — a regression that made row construction pathologically
+    // expensive would fail this long before it could ever visibly stutter.
+    assert!(
+        elapsed < Duration::from_secs(1),
+        "45-row list re-render got expensive: {FRAMES} frames took {elapsed:?} \
+         ({} total row builds, budget 1s)",
+        FRAMES * rows.len(),
+    );
 }

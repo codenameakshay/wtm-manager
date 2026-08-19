@@ -64,6 +64,18 @@ pub struct Prefs {
     pub window: Option<WindowFrame>,
     /// Path of the repository that was open last.
     pub last_repo: Option<PathBuf>,
+    /// `motion::reduced`'s persisted backing (SPEC §5's reduced-motion
+    /// pref) — mirrors `motion.rs`'s own global at startup and on every
+    /// toggle; see `WtmApp::set_reduce_motion`. `#[serde(default)]` so a
+    /// `gui.json` written before this field existed still loads: `appearance`
+    /// (this struct's oldest field) predates that attribute existing at all
+    /// in this file and has no such guard of its own, so a file missing
+    /// *that* key fails to parse and `load` falls back to full defaults —
+    /// this field deliberately does not repeat that gap, which is the
+    /// literal "older files without the key still load" case this field's
+    /// tests below cover.
+    #[serde(default)]
+    pub reduce_motion: bool,
 }
 
 impl Default for Prefs {
@@ -75,6 +87,7 @@ impl Default for Prefs {
             detail_panel_visible: true,
             window: None,
             last_repo: None,
+            reduce_motion: false,
         }
     }
 }
@@ -183,6 +196,7 @@ mod tests {
         assert!(prefs.detail_panel_visible);
         assert_eq!(prefs.window, None);
         assert_eq!(prefs.last_repo, None);
+        assert!(!prefs.reduce_motion);
     }
 
     #[test]
@@ -212,6 +226,7 @@ mod tests {
                 height: 800.0,
             }),
             last_repo: Some(PathBuf::from("/tmp/some-repo")),
+            reduce_motion: true,
         };
         let file = PrefsFile {
             version: SCHEMA_VERSION,
@@ -253,13 +268,37 @@ mod tests {
         let _guard = EnvGuard::set(tmp.path());
         std::fs::write(
             tmp.path().join(PREFS_FILENAME),
-            r#"{"version":999,"appearance":"dark","terminal":null,"sidebar_visible":false,"detail_panel_visible":false,"window":null,"last_repo":null}"#,
+            r#"{"version":999,"appearance":"dark","terminal":null,"sidebar_visible":false,"detail_panel_visible":false,"window":null,"last_repo":null,"reduce_motion":true}"#,
         )
         .unwrap();
 
         // A file from a future wtm-gui is ignored wholesale rather than
         // partially trusted, matching wtm::registry's rule.
         assert_eq!(load(), Prefs::default());
+    }
+
+    #[test]
+    fn load_of_an_older_file_without_reduce_motion_still_loads_the_rest() {
+        // A `gui.json` written before `reduce_motion` existed has no such
+        // key at all. `#[serde(default)]` on the field is what keeps this
+        // loading (falling back to `false` for just that field) rather than
+        // failing to parse the whole file the way a missing `appearance`
+        // key would (see the field's own doc) — every other saved value
+        // must survive intact.
+        let tmp = tempfile::tempdir().unwrap();
+        let _guard = EnvGuard::set(tmp.path());
+        std::fs::write(
+            tmp.path().join(PREFS_FILENAME),
+            r#"{"version":1,"appearance":"dark","terminal":"iTerm","sidebar_visible":false,"detail_panel_visible":false,"window":null,"last_repo":null}"#,
+        )
+        .unwrap();
+
+        let loaded = load();
+        assert!(!loaded.reduce_motion, "missing key defaults to false");
+        assert_eq!(loaded.appearance, Appearance::Dark);
+        assert_eq!(loaded.terminal, Some("iTerm".to_string()));
+        assert!(!loaded.sidebar_visible);
+        assert!(!loaded.detail_panel_visible);
     }
 
     #[test]
@@ -279,6 +318,7 @@ mod tests {
                 height: 768.0,
             }),
             last_repo: Some(tmp.path().join("repo")),
+            reduce_motion: true,
         };
 
         save(&prefs).unwrap();

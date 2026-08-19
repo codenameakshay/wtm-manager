@@ -11,13 +11,17 @@
 //!
 //! ## Font
 //!
-//! The diff body uses "SF Mono" — macOS's own system monospace face (also
-//! what Terminal.app, Xcode, and Console set their monospace text in), with
-//! "Menlo" and "Monaco" — macOS's two long-standing built-in monospace
-//! fonts — as fallbacks, then "Courier New" as a last resort present on
-//! effectively every platform. `gpui`'s font resolution falls through this
-//! list if an earlier name doesn't resolve in the current font context,
-//! rather than silently substituting the UI's proportional face for code.
+//! The diff body uses [`ui::FONT_MONO`] (Geist Mono, bundled — SPEC §6: diff
+//! content is one of the things that gets the app's own mono face, the same
+//! one paths/shas/branch names use in meta position). Pre-redesign this used
+//! the platform's own "SF Mono", falling through "Menlo"/"Monaco"/"Courier
+//! New" — those four now sit *after* the bundled face in the fallback list
+//! (see [`MONOSPACE_FALLBACKS`]) rather than being the primary, so a
+//! diff still renders in something reasonably monospace on the rare path
+//! where font registration fails (SPEC §6: that failure is non-fatal).
+//! `gpui`'s font resolution falls through this list if an earlier name
+//! doesn't resolve in the current font context, rather than silently
+//! substituting the UI's proportional face for code.
 //!
 //! ## Long lines
 //!
@@ -37,27 +41,60 @@ use gpui::{div, font, px, AnyElement, Font, FontFallbacks, Hsla, SharedString};
 
 use crate::data::{DiffHunk, DiffLine, DiffLineKind, FileDiff};
 use crate::file_browser::{status_color, status_label};
-use crate::theme::Theme;
+use crate::theme::{Theme, RADIUS_CONTROL, SPACE_16, SPACE_24, SPACE_4, SPACE_8};
 use crate::ui;
 
-const MONOSPACE_FONT: &str = "SF Mono";
-const MONOSPACE_FALLBACKS: &[&str] = &["Menlo", "Monaco", "Courier New"];
+/// Platform monospace fallbacks, tried in order after [`ui::FONT_MONO`] (see
+/// the module doc's "Font" section) if the bundled face fails to register.
+const MONOSPACE_FALLBACKS: &[&str] = &["SF Mono", "Menlo", "Monaco", "Courier New"];
 
 /// Estimated advance width, in pixels, of one monospace character at the
-/// diff body's 12px text size — used only to size the line-number gutter
-/// (see [`gutter_width`]); gpui has no API to measure real shaped text
-/// outside of an actual layout pass, so this is a deliberate approximation
-/// (roughly 0.6em, typical for a monospace face) rather than an exact value.
+/// diff body's `TEXT_SM` text size — used only to size the line-number
+/// gutter (see [`gutter_width`]); gpui has no API to measure real shaped
+/// text outside of an actual layout pass, so this is a deliberate
+/// approximation (roughly 0.6em, typical for a monospace face — including
+/// Geist Mono) rather than an exact value.
 const GUTTER_CHAR_WIDTH: f32 = 7.2;
 /// Horizontal padding inside a gutter column, both sides combined.
 const GUTTER_PADDING: f32 = 10.0;
 
 fn diff_font() -> Font {
-    let mut f = font(MONOSPACE_FONT);
+    let mut f = font(ui::FONT_MONO);
     f.fallbacks = Some(FontFallbacks::from_fonts(
         MONOSPACE_FALLBACKS.iter().map(|s| s.to_string()).collect(),
     ));
     f
+}
+
+/// Opts an `.overflow_x_scroll()` element out of gpui 0.2.2's default "either
+/// axis" wheel routing.
+///
+/// `elements/div.rs`'s scroll-wheel handler never calls `stop_propagation()`,
+/// so a wheel event always keeps bubbling up to the Changes tab's own
+/// `.overflow_y_scroll()` in `app/chrome.rs` regardless of this element —
+/// that part already works. The actual bug: without this, the *same* pure
+/// vertical delta that reaches this element also gets reinterpreted as
+/// horizontal input here, because its `overflow.x == Scroll` while its
+/// `overflow.y != Scroll`. So every wheel tick that lands on a diff body
+/// (SPEC's "Long lines" doc above — these fill most of the panel) also yanks
+/// that diff sideways, and with a whole tab of stacked diff bodies, that
+/// turns an intended vertical scroll into a distracting horizontal jitter
+/// that reads as "scrolling doesn't work" even though the ancestor's offset
+/// is quietly moving too. `restrict_scroll_to_axis` stops this element from
+/// repurposing vertical input as horizontal, so a vertical wheel gesture
+/// over a diff body only ever moves the ancestor.
+///
+/// `restrict_scroll_to_axis` is gpui's own documented opt-in fix
+/// (`gpui::Style::restrict_scroll_to_axis`), but there is no `Styled`
+/// builder method for it — every other builder (`.overflow_x_scroll()`,
+/// `.debug_below()`, …) is just sugar over poking the field on
+/// `StyleRefinement` through `Styled::style()`, so this does the same thing
+/// by hand. A genuine horizontal gesture (non-zero `delta.x`, which is what
+/// a real trackpad swipe or Shift+wheel produces) is untouched — this only
+/// changes what happens when `delta.x` is zero.
+fn restrict_scroll_to_horizontal_axis<E: Styled>(mut element: E) -> E {
+    element.style().restrict_scroll_to_axis = Some(true);
+    element
 }
 
 /// Number of characters needed to print the largest line number appearing
@@ -103,28 +140,25 @@ pub fn lineno_cell(n: Option<u32>) -> String {
     n.map(|n| n.to_string()).unwrap_or_default()
 }
 
-/// Low-alpha background tint for a line's kind, so the color reads as "this
-/// line changed" without turning into a saturated block that fights with
-/// the text sitting on top of it. `None` for context lines — they get no
-/// tint at all, not even a neutral one, so the eye lands on what changed.
+/// Background wash for a line's kind — `theme.diff_add_wash`/
+/// `diff_del_wash` (SPEC §3's tuned per-appearance alphas), not an ad-hoc
+/// tint: washing the *background* and tinting only the `+`/`-` marker
+/// ([`marker_color`]) is what keeps a long diff's body text readable
+/// (SURFACES §4 — "do not color the whole line's text"). `None` for context
+/// lines — they get no tint at all, not even a neutral one, so the eye
+/// lands on what changed.
 fn line_tint(kind: DiffLineKind, theme: &Theme) -> Option<Hsla> {
     match kind {
-        DiffLineKind::Added => Some(Hsla {
-            a: 0.14,
-            ..theme.success
-        }),
-        DiffLineKind::Removed => Some(Hsla {
-            a: 0.14,
-            ..theme.danger
-        }),
+        DiffLineKind::Added => Some(theme.diff_add_wash),
+        DiffLineKind::Removed => Some(theme.diff_del_wash),
         DiffLineKind::Context => None,
     }
 }
 
 fn marker_color(kind: DiffLineKind, theme: &Theme) -> Hsla {
     match kind {
-        DiffLineKind::Added => theme.success,
-        DiffLineKind::Removed => theme.danger,
+        DiffLineKind::Added => theme.diff_add,
+        DiffLineKind::Removed => theme.diff_del,
         DiffLineKind::Context => theme.text_ghost,
     }
 }
@@ -145,7 +179,8 @@ pub fn render_diff(diff: &FileDiff, theme: &Theme) -> AnyElement {
     div()
         .flex()
         .flex_col()
-        .gap(px(8.0))
+        .min_w_0()
+        .gap(px(SPACE_8))
         .w_full()
         .child(render_header(diff, theme))
         .when(diff.truncated, |d| d.child(truncated_banner(theme)))
@@ -169,10 +204,14 @@ pub fn render_changes(diffs: &[FileDiff], theme: &Theme) -> AnyElement {
     if diffs.is_empty() {
         return empty_note("No uncommitted changes", theme);
     }
+    // Between-file gap (`SPACE_24`) vs. a header/hunks within-file gap of
+    // `SPACE_8` — a `better-layout` §1 group-vs-within ratio, same as
+    // `detail_panel::render_details`.
     div()
         .flex()
         .flex_col()
-        .gap(px(22.0))
+        .min_w_0()
+        .gap(px(SPACE_24))
         .w_full()
         .children(diffs.iter().map(|diff| render_diff(diff, theme)))
         .into_any_element()
@@ -181,17 +220,26 @@ pub fn render_changes(diffs: &[FileDiff], theme: &Theme) -> AnyElement {
 fn render_header(diff: &FileDiff, theme: &Theme) -> impl IntoElement {
     div()
         .flex()
+        .min_w_0()
         .items_center()
         .justify_between()
-        .gap(px(8.0))
+        .gap(px(SPACE_8))
         .child(
+            // `.id(..)` (keyed on the file's own path, unique per diff) so
+            // `.tooltip(..)` — `StatefulInteractiveElement`-only in gpui
+            // 0.2.2 — is available on this div.
             div()
+                .id(SharedString::from(format!(
+                    "diff-header-path:{}",
+                    diff.path
+                )))
                 .flex_1()
                 .min_w_0()
                 .truncate()
-                .text_size(px(12.5))
+                .text_size(px(ui::TEXT_SM))
                 .text_color(theme.text)
-                .child(diff.path.clone()),
+                .child(diff.path.clone())
+                .tooltip(ui::tooltip(diff.path.clone())),
         )
         .child(ui::pill(
             status_label(diff.status),
@@ -202,14 +250,19 @@ fn render_header(diff: &FileDiff, theme: &Theme) -> impl IntoElement {
 fn truncated_banner(theme: &Theme) -> impl IntoElement {
     div()
         .w_full()
-        .px(px(10.0))
-        .py(px(6.0))
-        .rounded(px(6.0))
+        .px(px(SPACE_8))
+        .py(px(SPACE_4))
+        .rounded(px(RADIUS_CONTROL))
+        // No general-purpose "warning wash" token exists in `theme.rs` yet
+        // (only the diff-specific `diff_add_wash`/`diff_del_wash`) — this
+        // keeps the same 0.10 alpha those use, for consistency, rather than
+        // the previous ad-hoc 0.14. Worth promoting to a real
+        // `warning_wash`-style token in a later phase.
         .bg(Hsla {
-            a: 0.14,
+            a: 0.10,
             ..theme.warning
         })
-        .text_size(px(11.0))
+        .text_size(px(ui::TEXT_XS))
         .text_color(theme.warning)
         .child("Diff truncated at 2,000 lines for this file — later changes in it aren't shown.")
 }
@@ -217,12 +270,12 @@ fn truncated_banner(theme: &Theme) -> impl IntoElement {
 fn empty_note(text: &'static str, theme: &Theme) -> AnyElement {
     div()
         .w_full()
-        .py(px(24.0))
+        .py(px(SPACE_24))
         .flex()
         .items_center()
         .justify_center()
-        .text_size(px(12.5))
-        .text_color(theme.text_tertiary)
+        .text_size(px(ui::TEXT_SM))
+        .text_color(theme.text_faint)
         .child(text)
         .into_any_element()
 }
@@ -233,22 +286,28 @@ fn render_hunks(diff: &FileDiff, theme: &Theme) -> AnyElement {
     // per changed file, and each needs a distinct element id to scroll
     // independently of the others.
     let id = SharedString::from(format!("diff-body:{}", diff.path));
-    div()
-        .id(id)
-        .flex()
-        .flex_col()
-        .w_full()
-        .rounded(px(6.0))
-        .border_1()
-        .border_color(theme.border)
-        .overflow_x_scroll()
-        .font(diff_font())
-        .children(
-            diff.hunks
-                .iter()
-                .map(|hunk| render_hunk(hunk, gutter_px, theme)),
-        )
-        .into_any_element()
+    restrict_scroll_to_horizontal_axis(
+        div()
+            .id(id)
+            // Radius arithmetic (SPEC §4/COMPONENTS.md): the diff body is a
+            // self-contained bordered block at `RADIUS_CONTROL` (6) — the
+            // nearest token to the pre-redesign literal `6.0`, so this was
+            // already on-scale.
+            .rounded(px(RADIUS_CONTROL))
+            .flex()
+            .flex_col()
+            .w_full()
+            .border_1()
+            .border_color(theme.border)
+            .overflow_x_scroll()
+            .font(diff_font()),
+    )
+    .children(
+        diff.hunks
+            .iter()
+            .map(|hunk| render_hunk(hunk, gutter_px, theme)),
+    )
+    .into_any_element()
 }
 
 fn render_hunk(hunk: &DiffHunk, gutter_px: f32, theme: &Theme) -> impl IntoElement {
@@ -256,14 +315,17 @@ fn render_hunk(hunk: &DiffHunk, gutter_px: f32, theme: &Theme) -> impl IntoEleme
         .flex()
         .flex_col()
         .child(
+            // Hunk headers get `diff_hunk_bg` (SPEC §3/SURFACES §4) — a
+            // dedicated token, not the generic hover wash (`item_wash`) this
+            // used before.
             div()
                 .w_full()
-                .px(px(10.0))
-                .py(px(4.0))
-                .bg(theme.item_wash)
+                .px(px(SPACE_8))
+                .py(px(SPACE_4))
+                .bg(theme.diff_hunk_bg)
                 .whitespace_nowrap()
-                .text_size(px(11.0))
-                .text_color(theme.text_tertiary)
+                .text_size(px(ui::TEXT_XS))
+                .text_color(theme.text_faint)
                 .child(hunk.header.clone()),
         )
         .children(
@@ -273,19 +335,28 @@ fn render_hunk(hunk: &DiffHunk, gutter_px: f32, theme: &Theme) -> impl IntoEleme
         )
 }
 
+/// Fixed width of the `+`/`-`/` ` marker column — sized for one monospace
+/// glyph at the diff body's `TEXT_SM` text size, the same "named because it
+/// doesn't fit the `SPACE_*` scale" precedent as [`GUTTER_CHAR_WIDTH`].
+const MARKER_COLUMN_WIDTH: f32 = 14.0;
+
 fn render_line(line: &DiffLine, gutter_px: f32, theme: &Theme) -> impl IntoElement {
     div()
         .flex()
         .items_start()
         .w_full()
+        // Wash the line's *background*; the marker color below is the only
+        // thing that carries the added/removed tint into the text itself
+        // (SURFACES §4 — coloring the whole line's text makes a long diff
+        // unreadable).
         .when_some(line_tint(line.kind, theme), |d, c| d.bg(c))
         .child(lineno_col(line.old_lineno, gutter_px, theme))
         .child(lineno_col(line.new_lineno, gutter_px, theme))
         .child(
             div()
                 .flex_none()
-                .w(px(14.0))
-                .text_size(px(12.0))
+                .w(px(MARKER_COLUMN_WIDTH))
+                .text_size(px(ui::TEXT_SM))
                 .text_color(marker_color(line.kind, theme))
                 .child(line_marker(line.kind)),
         )
@@ -293,12 +364,14 @@ fn render_line(line: &DiffLine, gutter_px: f32, theme: &Theme) -> impl IntoEleme
             // Deliberately no `min_w_0()`/`truncate()` here — see the module
             // doc's "Long lines" section for why that's what lets this row
             // overflow into the ancestor's horizontal scroll instead of
-            // wrapping or clipping.
+            // wrapping or clipping. Body text always stays `theme.text`
+            // regardless of `line.kind` — see `line_tint`'s doc for why the
+            // background wash (not the text) is what signals a change.
             div()
                 .flex_1()
                 .whitespace_nowrap()
-                .pr(px(16.0))
-                .text_size(px(12.0))
+                .pr(px(SPACE_16))
+                .text_size(px(ui::TEXT_SM))
                 .text_color(theme.text)
                 .child(if line.text.is_empty() {
                     " ".to_string()
@@ -312,8 +385,12 @@ fn lineno_col(n: Option<u32>, width: f32, theme: &Theme) -> impl IntoElement {
     div()
         .flex_none()
         .w(px(width))
-        .px(px(4.0))
-        .text_size(px(11.0))
+        .px(px(SPACE_4))
+        // Right-aligned so a run of different-width line numbers still
+        // lines up on their trailing digit (SURFACES §4: "digits aligned"),
+        // rather than only sharing a left edge.
+        .text_right()
+        .text_size(px(ui::TEXT_XS))
         .text_color(theme.text_ghost)
         .child(lineno_cell(n))
 }
@@ -393,5 +470,100 @@ mod tests {
     fn lineno_cell_formats_present_and_absent_numbers() {
         assert_eq!(lineno_cell(Some(42)), "42");
         assert_eq!(lineno_cell(None), "");
+    }
+
+    // ---------------- restrict_scroll_to_horizontal_axis ----------------
+    //
+    // Headless regression coverage for the scroll-hijack bug (see the
+    // function's own doc comment): a `TestAppContext`-driven `gpui::test`
+    // exercises the real `elements/div.rs` wheel-dispatch code (hit-testing
+    // included — `add_empty_window`/`draw` run a real prepaint+paint pass,
+    // so `Window::mouse_hit_test` is genuinely populated, not stubbed), so
+    // this is exactly the "reachable headlessly" case, not an event-routing
+    // behavior `TestAppContext` cannot drive.
+
+    use gpui::{
+        point, size, Render, ScrollDelta, ScrollHandle, ScrollWheelEvent, TestAppContext, Window,
+    };
+
+    /// Mirrors the real nesting this bug lives in: an outer vertically-
+    /// scrolling container (`app/chrome.rs`'s `changes-scroll`/
+    /// `file-diff-scroll`) wrapping an inner horizontally-scrolling one
+    /// (`render_hunks`'s diff body). Sized so both axes genuinely overflow
+    /// — asserted below — rather than trusting the layout by construction.
+    struct ScrollNestingTestView {
+        outer: ScrollHandle,
+        inner: ScrollHandle,
+    }
+
+    impl Render for ScrollNestingTestView {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .id("outer")
+                .w(px(200.))
+                .h(px(150.))
+                .overflow_y_scroll()
+                .track_scroll(&self.outer)
+                .child(restrict_scroll_to_horizontal_axis(
+                    div()
+                        .id("inner")
+                        .w(px(150.))
+                        .h(px(400.))
+                        .overflow_x_scroll()
+                        .track_scroll(&self.inner)
+                        .child(div().w(px(2000.)).h(px(400.))),
+                ))
+        }
+    }
+
+    #[gpui::test]
+    fn vertical_wheel_over_a_horizontally_scrolling_child_moves_only_the_ancestor(
+        cx: &mut TestAppContext,
+    ) {
+        let cx = cx.add_empty_window();
+        let outer = ScrollHandle::new();
+        let inner = ScrollHandle::new();
+
+        cx.draw(point(px(0.), px(0.)), size(px(200.), px(150.)), |_, cx| {
+            cx.new(|_| ScrollNestingTestView {
+                outer: outer.clone(),
+                inner: inner.clone(),
+            })
+        });
+
+        // Sanity-check the fixture actually overflows on both axes — a
+        // false pass from a fixture that never needed to scroll would prove
+        // nothing.
+        assert!(
+            outer.max_offset().height > px(0.),
+            "fixture bug: outer has nothing to scroll vertically"
+        );
+        assert!(
+            inner.max_offset().width > px(0.),
+            "fixture bug: inner has nothing to scroll horizontally"
+        );
+
+        // A pure vertical wheel gesture (delta.x == 0) landing on the inner
+        // (horizontally-scrolling) element — same as a diff body filling
+        // the panel under the user's cursor.
+        cx.simulate_event(ScrollWheelEvent {
+            position: point(px(50.), px(50.)),
+            delta: ScrollDelta::Pixels(point(px(0.), px(-40.))),
+            ..Default::default()
+        });
+
+        assert_eq!(
+            inner.offset().x,
+            px(0.),
+            "a pure vertical wheel gesture must not be reinterpreted as this \
+             element's own horizontal scroll"
+        );
+        assert_eq!(
+            outer.offset().y,
+            px(-40.),
+            "the same vertical wheel gesture must still reach the ancestor's \
+             vertical scroll (gpui's wheel handler never calls \
+             stop_propagation, so this was never the part that was broken)"
+        );
     }
 }

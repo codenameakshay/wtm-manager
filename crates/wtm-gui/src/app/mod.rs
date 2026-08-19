@@ -48,6 +48,10 @@
 //!   keep separate from those dialogs' logic; that separation is now a
 //!   file boundary instead of a banner comment).
 //! - `chrome` — the sidebar, title bar, worktree list, and footer.
+//! - `layout` — pure, width-only functions deciding when the detail panel
+//!   auto-collapses, when the Files/Changes tabs' wide panel fits, and how
+//!   the footer's hint row degrades; `chrome`/`commands`/this file call
+//!   these and paint the result rather than re-deriving the arithmetic.
 //!
 //! A few small, genuinely cross-cutting pieces stay here rather than in any
 //! one submodule: `MenuTarget`, `StatusMessage`, and `BulkRemoveState` are
@@ -61,6 +65,7 @@ mod dialog_actions;
 mod dialog_forms;
 #[cfg(test)]
 mod integration_tests;
+mod layout;
 mod loading;
 mod selection;
 
@@ -73,7 +78,8 @@ use gpui::prelude::*;
 use gpui::{
     actions, deferred, div, px, uniform_list, AnyElement, App, ClickEvent, Context, Decorations,
     Div, Entity, FocusHandle, Focusable, KeyDownEvent, MouseButton, MouseDownEvent, Pixels, Point,
-    SharedString, Stateful, Subscription, Window, WindowAppearance,
+    ScrollHandle, ScrollStrategy, SharedString, Stateful, Subscription, UniformListScrollHandle,
+    Window, WindowAppearance,
 };
 use wtm::commands::prune::{PruneCandidate, PruneReport};
 use wtm::model::WorktreeInfo;
@@ -156,6 +162,14 @@ actions!(
         /// Open the selected worktree's branch on its remote host (GitHub/
         /// GitLab/Bitbucket) in the system browser.
         OpenRemote,
+        /// Move keyboard focus to the next Tab stop. gpui-0.2.2 ships the
+        /// tab-stop machinery (`Window::focus_next`, `elements/div.rs`'s
+        /// `tab_stop`/`tab_index`/`tab_group`) but binds no key to it — see
+        /// `main.rs`'s `key_bindings!` entry for this action.
+        FocusNext,
+        /// Move keyboard focus to the previous Tab stop — the Shift-Tab
+        /// counterpart to [`FocusNext`].
+        FocusPrev,
     ]
 );
 
@@ -200,7 +214,10 @@ struct BulkRemoveState {
 }
 
 pub struct WtmApp {
-    /// Repositories in the sidebar, most recently opened first.
+    /// Repositories in the sidebar, alphabetical by name (see
+    /// `sidebar_sorted`) — a stable order that does not reshuffle when a
+    /// repo is opened, unlike `Registry::entries()`'s own
+    /// most-recently-opened-first order, which is what the CLI still uses.
     repos: Vec<RepoEntry>,
     /// The repository currently shown, if any.
     active: Option<OpenRepo>,
@@ -237,6 +254,17 @@ pub struct WtmApp {
     generation: u64,
     loading: bool,
     focus_handle: FocusHandle,
+    /// Where focus lands when a confirmation dialog with no text field
+    /// opens (Remove, Prune, and the bulk-remove confirmation) — the
+    /// Cancel button in each, per COMPONENTS.md's modal-focus-management
+    /// requirement: "the safe/cancel action — never the destructive one."
+    /// One shared handle rather than a field on each of `RemoveState`/
+    /// `PruneState`/`BulkRemoveState`: `overlay_open` already guarantees at
+    /// most one of those is ever showing, so there is never a collision,
+    /// and keeping it here means `dialogs.rs`'s state constructors (and
+    /// their existing plain, `cx`-free unit tests) don't need to grow a
+    /// `Context<WtmApp>` parameter just to mint a `FocusHandle`.
+    dialog_safe_focus: FocusHandle,
     /// The one modal dialog that may be open at a time — see
     /// [`crate::dialogs::Dialog`].
     dialog: Option<Dialog>,
@@ -255,6 +283,16 @@ pub struct WtmApp {
     /// every reload.
     watched: Option<(PathBuf, Vec<PathBuf>)>,
     detail_panel_visible: bool,
+    /// True once the user has explicitly reopened the detail panel
+    /// (`commands::on_toggle_detail_panel`) while the window was too narrow
+    /// for it to fit under `layout::DETAIL_PANEL_BREAKPOINT` — see
+    /// `layout::detail_panel_should_show`'s doc for what this overrides and
+    /// why. Session-only, never persisted to `Prefs`: it describes "the
+    /// window is narrow right now and I asked for this anyway," not a
+    /// standing preference, and `layout::narrow_override_after_resize`
+    /// (called once per render in `Render::render`) drops it again the
+    /// moment the window is wide enough that it isn't doing anything.
+    detail_panel_narrow_override: bool,
     /// Detail data for the selected worktree, loaded in the background by
     /// [`WtmApp::load_details_for_selection`]. `None` while loading or when
     /// nothing is selected.
@@ -337,6 +375,52 @@ pub struct WtmApp {
     /// there is nowhere to persist this across a restart yet — a follow-up
     /// for whoever owns that file next.
     recent_commands: HashMap<PathBuf, Vec<String>>,
+    /// The worktree list's own scroll position — `ui::scrollbar`/
+    /// `ui::scroll_fade_*` (Task 2: "the changes panel has no scrollbar,
+    /// check that") both need a live handle to read geometry off of, which
+    /// `uniform_list` only exposes once tracked (`UniformListScrollHandle`
+    /// wraps a plain `ScrollHandle` — see `UniformListScrollState::base_handle`
+    /// in the vendored `gpui-0.2.2` source).
+    list_scroll: UniformListScrollHandle,
+    /// The Changes tab's own scroll position — same reasoning as
+    /// `list_scroll`, for `render_changes_tab`'s `"changes-scroll"` region
+    /// (the literal panel the user reported has no scrollbar).
+    changes_scroll: ScrollHandle,
+    /// The Files tab's tree column's own scroll position.
+    files_tree_scroll: ScrollHandle,
+    /// The Files tab's diff column's own scroll position.
+    files_diff_scroll: ScrollHandle,
+    /// The settings sheet's own scroll position, threaded into
+    /// `settings::render` (`settings.rs` owns no persistent state of its
+    /// own — see that module's doc — so this lives here like every other
+    /// overlay's scroll handle).
+    settings_scroll: ScrollHandle,
+}
+
+/// Sort registry entries into the order the sidebar displays them in.
+///
+/// `Registry::entries()` (shared with the CLI) returns most-recently-opened
+/// first, which is genuinely useful there — the CLI uses it to pick a
+/// default repo at launch — so that contract stays put. But it means
+/// selecting a repo (which calls `registry::remember`, bumping
+/// `last_opened`) jumps that repo to the top of the *sidebar* under the
+/// user's cursor: a navigation list that rearranges itself because you used
+/// it. The sidebar sorts its own copy instead, alphabetically by name
+/// (case-insensitive) with the path as a tie-break so two repos sharing a
+/// name never swap — an order that is predictable, stays put when the list
+/// is long, and never moves under the user. `last_opened` is still recorded
+/// (it still picks the repo a fresh window opens); only *display* order
+/// changes here. Both call sites that populate `self.repos`
+/// (`loading::begin_activate_repo`, `commands::forget_repo`) route through
+/// this so the two cannot drift apart.
+fn sidebar_sorted(mut entries: Vec<RepoEntry>) -> Vec<RepoEntry> {
+    entries.sort_by(|a, b| {
+        a.name
+            .to_lowercase()
+            .cmp(&b.name.to_lowercase())
+            .then_with(|| a.path.cmp(&b.path))
+    });
+    entries
 }
 
 impl WtmApp {
@@ -359,7 +443,7 @@ impl WtmApp {
         });
 
         let mut this = Self {
-            repos: registry::load().entries(),
+            repos: sidebar_sorted(registry::load().entries()),
             active: None,
             rows: Vec::new(),
             selected: None,
@@ -372,11 +456,13 @@ impl WtmApp {
             generation: 0,
             loading: false,
             focus_handle: cx.focus_handle(),
+            dialog_safe_focus: cx.focus_handle().tab_stop(true).tab_index(0),
             dialog: None,
             pending_select: None,
             watcher: None,
             watched: None,
             detail_panel_visible: prefs.detail_panel_visible,
+            detail_panel_narrow_override: false,
             details: None,
             details_path: None,
             details_generation: 0,
@@ -397,6 +483,11 @@ impl WtmApp {
             bulk_remove: None,
             run_command: None,
             recent_commands: HashMap::new(),
+            list_scroll: UniformListScrollHandle::new(),
+            changes_scroll: ScrollHandle::new(),
+            files_tree_scroll: ScrollHandle::new(),
+            files_diff_scroll: ScrollHandle::new(),
+            settings_scroll: ScrollHandle::new(),
         };
 
         if let Some(repo) = initial {
@@ -445,6 +536,31 @@ impl WtmApp {
             || self.bulk_remove.is_some()
             || self.run_command.is_some()
     }
+
+    /// `Theme::of(cx)` for the background shell specifically — the
+    /// sidebar, title bar, worktree list, and detail panel (`chrome.rs`'s
+    /// `render_sidebar`/`render_titlebar`/`render_list`/`render_footer`/
+    /// `render_detail_panel`). Forces [`Theme::tab_stops`] to `false`
+    /// whenever [`Self::overlay_open`], so Tab/Shift-Tab can't walk out of
+    /// an open dialog into the shell painted behind it; see that field's
+    /// doc for why gpui's own `tab_group()` alone can't do this. Every
+    /// overlay's own render path (`render_dialog`, `settings::render`,
+    /// `render_palette`, `render_bulk_remove_dialog`,
+    /// `render_run_command_dialog`, `ContextMenu::render`) must keep
+    /// calling `Theme::of(cx)` directly instead — routing an overlay's own
+    /// content through this method would make its own controls
+    /// unreachable by Tab too.
+    fn chrome_theme(&self, cx: &App) -> Theme {
+        let theme = Theme::of(cx);
+        if self.overlay_open() {
+            Theme {
+                tab_stops: false,
+                ..theme
+            }
+        } else {
+            theme
+        }
+    }
 }
 
 /// The scrim behind every dialog: click anywhere outside the card to close
@@ -459,6 +575,9 @@ pub(crate) fn render_modal_backdrop(cx: &mut Context<WtmApp>) -> Stateful<Div> {
     ui::modal_backdrop()
         .id("dialog-backdrop")
         .on_click(cx.listener(|this, _, window, cx| this.close_dialog(window, cx)))
+    // `ui::modal_backdrop()` already carries `.occlude()` — see its doc —
+    // so the worktree list behind every dialog is safe from both the
+    // click and the scroll-wheel leak this function's own doc describes.
 }
 
 impl Focusable for WtmApp {
@@ -470,6 +589,32 @@ impl Focusable for WtmApp {
 impl Render for WtmApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::of(cx);
+
+        // Width-adaptive state, resolved once per render before anything
+        // below reads it — see `layout`'s module doc. Two things happen
+        // here, both driven purely by the current viewport width:
+        //
+        // 1. The detail panel's `narrow_override` (see that field's doc)
+        //    is dropped the instant the window is wide enough that it
+        //    isn't overriding anything — so a *future* narrowing
+        //    auto-collapses fresh rather than staying silently exempted by
+        //    a click from an earlier, unrelated narrow session.
+        // 2. The Files/Changes tabs' wide panel (`layout::wide_tabs_fit`)
+        //    has no user override at all (see `layout::WIDE_TABS_BREAKPOINT`'s
+        //    doc: below it, the list column the wide panel would leave
+        //    behind isn't just tight, it can go negative) — so if the
+        //    window has narrowed out from under an already-active
+        //    Files/Changes tab, this snaps back to Details before the tree
+        //    below ever builds, rather than painting a tab whose panel
+        //    doesn't fit for one frame and then yanking it back.
+        let viewport_width = f32::from(window.viewport_size().width);
+        self.detail_panel_narrow_override =
+            layout::narrow_override_after_resize(viewport_width, self.detail_panel_narrow_override);
+        if !layout::wide_tabs_fit(viewport_width)
+            && matches!(self.detail_tab, DetailTab::Files | DetailTab::Changes)
+        {
+            self.detail_tab = DetailTab::Details;
+        }
 
         // The list is the window's subject, so it holds focus by default —
         // but only when no dialog is open. This must be gated on
@@ -511,6 +656,7 @@ impl Render for WtmApp {
             Some(settings::render(
                 &self.prefs,
                 self.active.as_ref(),
+                &self.settings_scroll,
                 &theme,
                 cx,
             ))
@@ -554,9 +700,42 @@ impl Render for WtmApp {
             .on_action(cx.listener(Self::on_fetch_remote))
             .on_action(cx.listener(Self::on_run_command))
             .on_action(cx.listener(Self::on_open_remote))
+            .on_action(cx.listener(Self::on_focus_next))
+            .on_action(cx.listener(Self::on_focus_prev))
             .size_full()
             .flex()
             .text_color(theme.text)
+            // Sets the *default* text family for the entire window: gpui's
+            // `TextStyle::default()` hardcodes `.SystemUIFont`, and nothing
+            // else in the tree ever calls `.font_family(theme.font_sans)` —
+            // every non-mono call site (row labels, dialog copy, section
+            // headers, button labels…) was silently painting in the
+            // platform UI font instead of the bundled Geist despite
+            // `assets::register_fonts` shipping it. Setting it once here
+            // lets gpui's text-style cascade (`Window::text_style_stack`,
+            // pushed by every descendant `Div::prepaint`) carry it to every
+            // normal child for free.
+            //
+            // This same refinement also reaches the four deferred/anchored
+            // overlays below (the dialogs/settings/palette/run-command
+            // `deferred(overlay)` and `context_menu.render`'s own internal
+            // `deferred(anchored(..))`): `gpui::Window::defer_draw` clones
+            // `text_style_stack` at the moment each is prepainted (see
+            // `gpui-0.2.2/src/window.rs`'s `defer_draw`/
+            // `prepaint_deferred_draws`), which happens *inside* this div's
+            // own `with_text_style` scope since both are `root`'s
+            // descendants in the normal top-down prepaint pass. `anchored()`
+            // never touches the text-style stack at all (verified against
+            // `gpui-0.2.2/src/elements/anchored.rs` — it only offsets
+            // layout), so it's fully transparent to this cascade.
+            //
+            // The one root that does NOT inherit from here is
+            // `ui::Tooltip`: gpui prepaints tooltips via a wholly separate
+            // `layout_as_root` call in `Window::draw_roots` (after —  not
+            // nested under — the main tree's `prepaint_as_root`/deferred
+            // passes), so it carries no snapshot of this stack at all and
+            // sets `theme.font_sans` itself.
+            .font_family(theme.font_sans)
             // The root itself stays unpainted so the window's blurred backing
             // shows through the sidebar, the way a native source list does.
             // Only the content column gets an opaque surface.
@@ -570,13 +749,13 @@ impl Render for WtmApp {
                     .h_full()
                     .flex()
                     .flex_col()
-                    .bg(theme.canvas)
+                    .bg(theme.bg)
                     .child(self.render_titlebar(window, cx))
                     .child(self.render_list(cx))
-                    .child(self.render_footer(cx)),
+                    .child(self.render_footer(window, cx)),
             )
-            .when(self.show_detail_panel(), |this| {
-                this.child(self.render_detail_panel(cx))
+            .when(self.show_detail_panel(window), |this| {
+                this.child(self.render_detail_panel(window, cx))
             })
             // Rendered last and via `deferred` so it paints above the list
             // and sidebar regardless of source order, and is never clipped

@@ -497,6 +497,7 @@ mod tests {
             is_prunable: false,
             status: Some(WorktreeStatus {
                 dirty: name.contains("dirty"),
+                dirty_count: usize::from(name.contains("dirty")),
                 ahead: Some(2),
                 behind: Some(1),
                 upstream_gone: false,

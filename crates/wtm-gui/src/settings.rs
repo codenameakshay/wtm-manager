@@ -11,8 +11,18 @@
 //!
 //! # What is and isn't editable here
 //!
-//! - **Appearance** is a real, persisted setting — the segmented control
-//!   writes straight through `WtmApp::set_appearance` to `prefs.json`.
+//! - **Appearance** is a real, persisted setting — a real `ui::segmented`
+//!   control, writing straight through `WtmApp::set_appearance` to
+//!   `prefs.json` via `on_select`, which is exactly the shape `cx.listener`
+//!   produces.
+//! - **Reduce motion** sits right below Appearance (SURFACES §9: "this is
+//!   where the reduced-motion pref lands too"). It drives
+//!   `WtmApp::set_reduce_motion` (mirrors `set_appearance`'s shape exactly:
+//!   write `prefs.reduce_motion`, persist, then push the value to
+//!   `motion::set_reduced` so the same render pass's `motion::reduced`
+//!   read-back can never disagree with what was just toggled) and is fully
+//!   persisted — `main.rs` applies `prefs.reduce_motion` at startup the same
+//!   place it applies `prefs.appearance`.
 //! - **Terminal app** is read-only. `Prefs::terminal` exists as a field, but
 //!   `crate::data::open_in_terminal` (owned elsewhere, not part of this
 //!   task) only ever consults the `$WTM_TERMINAL` environment variable —
@@ -37,13 +47,15 @@
 use std::path::{Path, PathBuf};
 
 use gpui::prelude::*;
-use gpui::{div, hsla, px, AnyElement, Context, FontWeight, SharedString, Stateful};
+use gpui::{div, px, AnyElement, Context, ScrollHandle, SharedString};
 
 use crate::app::WtmApp;
 use crate::data::OpenRepo;
+use crate::dialogs;
+use crate::motion;
 use crate::prefs::{Appearance, Prefs};
-use crate::theme::Theme;
-use crate::ui::{self, ButtonVariant};
+use crate::theme::{Theme, SPACE_12, SPACE_16, SPACE_2, SPACE_20, SPACE_4, SPACE_6, SPACE_8};
+use crate::ui::{self, ButtonVariant, TEXT_SM, TEXT_XS};
 
 /// One keyboard shortcut, as registered with gpui and as shown in the
 /// "Keyboard Shortcuts" section below. Built by `main.rs`'s `key_bindings!`
@@ -73,40 +85,72 @@ pub struct ShortcutMeta {
 pub fn render(
     prefs: &Prefs,
     repo: Option<&OpenRepo>,
+    scroll: &ScrollHandle,
     theme: &Theme,
     cx: &mut Context<WtmApp>,
 ) -> AnyElement {
-    let body = div()
-        .id("settings-body")
-        .flex()
-        .flex_col()
-        .gap(px(20.0))
-        .px(px(16.0))
-        .py(px(14.0))
+    // SPACE_20 between sections: SURFACES §9 groups sections with space, and
+    // `better-layout` §1 wants the gap *between* groups at least 2x the gap
+    // *within* one (every section's own internal gap below tops out at
+    // SPACE_12) — SPACE_20 clears that floor. None of the four sections
+    // carry their own eyebrow anymore, so a hairline `ui::divider` sits in
+    // that SPACE_20 gap between each pair — spacing alone separated them
+    // before too, but with every group name gone at once a purely blank gap
+    // reads as one long, undifferentiated column rather than four groups;
+    // the divider makes the boundary itself visible, not just wide.
+    //
+    // `.relative()` wrapper, sibling of the scrolling div — same reasoning
+    // as `app::chrome`'s scroll regions (`ui::scrollbar`'s own doc): the
+    // overlay must never be a descendant of the div it scrolls with.
+    let scroll_region = div()
+        .relative()
         .max_h(px(480.0))
-        .overflow_y_scroll()
-        .child(render_appearance_section(prefs.appearance, theme, cx))
-        .child(render_terminal_section(theme))
-        .child(render_config_section(repo, theme, cx))
-        .child(render_shortcuts_section(theme))
         .child(
-            ui::modal_footer(theme).child(
-                ui::button("settings-done", "Done", ButtonVariant::Secondary, theme)
-                    .on_click(cx.listener(|this, _, window, cx| this.close_dialog(window, cx))),
-            ),
-        );
+            div()
+                .id("settings-body")
+                .flex()
+                .flex_col()
+                .gap(px(SPACE_20))
+                .px(px(SPACE_16))
+                .py(px(SPACE_12))
+                .max_h(px(480.0))
+                .overflow_y_scroll()
+                .track_scroll(scroll)
+                .child(render_appearance_section(prefs.appearance, theme, cx))
+                .child(ui::divider(theme))
+                .child(render_terminal_section(theme))
+                .child(ui::divider(theme))
+                .child(render_config_section(repo, theme, cx))
+                .child(ui::divider(theme))
+                .child(render_shortcuts_section(theme)),
+        )
+        .child(ui::scrollbar(
+            "settings-scrollbar",
+            scroll,
+            ui::ScrollAxis::Vertical,
+        ));
 
-    ui::modal_backdrop()
+    let body = div().flex().flex_col().child(scroll_region).child(
+        ui::modal_footer(theme).child(
+            ui::button("settings-done", "Done", ButtonVariant::Secondary, theme)
+                .on_click(cx.listener(|this, _, window, cx| this.close_dialog(window, cx))),
+        ),
+    );
+
+    let card = ui::modal_card(480.0, theme)
+        .id("settings-card")
+        .on_click(|_, _, cx| cx.stop_propagation())
+        .child(ui::modal_header("Settings", None, theme))
+        .child(body);
+
+    // SURFACES §7's dialog-entrance treatment applies to every modal
+    // surface, this sheet included: `DIALOG_IN` on the card, `FADE_QUICK` on
+    // the scrim.
+    let backdrop = ui::modal_backdrop()
         .id("settings-backdrop")
         .on_click(cx.listener(|this, _, window, cx| this.close_dialog(window, cx)))
-        .child(
-            ui::modal_card(480.0, theme)
-                .id("settings-card")
-                .on_click(|_, _, cx| cx.stop_propagation())
-                .child(ui::modal_header("Settings", None, theme))
-                .child(body),
-        )
-        .into_any_element()
+        .child(motion::dialog_in("settings-dialog-in", card, cx));
+    motion::fade_quick("settings-dialog-backdrop-in", backdrop, cx).into_any_element()
 }
 
 // ---------------------------------------------------------------------
@@ -117,75 +161,45 @@ fn render_appearance_section(
     current: Appearance,
     theme: &Theme,
     cx: &mut Context<WtmApp>,
-) -> impl IntoElement {
+) -> AnyElement {
+    let reduced = motion::reduced(cx);
+    let options: [(Appearance, &str); 3] = [
+        (Appearance::System, "System"),
+        (Appearance::Light, "Light"),
+        (Appearance::Dark, "Dark"),
+    ];
+
     div()
         .flex()
         .flex_col()
-        .gap(px(8.0))
-        .child(section_label("Appearance", theme))
+        .gap(px(SPACE_8))
+        .child(ui::segmented(
+            "appearance",
+            &options,
+            &current,
+            theme,
+            cx.listener(|this, value: &Appearance, window, cx| {
+                this.set_appearance(*value, window, cx);
+            }),
+        ))
         .child(
-            div()
-                .flex()
-                .gap(px(6.0))
-                .child(appearance_option(
-                    Appearance::System,
-                    "System",
-                    current,
-                    theme,
-                    cx,
-                ))
-                .child(appearance_option(
-                    Appearance::Light,
-                    "Light",
-                    current,
-                    theme,
-                    cx,
-                ))
-                .child(appearance_option(
-                    Appearance::Dark,
-                    "Dark",
-                    current,
-                    theme,
-                    cx,
-                )),
+            dialogs::render_toggle(
+                "settings-reduce-motion",
+                "Reduce motion",
+                reduced,
+                false,
+                theme,
+            )
+            .on_click(cx.listener(|this, _, _window, cx| {
+                let next = !motion::reduced(cx);
+                this.set_reduce_motion(next, cx);
+            })),
         )
-}
-
-fn appearance_option(
-    value: Appearance,
-    label: &'static str,
-    current: Appearance,
-    theme: &Theme,
-    cx: &mut Context<WtmApp>,
-) -> Stateful<gpui::Div> {
-    let selected = value == current;
-    // Mid-tone in both palettes (mirrors `ui::button`'s own
-    // `dark_foreground`, private to that module), so the selected pill's
-    // label stays legible against `theme.accent` in either theme.
-    let dark_foreground = hsla(0.0, 0.0, 0.08, 1.0);
-
-    div()
-        .id(SharedString::from(format!("appearance-{label}")))
-        .px(px(12.0))
-        .h(px(26.0))
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded(px(ui::RADIUS))
-        .cursor_default()
-        .text_size(px(12.0))
-        .when(selected, |this| {
-            this.bg(theme.accent).text_color(dark_foreground)
-        })
-        .when(!selected, |this| {
-            this.bg(theme.item_wash)
-                .text_color(theme.text)
-                .hover(|s| s.bg(theme.item_selected))
-        })
-        .child(label)
-        .on_click(cx.listener(move |this, _, window, cx| {
-            this.set_appearance(value, window, cx);
-        }))
+        .child(dim_note(
+            "Skips overlay and dialog entrance animations.",
+            theme,
+        ))
+        .into_any_element()
 }
 
 // ---------------------------------------------------------------------
@@ -198,11 +212,16 @@ fn render_terminal_section(theme: &Theme) -> impl IntoElement {
     div()
         .flex()
         .flex_col()
-        .gap(px(4.0))
-        .child(section_label("Terminal App", theme))
+        .gap(px(SPACE_4))
         .child(
+            // Rendered as a value, not a heading: with the "Terminal App"
+            // eyebrow gone, heading-weight text here would be the only thing
+            // in the sheet that looked like a surviving section label. Match
+            // the treatment `config_row` below uses for config values — mono
+            // face, body size — so it reads as data, not a title.
             div()
-                .text_size(px(12.5))
+                .font_family(ui::FONT_MONO)
+                .text_size(px(TEXT_SM))
                 .text_color(theme.text)
                 .child(terminal),
         )
@@ -221,11 +240,16 @@ fn render_config_section(
     theme: &Theme,
     cx: &mut Context<WtmApp>,
 ) -> impl IntoElement {
-    let mut section = div()
-        .flex()
-        .flex_col()
-        .gap(px(8.0))
-        .child(section_label("Effective Repository Configuration", theme));
+    // No eyebrow names this group anymore, and unlike Appearance or
+    // Terminal App, a bare table of paths and values doesn't say what it is
+    // on its own — so this note (previously placed after the table) moves
+    // to the top and now does double duty: it's still the "why you can't
+    // edit this" caveat, and it's also the only thing left telling you
+    // you're looking at wtm's own repo config in the first place.
+    let mut section = div().flex().flex_col().gap(px(SPACE_8)).child(dim_note(
+        "Read-only — this is wtm's own TOML config; the app never rewrites it.",
+        theme,
+    ));
 
     section = match repo {
         None => section.child(dim_note(
@@ -289,24 +313,19 @@ fn render_config_section(
             )),
     };
 
-    section
-        .child(dim_note(
-            "Read-only — this is wtm's own TOML config; the app never rewrites it.",
-            theme,
-        ))
-        .child(render_config_paths(repo, theme, cx))
+    section.child(render_config_paths(repo, theme, cx))
 }
 
 /// The config file(s) the values above were merged from, each with a
-/// "Reveal" button so the note above ("read-only... the app never rewrites
-/// it") points at something concrete rather than asking the user to take it
-/// on faith.
+/// "Reveal" button so the note at the top of this section ("read-only...
+/// the app never rewrites it") points at something concrete rather than
+/// asking the user to take it on faith.
 fn render_config_paths(
     repo: Option<&OpenRepo>,
     theme: &Theme,
     cx: &mut Context<WtmApp>,
 ) -> impl IntoElement {
-    let mut rows = div().flex().flex_col().gap(px(4.0));
+    let mut rows = div().flex().flex_col().gap(px(SPACE_4));
     if let Some(global) = wtm::config::global_config_path() {
         rows = rows.child(config_path_row(
             "global-config",
@@ -354,7 +373,7 @@ fn config_path_row(
         .flex()
         .items_center()
         .justify_between()
-        .gap(px(8.0))
+        .gap(px(SPACE_8))
         .child(
             // `flex_1` is load-bearing: without it this column has no flex
             // basis of its own, so the row's flex-shrink negotiation (this
@@ -368,20 +387,36 @@ fn config_path_row(
                 .flex()
                 .flex_col()
                 .min_w_0()
-                .gap(px(1.0))
+                .gap(px(SPACE_2))
                 .child(
                     div()
-                        .text_size(px(11.0))
-                        .text_color(theme.text_tertiary)
+                        .text_size(px(TEXT_SM))
+                        .text_color(theme.text_muted)
                         .child(label),
                 )
                 .child(
+                    // SPEC §6: paths take the bundled mono face. When the
+                    // file doesn't exist there's no path to show — the
+                    // caption below already says so in words — so this
+                    // renders a plain em dash rather than a real (but
+                    // nonexistent) path. `.truncate()` is deliberately
+                    // dropped for that case: gpui 0.2.2's ellipsis
+                    // truncation is unreliable (see the crate's other
+                    // hand-rolled truncation), and a single glyph has
+                    // nothing to truncate anyway — keeping `.truncate()`
+                    // on it risked the exact "…"-only rendering this row
+                    // used to show for a missing file.
                     div()
                         .min_w_0()
-                        .truncate()
-                        .text_size(px(11.5))
-                        .text_color(theme.text_secondary)
-                        .child(home_relative(&path)),
+                        .when(exists, |this| this.truncate())
+                        .font_family(ui::FONT_MONO)
+                        .text_size(px(TEXT_SM))
+                        .text_color(theme.text)
+                        .child(if exists {
+                            home_relative(&path)
+                        } else {
+                            "—".to_string()
+                        }),
                 )
                 .when(!exists, |this| this.child(dim_note(missing_note, theme))),
         )
@@ -427,16 +462,11 @@ fn relativize_to_home(path: &str, home: Option<&str>) -> String {
 // ---------------------------------------------------------------------
 
 fn render_shortcuts_section(theme: &Theme) -> impl IntoElement {
-    div()
-        .flex()
-        .flex_col()
-        .gap(px(6.0))
-        .child(section_label("Keyboard Shortcuts", theme))
-        .children(
-            crate::REGISTERED_BINDINGS
-                .iter()
-                .map(|entry| shortcut_row(entry, theme)),
-        )
+    div().flex().flex_col().gap(px(SPACE_6)).children(
+        crate::REGISTERED_BINDINGS
+            .iter()
+            .map(|entry| shortcut_row(entry, theme)),
+    )
 }
 
 fn shortcut_row(entry: &ShortcutMeta, theme: &Theme) -> impl IntoElement {
@@ -444,10 +474,10 @@ fn shortcut_row(entry: &ShortcutMeta, theme: &Theme) -> impl IntoElement {
         .flex()
         .items_center()
         .justify_between()
-        .gap(px(8.0))
+        .gap(px(SPACE_8))
         .child(
             div()
-                .text_size(px(12.0))
+                .text_size(px(TEXT_SM))
                 .text_color(theme.text)
                 .child(entry.label),
         )
@@ -458,21 +488,20 @@ fn shortcut_row(entry: &ShortcutMeta, theme: &Theme) -> impl IntoElement {
 // Small shared pieces
 // ---------------------------------------------------------------------
 
-fn section_label(label: &'static str, theme: &Theme) -> impl IntoElement {
-    div()
-        .text_size(px(12.5))
-        .font_weight(FontWeight::SEMIBOLD)
-        .text_color(theme.text_secondary)
-        .child(label)
-}
-
 fn dim_note(text: &'static str, theme: &Theme) -> impl IntoElement {
     div()
-        .text_size(px(11.0))
+        .text_size(px(TEXT_XS))
         .text_color(theme.text_ghost)
         .child(text)
 }
 
+/// SURFACES §4's fact-list treatment (a fixed label column, `text_muted` at
+/// `TEXT_SM`, full-strength `text` for the value) — written for the detail
+/// panel's own two-column facts, reused here since every row this renders
+/// (a path template, a ref name, a joined list of shell commands) is exactly
+/// that same shape. Every value is config-file content, so it takes
+/// [`ui::FONT_MONO`] across the board rather than picking case by case which
+/// of these reads as a "path" or a "ref".
 fn config_row(
     label: &'static str,
     value: impl Into<SharedString>,
@@ -481,13 +510,13 @@ fn config_row(
     div()
         .flex()
         .items_baseline()
-        .gap(px(10.0))
+        .gap(px(SPACE_8))
         .child(
             div()
                 .flex_none()
                 .w(px(130.0))
-                .text_size(px(11.5))
-                .text_color(theme.text_tertiary)
+                .text_size(px(TEXT_SM))
+                .text_color(theme.text_muted)
                 .child(label),
         )
         .child(
@@ -500,8 +529,9 @@ fn config_row(
             div()
                 .flex_1()
                 .min_w_0()
-                .text_size(px(12.0))
-                .text_color(theme.text_secondary)
+                .font_family(ui::FONT_MONO)
+                .text_size(px(TEXT_SM))
+                .text_color(theme.text)
                 .child(value.into()),
         )
 }
