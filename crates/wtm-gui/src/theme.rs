@@ -701,6 +701,35 @@ pub struct Theme {
     /// why this is `&'static str` rather than the `SharedString` the
     /// redesign report's task literally names.
     pub font_mono: &'static str,
+
+    // ---- keyboard focus ----
+    /// Whether `ui.rs`'s interactive components (`button`/`icon_button`/
+    /// `row`/`action_row`/`toolbar_button`/`segmented`) register themselves
+    /// as Tab stops. The one non-color field on this type — carried here,
+    /// not on `App`/`WtmApp`, purely because `&Theme` is already threaded
+    /// through every `ui::` component call, which is exactly the "component
+    /// layer, not 72 call sites" seam a real keyboard focus trap needs.
+    ///
+    /// Defaults to `true`. `app::WtmApp::render` sets a *copy* of `Theme`
+    /// with this forced to `false` for the background chrome (sidebar,
+    /// titlebar, worktree list, footer, detail panel) whenever
+    /// `self.overlay_open()` — a dialog, the settings sheet, the palette,
+    /// the context menu, or a confirmation is showing. gpui's own
+    /// `tab_group()` (used by `ui::modal_card`/`ui::modal_footer`) only
+    /// gives an open dialog's controls their own *local* tab-index
+    /// namespace; it does not stop `Window::focus_next`/`focus_prev` from
+    /// walking on into whatever else got painted this frame; verified
+    /// against `gpui-0.2.2/src/tab_stop.rs`'s `TabStopMap::next`/`prev`,
+    /// which just returns the next/previous tab stop in paint order with no
+    /// concept of containment. Since gpui always paints the shell behind an
+    /// open dialog (`app::mod::render`'s `deferred(overlay)` layers *on
+    /// top of*, not *instead of*, the sidebar/list/etc.), the only way to
+    /// keep Tab inside the dialog is to stop registering the shell's own
+    /// controls as tab stops for as long as it's covered — exactly what
+    /// this field does. The dialog/settings/palette/context-menu content
+    /// itself is rendered from its own `Theme::of(cx)` call (never copied
+    /// from the flipped one), so it keeps `tab_stops: true` throughout.
+    pub tab_stops: bool,
 }
 
 impl Theme {
@@ -795,6 +824,8 @@ impl Theme {
 
             font_sans: FONT_SANS_DEFAULT,
             font_mono: FONT_MONO_DEFAULT,
+
+            tab_stops: true,
         }
     }
 
@@ -894,6 +925,8 @@ impl Theme {
 
             font_sans: FONT_SANS_DEFAULT,
             font_mono: FONT_MONO_DEFAULT,
+
+            tab_stops: true,
         }
     }
 

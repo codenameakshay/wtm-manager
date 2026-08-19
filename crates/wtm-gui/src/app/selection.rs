@@ -247,6 +247,33 @@ impl WtmApp {
         self.select(prev, cx);
     }
 
+    /// Move keyboard focus to the next Tab stop (`FocusNext`'s doc explains
+    /// why this binding has to be added by hand — gpui-0.2.2 has the
+    /// machinery but no default keymap entry for it). No `overlay_open()`
+    /// guard needed the way `on_select_next` above has one:
+    /// `Theme::tab_stops` (see its doc) already keeps the background
+    /// shell's own controls out of the tab order while a dialog covers it,
+    /// so `Window::focus_next` naturally stays within whichever overlay is
+    /// open without this handler needing to know that.
+    pub(super) fn on_focus_next(
+        &mut self,
+        _: &FocusNext,
+        window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) {
+        window.focus_next();
+    }
+
+    /// Shift-Tab counterpart to [`Self::on_focus_next`].
+    pub(super) fn on_focus_prev(
+        &mut self,
+        _: &FocusPrev,
+        window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) {
+        window.focus_prev();
+    }
+
     // -------------------------------------------------------------
     // Sorting
     // -------------------------------------------------------------

@@ -39,6 +39,16 @@ notify-debouncer-full = "0.7.0"
 # through the same serde versions those use.
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
+# Grapheme-cluster-aware truncation (`detail_panel::truncate_tail`/
+# `truncate_path_tail`): git permits emoji, CJK, and combining accents in
+# branch names and paths, and those can span multiple `char`s per rendered
+# glyph (a base letter plus a combining accent, an emoji plus a variation
+# selector or ZWJ). Truncating by `.chars()` alone (the previous
+# implementation) never panics — `char` boundaries are always safe to slice
+# on — but it can still cut a grapheme cluster in half, leaving a bare
+# combining mark or a broken emoji on screen. Already resolved transitively
+# (gpui pulls it in), so this adds no new crate to the dependency tree.
+unicode-segmentation = "1.13"
 
 [dev-dependencies]
 tempfile = "3.27.0"

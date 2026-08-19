@@ -451,7 +451,13 @@ impl WtmApp {
         // `Secondary`, the commit action is `Danger`, and that's the only
         // fill in the view (SURFACES §7 / COMPONENTS.md's button hierarchy).
         let mut footer = ui::modal_footer(theme).child(
+            // `.track_focus` — not the internal auto-tab_index handle
+            // `ui::button` gives it — so `open_remove_dialog_for` can
+            // `window.focus(&self.dialog_safe_focus)` on open: this dialog
+            // has no text field, so Cancel (never the destructive Remove
+            // button) is where focus lands.
             ui::button("remove-cancel", "Cancel", ButtonVariant::Secondary, theme)
+                .track_focus(&self.dialog_safe_focus)
                 .on_click(cx.listener(|this, _, window, cx| this.close_dialog(window, cx))),
         );
         if !is_main {
@@ -547,7 +553,11 @@ impl WtmApp {
             })
             .child({
                 let footer = ui::modal_footer(theme).child(
+                    // Same `track_focus`/`dialog_safe_focus` pairing as
+                    // the Remove dialog's own Cancel button — see its
+                    // comment.
                     ui::button("prune-cancel", "Cancel", ButtonVariant::Secondary, theme)
+                        .track_focus(&self.dialog_safe_focus)
                         .on_click(cx.listener(|this, _, window, cx| this.close_dialog(window, cx))),
                 );
                 let confirm = ui::button("prune-confirm", "Prune", ButtonVariant::Danger, theme);
@@ -671,12 +681,15 @@ impl WtmApp {
         body = body.child(destructive_count_line(count, "remove", theme));
 
         let footer = ui::modal_footer(theme).child(
+            // Same `track_focus`/`dialog_safe_focus` pairing as the Remove
+            // dialog's own Cancel button — see its comment.
             ui::button(
                 "bulk-remove-cancel",
                 "Cancel",
                 ButtonVariant::Secondary,
                 theme,
             )
+            .track_focus(&self.dialog_safe_focus)
             .on_click(cx.listener(|this, _, window, cx| this.close_dialog(window, cx))),
         );
         let confirm = ui::button(

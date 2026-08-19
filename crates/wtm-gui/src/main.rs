@@ -114,6 +114,13 @@ key_bindings! {
     "cmd-f", app::FocusFilter, Some("WtmApp"), "⌘F", "Filter Worktrees";
     "cmd-shift-o", app::AddRepository, Some("WtmApp"), "⌘⇧O", "Add Repository";
     "cmd-e", app::RunCommand, Some("WtmApp"), "⌘E", "Run Command";
+    // gpui-0.2.2 ships the tab-stop machinery (`Window::focus_next`/
+    // `focus_prev`, `elements/div.rs`'s `tab_stop`/`tab_index`/
+    // `tab_group`) but binds no key to it (verified: no default keymap
+    // anywhere in the vendored source) — these two entries are what make
+    // Tab/Shift-Tab actually move focus. See `app::FocusNext`'s doc.
+    "tab", app::FocusNext, Some("WtmApp"), "⇥", "Focus Next Control";
+    "shift-tab", app::FocusPrev, Some("WtmApp"), "⇧⇥", "Focus Previous Control";
 }
 
 /// The default window size and position, used when no saved frame exists or

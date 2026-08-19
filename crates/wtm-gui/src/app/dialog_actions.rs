@@ -61,12 +61,12 @@ impl WtmApp {
     pub(super) fn on_remove_selected(
         &mut self,
         _: &RemoveSelected,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let indices = self.selected_indices();
         if indices.len() > 1 {
-            self.open_bulk_remove_dialog(indices, cx);
+            self.open_bulk_remove_dialog(indices, window, cx);
             return;
         }
         let Some(&ix) = indices.first() else {
@@ -75,13 +75,23 @@ impl WtmApp {
         let Some(info) = self.rows.get(ix).cloned() else {
             return;
         };
-        self.open_remove_dialog_for(info, cx);
+        self.open_remove_dialog_for(info, window, cx);
     }
 
     /// Open the remove-worktree confirmation for `info`. Shared by the ⌘⌫
     /// binding (which resolves `info` from `self.selected`) and a worktree
     /// row's context menu (which resolves it from the right-clicked path).
-    pub(super) fn open_remove_dialog_for(&mut self, info: WorktreeInfo, cx: &mut Context<Self>) {
+    ///
+    /// This dialog has no text field, so per COMPONENTS.md's modal-focus-
+    /// management requirement, focus lands on `self.dialog_safe_focus`
+    /// (tracked by the Cancel button in `dialog_forms::render_remove_dialog`)
+    /// — the safe action, never the destructive `Remove` button.
+    pub(super) fn open_remove_dialog_for(
+        &mut self,
+        info: WorktreeInfo,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.overlay_open() {
             return;
         }
@@ -90,13 +100,17 @@ impl WtmApp {
         };
         let state = RemoveState::new(info, &repo.config.prune.protected_branches);
         self.dialog = Some(Dialog::Remove(state));
+        window.focus(&self.dialog_safe_focus);
         cx.notify();
     }
 
+    /// This dialog has no text field either — see `open_remove_dialog_for`'s
+    /// doc on why focus lands on `self.dialog_safe_focus` (Cancel) rather
+    /// than the destructive `Prune` button.
     pub(super) fn on_prune_repo(
         &mut self,
         _: &PruneRepo,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if self.overlay_open() {
@@ -110,6 +124,7 @@ impl WtmApp {
         let mut state = PruneState::new();
         state.recompute(&repo, &self.rows);
         self.dialog = Some(Dialog::Prune(state));
+        window.focus(&self.dialog_safe_focus);
         cx.notify();
     }
 
@@ -974,7 +989,15 @@ impl WtmApp {
     /// safety filter `wtm prune`'s own candidate selection does (never the
     /// main worktree, never a protected branch), so a selection made up
     /// entirely of those can legitimately produce nothing to confirm.
-    fn open_bulk_remove_dialog(&mut self, indices: Vec<usize>, cx: &mut Context<Self>) {
+    ///
+    /// No text field here either — see `open_remove_dialog_for`'s doc on
+    /// why focus lands on `self.dialog_safe_focus` (Cancel).
+    fn open_bulk_remove_dialog(
+        &mut self,
+        indices: Vec<usize>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.overlay_open() {
             return;
         }
@@ -995,6 +1018,7 @@ impl WtmApp {
             return;
         }
         self.bulk_remove = Some(BulkRemoveState::new(candidates));
+        window.focus(&self.dialog_safe_focus);
         cx.notify();
     }
 

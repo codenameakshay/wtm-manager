@@ -390,7 +390,7 @@ impl WtmApp {
             }
             "remove" => {
                 if let Some(info) = self.rows.iter().find(|row| row.path == path).cloned() {
-                    self.open_remove_dialog_for(info, cx);
+                    self.open_remove_dialog_for(info, window, cx);
                 }
             }
             _ => {}

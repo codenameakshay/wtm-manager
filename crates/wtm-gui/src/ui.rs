@@ -202,6 +202,13 @@ pub fn row(id: impl Into<gpui::ElementId>, selected: bool, theme: &Theme) -> Sta
         .cursor_default()
         .when(selected, |this| this.bg(theme.element_active))
         .when(!selected, |this| this.hover(|s| s.bg(theme.element_hover)))
+        // Keyboard focus (COMPONENTS.md: `row` is the base of every
+        // selectable row, and rows are 3 of the 72 `on_click`-only, never-
+        // reachable-by-Tab sites the redesign audit flagged). Gated on
+        // `theme.tab_stops` — see that field's doc — so this stays out of
+        // the tab order for the background shell while a dialog covers it.
+        .when(theme.tab_stops, |this| this.tab_index(0))
+        .focus(focus_ring(theme))
         .child(bar);
 
     press_feedback(styled, theme)
@@ -231,6 +238,8 @@ pub fn action_row(
         .rounded(px(RADIUS_ROW))
         .cursor_default()
         .hover(|this| this.bg(theme.element_hover))
+        .when(theme.tab_stops, |this| this.tab_index(0))
+        .focus(focus_ring(theme))
         .child(icon(path, 15.0, theme.text_muted))
         .child(
             div()
@@ -487,6 +496,8 @@ pub fn button(
         .text_size(px(TEXT_BASE))
         .text_color(text_color)
         .hover(move |this| this.bg(bg_hover))
+        .when(theme.tab_stops, |this| this.tab_index(0))
+        .focus(focus_ring(theme))
         .child(label.into());
 
     button_press(styled, variant, bg, theme)
@@ -509,6 +520,8 @@ pub fn icon_button(
         .rounded(px(RADIUS_CONTROL))
         .cursor_default()
         .hover(|this| this.bg(theme.element_hover))
+        .when(theme.tab_stops, |this| this.tab_index(0))
+        .focus(focus_ring(theme))
         .child(icon(path, 14.0, theme.text_muted));
 
     press_feedback(styled, theme)
@@ -616,6 +629,8 @@ pub fn toolbar_button(
         .text_size(px(TEXT_BASE))
         .text_color(text_color)
         .hover(move |this| this.bg(bg_hover))
+        .when(theme.tab_stops, |this| this.tab_index(0))
+        .focus(focus_ring(theme))
         .child(icon(icon_path, 14.0, text_color))
         .child(label.into());
 
@@ -663,6 +678,13 @@ pub fn segmented<T: Clone + PartialEq + 'static>(
         .gap(px(SPACE_2))
         .rounded(px(RADIUS_CONTROL))
         .bg(theme.surface_inset)
+        // Its own local tab-index namespace (gpui-0.2.2's `tab_group()`,
+        // `elements/div.rs`), so each segment's `tab_index(0..options.len())`
+        // below orders the segments relative to *each other* only, and the
+        // whole control still occupies a single slot (`tab_index(0)`, the
+        // default `tab_group` gives itself) among its siblings — the same
+        // convention every other component in this file uses.
+        .tab_group()
         .children(options.iter().enumerate().map(|(index, (value, label))| {
             let is_selected = value == selected;
             let value = value.clone();
@@ -685,6 +707,8 @@ pub fn segmented<T: Clone + PartialEq + 'static>(
                     this.text_color(theme.text_muted)
                         .hover(|s| s.bg(theme.element_hover))
                 })
+                .when(theme.tab_stops, |this| this.tab_index(index as isize))
+                .focus(focus_ring(theme))
                 .child(label.to_string())
                 .on_click(move |_event, window, cx| on_select(&value, window, cx))
         }))
@@ -775,6 +799,14 @@ pub fn modal_card(width: f32, theme: &Theme) -> Div {
         .border_color(theme.border_strong)
         .rounded(px(RADIUS_DIALOG))
         .shadow(theme.shadow_dialog())
+        // Its own tab-index namespace (gpui-0.2.2's `tab_group()`), so Tab
+        // inside an open dialog cycles the card's own fields/toggles/footer
+        // buttons in paint order without interleaving with whatever's
+        // painted at the same nesting depth elsewhere in the tree. This is
+        // ordering only, not containment — see `Theme::tab_stops`'s doc for
+        // how the background shell is actually kept out of the tab order
+        // while a dialog covers it.
+        .tab_group()
 }
 
 /// A modal's title, with an optional supporting line beneath it.
@@ -822,6 +854,10 @@ pub fn modal_footer(theme: &Theme) -> Div {
         .py(px(SPACE_12))
         .border_t_1()
         .border_color(theme.border)
+        // Its own tab-index namespace, same reasoning as `modal_card`'s own
+        // `.tab_group()` — keeps Cancel/Create (or Cancel/Remove, etc.)
+        // ordered as one self-contained unit within the dialog's tab order.
+        .tab_group()
 }
 
 // ---------------------------------------------------------------------------

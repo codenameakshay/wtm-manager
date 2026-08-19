@@ -28,7 +28,7 @@ const ROW_CHECKBOX_SIZE: f32 = 15.0;
 impl WtmApp {
     /// The sidebar: window controls clearance, actions, then the repo list.
     pub(super) fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = Theme::of(cx);
+        let theme = self.chrome_theme(cx);
         let active_path = self.active.as_ref().map(|r| r.path().to_path_buf());
 
         div()
@@ -257,7 +257,7 @@ impl WtmApp {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let theme = Theme::of(cx);
+        let theme = self.chrome_theme(cx);
         let title = self
             .active
             .as_ref()
@@ -504,7 +504,7 @@ impl WtmApp {
             // `render_header`'s "0 worktrees" (built for a confirmed empty
             // count, not an unknown one) and `render_empty`'s "No worktrees
             // yet" equally assert a fact this app doesn't have yet.
-            let theme = Theme::of(cx);
+            let theme = self.chrome_theme(cx);
             return div()
                 .flex_1()
                 .flex()
@@ -527,7 +527,7 @@ impl WtmApp {
                 .into_any_element();
         }
 
-        let theme = Theme::of(cx);
+        let theme = self.chrome_theme(cx);
         let visible = self.visible_row_indices(cx);
         let shown = visible.len();
         let total = self.rows.len();
@@ -728,7 +728,7 @@ impl WtmApp {
                             shown,
                             cx.processor(|this, range: std::ops::Range<usize>, window, cx| {
                                 let visible = this.visible_row_indices(cx);
-                                let theme = Theme::of(cx);
+                                let theme = this.chrome_theme(cx);
                                 // Computed once per visible range rather
                                 // than once per row: every row's age is
                                 // relative to the same "now", and a fresh
@@ -787,7 +787,7 @@ impl WtmApp {
                                                     this.awaiting_status,
                                                     age,
                                                     card_width,
-                                                    cx,
+                                                    &theme,
                                                 )
                                                 .flex_1()
                                                 .min_w_0()
@@ -1004,7 +1004,7 @@ impl WtmApp {
     /// right, in the spirit of a status line that never shouts (SURFACES
     /// §5: "ambient information — it must never out-shout the list").
     pub(super) fn render_footer(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = Theme::of(cx);
+        let theme = self.chrome_theme(cx);
 
         div()
             .h(px(theme::FOOTER_HEIGHT))
@@ -1138,7 +1138,7 @@ impl WtmApp {
         let Some(info) = self.selected.and_then(|ix| self.rows.get(ix)) else {
             return div().into_any_element();
         };
-        let theme = Theme::of(cx);
+        let theme = self.chrome_theme(cx);
         let width = self.detail_panel_width();
         let worktree_path = info.path.clone();
 

@@ -429,9 +429,19 @@ pub fn render_row(
     awaiting_status: bool,
     age: Option<String>,
     card_width: f32,
-    cx: &App,
+    theme: &Theme,
 ) -> Stateful<Div> {
-    let theme = Theme::of(cx);
+    // Takes `&Theme` directly rather than resolving `Theme::of(cx)` itself
+    // (as this used to): `app::chrome::render_list`'s `uniform_list`
+    // processor already computes `self.chrome_theme(cx)` once per visible
+    // range — the copy with `Theme::tab_stops` forced to `false` while a
+    // dialog covers the list (see that field's doc). Calling `Theme::of(cx)`
+    // in here instead silently discarded that and let a row underneath an
+    // open dialog keep registering as a real Tab stop — caught by hand
+    // during this phase's keyboard-navigation pass: Tab from a Prune
+    // dialog's last control landed on the first worktree row instead of
+    // wrapping back inside the dialog.
+    let theme = *theme;
 
     // `ui::row` applies its own `SPACE_8` padding on both edges before
     // either line's content starts.

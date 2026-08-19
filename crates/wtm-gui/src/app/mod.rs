@@ -156,6 +156,14 @@ actions!(
         /// Open the selected worktree's branch on its remote host (GitHub/
         /// GitLab/Bitbucket) in the system browser.
         OpenRemote,
+        /// Move keyboard focus to the next Tab stop. gpui-0.2.2 ships the
+        /// tab-stop machinery (`Window::focus_next`, `elements/div.rs`'s
+        /// `tab_stop`/`tab_index`/`tab_group`) but binds no key to it — see
+        /// `main.rs`'s `key_bindings!` entry for this action.
+        FocusNext,
+        /// Move keyboard focus to the previous Tab stop — the Shift-Tab
+        /// counterpart to [`FocusNext`].
+        FocusPrev,
     ]
 );
 
@@ -237,6 +245,17 @@ pub struct WtmApp {
     generation: u64,
     loading: bool,
     focus_handle: FocusHandle,
+    /// Where focus lands when a confirmation dialog with no text field
+    /// opens (Remove, Prune, and the bulk-remove confirmation) — the
+    /// Cancel button in each, per COMPONENTS.md's modal-focus-management
+    /// requirement: "the safe/cancel action — never the destructive one."
+    /// One shared handle rather than a field on each of `RemoveState`/
+    /// `PruneState`/`BulkRemoveState`: `overlay_open` already guarantees at
+    /// most one of those is ever showing, so there is never a collision,
+    /// and keeping it here means `dialogs.rs`'s state constructors (and
+    /// their existing plain, `cx`-free unit tests) don't need to grow a
+    /// `Context<WtmApp>` parameter just to mint a `FocusHandle`.
+    dialog_safe_focus: FocusHandle,
     /// The one modal dialog that may be open at a time — see
     /// [`crate::dialogs::Dialog`].
     dialog: Option<Dialog>,
@@ -372,6 +391,7 @@ impl WtmApp {
             generation: 0,
             loading: false,
             focus_handle: cx.focus_handle(),
+            dialog_safe_focus: cx.focus_handle().tab_stop(true).tab_index(0),
             dialog: None,
             pending_select: None,
             watcher: None,
@@ -444,6 +464,31 @@ impl WtmApp {
             || self.palette.is_some()
             || self.bulk_remove.is_some()
             || self.run_command.is_some()
+    }
+
+    /// `Theme::of(cx)` for the background shell specifically — the
+    /// sidebar, title bar, worktree list, and detail panel (`chrome.rs`'s
+    /// `render_sidebar`/`render_titlebar`/`render_list`/`render_footer`/
+    /// `render_detail_panel`). Forces [`Theme::tab_stops`] to `false`
+    /// whenever [`Self::overlay_open`], so Tab/Shift-Tab can't walk out of
+    /// an open dialog into the shell painted behind it; see that field's
+    /// doc for why gpui's own `tab_group()` alone can't do this. Every
+    /// overlay's own render path (`render_dialog`, `settings::render`,
+    /// `render_palette`, `render_bulk_remove_dialog`,
+    /// `render_run_command_dialog`, `ContextMenu::render`) must keep
+    /// calling `Theme::of(cx)` directly instead — routing an overlay's own
+    /// content through this method would make its own controls
+    /// unreachable by Tab too.
+    fn chrome_theme(&self, cx: &App) -> Theme {
+        let theme = Theme::of(cx);
+        if self.overlay_open() {
+            Theme {
+                tab_stops: false,
+                ..theme
+            }
+        } else {
+            theme
+        }
     }
 }
 
@@ -554,6 +599,8 @@ impl Render for WtmApp {
             .on_action(cx.listener(Self::on_fetch_remote))
             .on_action(cx.listener(Self::on_run_command))
             .on_action(cx.listener(Self::on_open_remote))
+            .on_action(cx.listener(Self::on_focus_next))
+            .on_action(cx.listener(Self::on_focus_prev))
             .size_full()
             .flex()
             .text_color(theme.text)

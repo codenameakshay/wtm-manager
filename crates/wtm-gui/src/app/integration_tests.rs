@@ -793,7 +793,9 @@ fn remove_deletes_clean_worktree_from_disk(cx: &mut TestAppContext) {
             .unwrap()
     });
 
-    view.update_in(cx, |app, _window, cx| app.open_remove_dialog_for(info, cx));
+    view.update_in(cx, |app, window, cx| {
+        app.open_remove_dialog_for(info, window, cx)
+    });
     view.read_with(cx, |app, _| {
         let Some(Dialog::Remove(state)) = &app.dialog else {
             panic!("remove dialog must be open");
@@ -836,8 +838,8 @@ fn remove_refuses_main_worktree(cx: &mut TestAppContext) {
         app.rows.iter().find(|r| r.is_main).cloned().unwrap()
     });
 
-    view.update_in(cx, |app, _window, cx| {
-        app.open_remove_dialog_for(main_info, cx)
+    view.update_in(cx, |app, window, cx| {
+        app.open_remove_dialog_for(main_info, window, cx)
     });
     view.read_with(cx, |app, _| {
         let Some(Dialog::Remove(state)) = &app.dialog else {
@@ -881,7 +883,9 @@ fn remove_dirty_worktree_requires_force(cx: &mut TestAppContext) {
     });
     assert!(info.status.as_ref().unwrap().dirty);
 
-    view.update_in(cx, |app, _window, cx| app.open_remove_dialog_for(info, cx));
+    view.update_in(cx, |app, window, cx| {
+        app.open_remove_dialog_for(info, window, cx)
+    });
     view.read_with(cx, |app, _| {
         let Some(Dialog::Remove(state)) = &app.dialog else {
             panic!("remove dialog must be open");

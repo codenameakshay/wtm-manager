@@ -25,6 +25,7 @@
 
 use gpui::prelude::*;
 use gpui::{div, px, AnyElement, FontWeight, SharedString};
+use unicode_segmentation::UnicodeSegmentation;
 use wtm::model::WorktreeInfo;
 use wtm::worktree::{CommitLine, WorktreeDetails};
 
@@ -592,13 +593,23 @@ fn remote_name(upstream: Option<&str>) -> Option<String> {
 /// the app (a worktree row's path, a sidebar repo's path) instead of each
 /// hand-rolling the same leading-ellipsis logic — see `LABEL_WIDTH`'s doc
 /// for why gpui's own `.truncate()` isn't what does this job.
+///
+/// Counts and slices by **extended grapheme cluster**
+/// ([`UnicodeSegmentation::graphemes`]), not `char`: git permits combining
+/// accents and emoji (including multi-scalar ones) in paths, and slicing by
+/// `char` — while never a panic, `char` boundaries are always valid UTF-8
+/// slice points — can still cut a base character apart from its combining
+/// mark, or split a multi-codepoint emoji, leaving a broken glyph on
+/// screen. Grapheme clusters are the smallest unit that's always safe to
+/// cut between.
 pub(crate) fn truncate_path_tail(path: &str, max_chars: usize) -> String {
-    let len = path.chars().count();
+    let graphemes: Vec<&str> = path.graphemes(true).collect();
+    let len = graphemes.len();
     if len <= max_chars {
         return path.to_string();
     }
     let tail_len = max_chars.saturating_sub(1); // room for the leading ellipsis
-    let tail: String = path.chars().skip(len - tail_len).collect();
+    let tail: String = graphemes[len - tail_len..].concat();
     format!("…{tail}")
 }
 
@@ -612,13 +623,17 @@ pub(crate) fn truncate_path_tail(path: &str, max_chars: usize) -> String {
 /// `pub(crate)` (rather than private) so `worktree_list::render_row` can
 /// reuse it for the branch name — same trailing-ellipsis shape, same reason
 /// — instead of a second copy of this exact logic.
+///
+/// Grapheme-cluster-safe, for the same reason [`truncate_path_tail`] is —
+/// see its doc.
 pub(crate) fn truncate_tail(s: &str, max_chars: usize) -> String {
-    let len = s.chars().count();
+    let graphemes: Vec<&str> = s.graphemes(true).collect();
+    let len = graphemes.len();
     if len <= max_chars {
         return s.to_string();
     }
     let head_len = max_chars.saturating_sub(1); // room for the trailing ellipsis
-    let head: String = s.chars().take(head_len).collect();
+    let head: String = graphemes[..head_len].concat();
     format!("{head}…")
 }
 
@@ -736,6 +751,111 @@ mod tests {
         assert_eq!(out.chars().count(), 24);
         assert!(out.starts_with('…'));
         assert!(out.ends_with("feature-branch"));
+    }
+
+    // -------------------------------------------------------------
+    // Unicode edge cases (git permits emoji, CJK, and combining accents in
+    // branch names and paths) — the truncation helpers must never panic on
+    // a non-char-boundary slice, and must never split an extended grapheme
+    // cluster (a base character plus its combining mark, or a multi-scalar
+    // emoji) across the truncation point.
+    // -------------------------------------------------------------
+
+    #[test]
+    fn truncate_tail_does_not_panic_or_split_a_wide_emoji_branch_name() {
+        // Each of these is one grapheme cluster: a plain emoji, a
+        // multi-codepoint family emoji (ZWJ sequence), and a flag (regional
+        // indicator pair) — none of these are single `char`s, so a naive
+        // byte-index or char-index cut through the middle would either
+        // panic (byte) or emit a broken/partial glyph (char).
+        let branch = "feature/🔥🔥🔥🔥🔥-launch-👨‍👩‍👧‍👦-🇯🇵-rollout";
+        for budget in 0..=branch.chars().count() {
+            let out = truncate_tail(branch, budget);
+            // Must always be valid UTF-8 (guaranteed by the type) and must
+            // never contain fewer grapheme clusters than it claims to.
+            assert!(out.graphemes(true).count() <= budget.max(1));
+            // Never emits a lone combining/joiner artifact: every grapheme
+            // in the output is one of the source's own intact clusters, or
+            // the ellipsis we added ourselves.
+            for g in out.graphemes(true) {
+                assert!(g == "…" || branch.graphemes(true).any(|src| src == g));
+            }
+        }
+    }
+
+    #[test]
+    fn truncate_tail_does_not_panic_on_cjk_branch_names() {
+        // Every CJK ideograph below is one grapheme cluster and 3 bytes in
+        // UTF-8 — a byte-index cut anywhere but a multiple of 3 would panic
+        // on this input under the old `.chars()`-unaware approach this
+        // guards against regressing to.
+        let branch = "功能/日本語のブランチ名はとても長くなることがあります";
+        for budget in 0..=branch.chars().count() + 2 {
+            let out = truncate_tail(branch, budget);
+            assert!(out.graphemes(true).count() <= budget.max(1));
+        }
+    }
+
+    #[test]
+    fn truncate_tail_keeps_combining_accents_attached_to_their_base_char() {
+        // "e" + U+0301 COMBINING ACUTE ACCENT is two `char`s but one
+        // grapheme cluster ("é"). A `.chars()`-based truncation could stop
+        // between them, leaving a bare accent mark on screen.
+        let branch = "cafe\u{301}-e\u{301}toile\u{301}-branch";
+        let cluster_count = branch.graphemes(true).count();
+        for budget in 0..=cluster_count + 2 {
+            let out = truncate_tail(branch, budget);
+            // Every grapheme in the truncated output must be a complete,
+            // intact cluster from the source (or the ellipsis) — never a
+            // bare base character or a bare combining mark.
+            for g in out.graphemes(true) {
+                assert!(
+                    g == "…" || branch.graphemes(true).any(|src| src == g),
+                    "grapheme {g:?} in output was not an intact cluster from {branch:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn truncate_path_tail_keeps_combining_accents_attached_at_the_leading_edge() {
+        // Same guarantee as `truncate_tail`'s combining-accent case, but for
+        // the leading-ellipsis path variant, which slices from the front
+        // instead of the back.
+        let path = "/répertoire/e\u{301}toile\u{301}/projet";
+        let cluster_count = path.graphemes(true).count();
+        for budget in 0..=cluster_count + 2 {
+            let out = truncate_path_tail(path, budget);
+            for g in out.graphemes(true) {
+                assert!(
+                    g == "…" || path.graphemes(true).any(|src| src == g),
+                    "grapheme {g:?} in output was not an intact cluster from {path:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn truncate_tail_handles_a_very_long_branch_name() {
+        // 100+ chars: a pathological but real branch name (e.g. a
+        // ticket-system-generated slug).
+        let branch = "feature/".to_string() + &"a".repeat(150);
+        let out = truncate_tail(&branch, 24);
+        assert_eq!(out.chars().count(), 24);
+        assert!(out.ends_with('…'));
+    }
+
+    #[test]
+    fn truncate_tail_handles_a_one_character_branch_name() {
+        assert_eq!(truncate_tail("a", 24), "a");
+        assert_eq!(truncate_tail("a", 0), "…");
+        assert_eq!(truncate_tail("🔥", 0), "…");
+    }
+
+    #[test]
+    fn truncate_path_tail_handles_a_one_character_path() {
+        assert_eq!(truncate_path_tail("a", 24), "a");
+        assert_eq!(truncate_path_tail("a", 0), "…");
     }
 
     #[test]
