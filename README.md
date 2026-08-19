@@ -189,23 +189,30 @@ Repository…" row in the sidebar's empty state — any of the three opens a
 native folder picker; pick a git repository and it's added to the sidebar
 and opened.
 
-**What it does:** a sidebar of every repository you've opened (most
-recent first), a worktree list with live status — sortable by Name,
-Recent, or Status, each row showing its last-commit age, main always
-pinned first — that stays current via a filesystem watcher without a
+**What it does:** a sidebar of every repository you've opened (sorted
+alphabetically, and stable — it doesn't reorder itself when you select a
+repo), a worktree list with live status — sortable by Name, Recent, or
+Status, each row showing its last-commit age and a dirty file count, main
+always pinned first — that stays current via a filesystem watcher without a
 manual reload, create/remove/prune dialogs, a Fetch button/`⌘⇧F` that runs
 `git fetch --prune` and refreshes ahead/behind counts and "upstream gone"
 detection, a detail panel with Details/Files/Changes tabs (upstream, path,
 HEAD, dirty files, recent commits; a gitignore-aware file tree; an inline
-diff of uncommitted changes), a searchable base-ref picker for new
-worktrees (local and remote-tracking refs, tagged `current`/`default`/
+diff of uncommitted changes) that auto-collapses on narrow windows and
+restores itself once there's room again, a searchable base-ref picker for
+new worktrees (local and remote-tracking refs, tagged `current`/`default`/
 `worktree`/`remote`), running an arbitrary command in a worktree with live
 streamed output and per-repository recent-command suggestions (`⌘E`),
 opening a worktree's branch on its GitHub/GitLab/Bitbucket remote, a ⌘K
 command palette with fuzzy search over worktrees and actions,
 type-to-filter, multi-select (shift/⌘-click or a row checkbox) with bulk
-remove, right-click context menus covering the full action set, and a
-settings sheet. See [`docs/app.md`](docs/app.md) for the full guide.
+remove, right-click context menus covering the full action set, full
+keyboard navigation (Tab with a visible focus ring; dialogs trap Tab
+instead of leaking focus to the app behind them), empty states that offer
+their next action directly (e.g. "Add Repository…") instead of just
+describing what's missing, and a settings sheet (appearance, a **Reduce
+motion** toggle, the terminal in use, effective config, and the keyboard
+shortcut table). See [`docs/app.md`](docs/app.md) for the full guide.
 
 <p align="center">
   <img src="assets/app-palette.png" alt="wtm's ⌘K command palette open over the main window, listing Worktrees (main, and other checked-out branches) and Commands (New Worktree, Remove Worktree, Prune…, Reload, Open in Editor, Open in Terminal) each with their keyboard shortcut" width="840">

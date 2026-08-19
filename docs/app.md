@@ -17,9 +17,16 @@ The app never talks to git directly and never rewrites `.worktree.toml` or
 
 ## Sidebar and repositories
 
-The sidebar lists every repository you've opened in the app, most recently
-opened first, backed by a registry at `~/.config/wtm/repos.json`
-(`src/registry.rs`). This is a convenience cache, not a source of truth:
+The sidebar lists every repository you've opened in the app, sorted
+alphabetically by name (case-insensitive, path as a tie-break), backed by a
+registry at `~/.config/wtm/repos.json` (`src/registry.rs`). It used to sort
+most-recently-opened first — the same order the registry itself returns,
+which the CLI still uses to pick a default repo at launch — but that meant
+selecting a sidebar entry could jump it to the top under the user's cursor, a
+navigation list rearranging itself because you used it. The sidebar now
+sorts its own copy instead; `last_opened` is still recorded and still picks
+the repo a fresh window opens, only the sidebar's *display* order stopped
+following it. This is a convenience cache, not a source of truth:
 worktrees are always discovered fresh from git's own registry, the same way
 the CLI does it. A missing, corrupt, or unreadable registry file just means
 an empty sidebar, never a startup failure.
@@ -64,6 +71,14 @@ add`) is debounced into a single refresh.
 Watching can fail — a platform watch-descriptor limit, a permissions error —
 and that's never surfaced as an error message: it just means live refresh is
 unavailable for that repository and ⌘R keeps working normally.
+
+**Dirty counts.** A dirty row's status pill reads the exact count of dirty
+files (`3 dirty`) rather than just the word "dirty" — the same
+`worktree_list::dirty_pill_label` wording the detail panel's status pills
+use, so the list and the panel never disagree about what "N dirty" means.
+The count comes from `WorktreeStatus::dirty_count`, which `wtm list --json`
+also exposes as its own `dirty_count` field alongside the existing `dirty`
+boolean.
 
 The list toolbar carries labeled New Worktree and Prune… buttons above the
 rows — the same actions ⌘N/⌘⇧P and the command palette already reach, made
@@ -149,6 +164,17 @@ same safety-filtered candidate list the Prune dialog uses.
 Toggled with ⌘I: three tabs — Details, Files, Changes (⌘1/⌘2/⌘3) — for the
 selected worktree. The panel is 320px wide on Details and widens to 640px
 on Files/Changes, since a diff in a 320px column isn't one anyone can read.
+
+**Auto-collapse.** Below 860px wide the panel can no longer sit next to the
+sidebar without squeezing the worktree list unusably narrow, so it
+auto-collapses (`app::layout::detail_panel_should_show`); it comes back on
+its own once the window widens past that breakpoint again. This never
+touches the user's own open/closed preference (⌘I, persisted in `Prefs`) —
+a pane the width hid is still a pane the user asked for — and explicitly
+reopening it while still narrow is honored rather than immediately
+re-collapsed on the next frame. The Files/Changes tabs' wider 640px panel
+has its own, higher breakpoint (1180px, the app's own default window width)
+for the same reason.
 
 **Details** shows upstream, path, HEAD, dirty files, and recent commits —
 the same facts the TUI's right-hand pane shows. Loaded in the background per
@@ -249,6 +275,30 @@ doing nothing — is to collapse a multi-selection back to its anchor row;
 that's the one thing Escape falls through to, since it's non-destructive,
 consistent with Escape never falling through to anything that isn't.
 
+## Keyboard navigation
+
+Tab moves focus through the app's interactive controls — buttons, rows,
+action rows, toolbar buttons, segmented controls — with a visible focus
+ring (`ui::focus_ring`: a 2px border in the theme's accent color, not just
+whatever the OS's own hidden default happens to be). Whether a component
+registers as a Tab stop at all is a single `Theme::tab_stops` flag threaded
+through `ui.rs`'s component layer, rather than something decided
+separately at each of its call sites.
+
+**Dialogs trap Tab.** When a dialog, the settings sheet, the command
+palette, or a context menu is open, `app::WtmApp::render` paints the
+background shell (sidebar, titlebar, worktree list, footer, detail panel)
+from a *copy* of `Theme` with `tab_stops` forced to `false`, so none of it
+is reachable by Tab while it's covered. gpui's own `tab_group()` (used by
+`ui::modal_card`/`ui::modal_footer`) only gives an open dialog's controls
+their own local tab-index namespace — it doesn't stop `Window::focus_next`/
+`focus_prev` from walking on past them into whatever else got painted that
+frame, since gpui always paints the shell behind an open dialog rather than
+instead of it. Flipping the shell's own `tab_stops` off is what actually
+keeps Tab inside the overlay. The overlay's own content always renders from
+its own live `Theme::of(cx)`, never the flipped copy, so it keeps normal tab
+stops throughout.
+
 ## Context menus
 
 Every right-click menu shows each item's keyboard shortcut alongside its
@@ -277,11 +327,17 @@ registry entry, the same guarantee as the sidebar's own row menu above.
 
 ## Settings
 
-⌘, opens a settings sheet with four sections:
+⌘, opens a settings sheet with five sections:
 
 - **Appearance** — System, Light, or Dark, persisted and applied
   immediately. Forcing Light or Dark survives a live OS appearance change;
   System keeps following it.
+- **Reduce motion** — sits right below Appearance, since it's the other
+  setting that changes how the app looks rather than what it does. A single
+  toggle, persisted the same way (`prefs.reduce_motion`, applied
+  immediately and again at the next launch), that turns off the app's
+  animation catalog for anyone who finds motion distracting or has a system
+  preference for it.
 - **Terminal app** — read-only, showing whatever `$WTM_TERMINAL` currently
   resolves to, or the label `Terminal` when it's unset (that label reflects
   macOS's own default; on Linux the actual unset-case behavior is the

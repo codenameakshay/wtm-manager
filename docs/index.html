@@ -204,14 +204,27 @@ wtm prune --merged --gone</code></pre>
           <p>Built with <a href="https://github.com/zed-industries/zed/tree/main/crates/gpui" target="_blank" rel="noreferrer">GPUI</a>, the UI framework behind Zed. It shares every git and worktree operation with the CLI and TUI — nothing about the CLI itself changes.</p>
         </div>
 
+        <div class="demo-screen app-screenshot">
+          <div class="demo-screen-top">
+            <span class="live-dot"></span>
+            <span>WTM.app</span>
+            <a href="https://raw.githubusercontent.com/codenameakshay/wtm-manager/main/assets/app.png" target="_blank" rel="noreferrer">Open full size ↗</a>
+          </div>
+          <div class="demo-image-wrap">
+            <img src="https://raw.githubusercontent.com/codenameakshay/wtm-manager/main/assets/app.png" alt="wtm's main window: a sidebar listing repositories, a worktree list with New Worktree/Fetch/Prune…/Filter controls and dirty file counts on each row, and a detail panel open on the Details tab showing path, HEAD, upstream, and recent commits">
+          </div>
+        </div>
+
         <div class="docs-grid">
           <article class="doc-card">
             <div class="doc-card-heading"><span class="doc-symbol">⌘</span><h3>What it does</h3></div>
             <dl>
-              <div><dt>Sidebar</dt><dd>Every repo you've opened, most recent first.</dd></div>
+              <div><dt>Sidebar</dt><dd>Every repo you've opened, sorted alphabetically and stable.</dd></div>
               <div><dt>Live status</dt><dd>A filesystem watcher keeps the list current, no reload.</dd></div>
+              <div><dt>Dirty counts</dt><dd>Every row shows exactly how many files are dirty.</dd></div>
+              <div><dt>Keyboard-first</dt><dd>Visible focus ring; dialogs trap <code>Tab</code> inside them.</dd></div>
               <div><dt>Command palette</dt><dd><code>⌘K</code> fuzzy search over worktrees and actions.</dd></div>
-              <div><dt>Everything else</dt><dd>Create, remove, prune, multi-select, detail panel.</dd></div>
+              <div><dt>Everything else</dt><dd>Create, remove, prune, multi-select, an adaptive detail panel.</dd></div>
             </dl>
           </article>
           <article class="doc-card">
@@ -220,12 +233,16 @@ wtm prune --merged --gone</code></pre>
           </article>
           <article class="doc-card doc-card-wide">
             <div class="doc-card-heading"><span class="doc-symbol">&lt;/&gt;</span><h3>Get the app</h3></div>
-            <p>macOS only for now — GPUI supports Linux and Windows too, but this app hasn't been built or tested there.</p>
-            <pre><code># build it yourself
+            <p>macOS and Linux both ship prebuilt releases now; Windows doesn't — GPUI has a Windows backend, but this app has never been built against it. Linux is verified in CI (build, test suite, and Clippy on <code>ubuntu-latest</code> and <code>ubuntu-24.04-arm</code>) but hasn't yet been run on a real Linux desktop by the maintainer.</p>
+            <pre><code># macOS — build it yourself
 scripts/bundle-mac.sh
 cp -R target/bundle/WTM.app /Applications/
+# or download WTM-macOS.zip from the latest release and unzip it
 
-# or download WTM-macOS.zip from the latest release and unzip it</code></pre>
+# Linux — self-contained tarball with a bundled installer
+tar -xJf WTM-linux-x86_64.tar.xz
+./wtm-gui-*-linux/install.sh
+# or install the .deb: sudo apt install ./WTM-linux-x86_64.deb</code></pre>
           </article>
         </div>
 
