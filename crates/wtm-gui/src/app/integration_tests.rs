@@ -1958,3 +1958,92 @@ fn recent_command_appears_after_a_run_and_filtering_narrows_the_suggestions(
         );
     });
 }
+
+// ---------------------------------------------------------------------
+// Perf: the mount-transition animation's per-frame list-render cost
+// ---------------------------------------------------------------------
+//
+// The `animate`/`delight` redesign pass wraps the sidebar/detail-panel
+// mount in `motion::pane_in` (SPEC §5 candidate 1) and asked, specifically,
+// to verify the worktree list stays smooth at 45 worktrees before doing
+// anything width-related: an `AnimationElement`'s `request_animation_frame`
+// re-notifies the whole root view every frame for the animation's duration
+// (`gpui-0.2.2/src/elements/animation.rs`'s `request_layout`), so *any*
+// mount transition — however it is implemented — re-runs
+// `worktree_list::render_row` once per visible row on every frame it's
+// live, regardless of what is actually animating. That is the one piece of
+// "stays smooth" a headless environment can honestly measure: real
+// GPU/compositor frame time needs a live, unlocked display (not available
+// in this environment — see the redesign report), but the CPU-side cost of
+// rebuilding 45 rows' worth of element tree (string truncation, character-
+// width budgeting, the status-pill fade wrapper) is exactly the slice of
+// work `render()` repeats on every animation frame, and it is fully
+// reproducible here.
+#[gpui::test]
+fn rendering_45_rows_repeatedly_stays_well_under_one_animation_frame_budget(
+    cx: &mut TestAppContext,
+) {
+    use wtm::model::WorktreeStatus;
+
+    let theme = cx.update(|cx| {
+        theme::init(cx);
+        Theme::of(cx)
+    });
+
+    let rows: Vec<WorktreeInfo> = (0..45)
+        .map(|i| WorktreeInfo {
+            name: format!("worktree-{i}"),
+            path: PathBuf::from(format!("/tmp/repo/worktree-{i}")),
+            branch: Some(format!("feature/branch-{i}")),
+            head: Some("abc1234".to_string()),
+            is_main: i == 0,
+            is_missing: false,
+            is_locked: i % 7 == 0,
+            is_prunable: false,
+            status: Some(WorktreeStatus {
+                dirty: i % 3 == 0,
+                dirty_count: if i % 3 == 0 { 2 } else { 0 },
+                ahead: Some(1),
+                behind: Some(0),
+                upstream_gone: i % 11 == 0,
+                merged: i % 5 == 0,
+            }),
+        })
+        .collect();
+
+    // One `RESIZE`/`COLLAPSE` animation runs ~12 frames at 200ms/60fps;
+    // this simulates several full animations' worth of repeated re-render
+    // back to back, worst-casing well past what any single mount
+    // transition actually costs.
+    const FRAMES: usize = 60;
+    let start = std::time::Instant::now();
+    for frame in 0..FRAMES {
+        for (ix, info) in rows.iter().enumerate() {
+            cx.update(|cx| {
+                let _ = worktree_list::render_row(
+                    info,
+                    ix,
+                    ix == frame % rows.len(),
+                    false,
+                    Some("2h ago".to_string()),
+                    900.0,
+                    &theme,
+                    cx,
+                );
+            });
+        }
+    }
+    let elapsed = start.elapsed();
+
+    // 60 frames x 45 rows = 2700 row builds. Asserting that stays
+    // comfortably under one real second is many times any actual
+    // animation's total wall-clock duration (a `RESIZE` animation is 200ms
+    // end to end) — a regression that made row construction pathologically
+    // expensive would fail this long before it could ever visibly stutter.
+    assert!(
+        elapsed < Duration::from_secs(1),
+        "45-row list re-render got expensive: {FRAMES} frames took {elapsed:?} \
+         ({} total row builds, budget 1s)",
+        FRAMES * rows.len(),
+    );
+}

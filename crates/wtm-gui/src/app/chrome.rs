@@ -31,7 +31,14 @@ impl WtmApp {
         let theme = self.chrome_theme(cx);
         let active_path = self.active.as_ref().map(|r| r.path().to_path_buf());
 
-        div()
+        // Continuity (SPEC §5 candidate 1): the sidebar mounts/unmounts
+        // instantly today, with no explanation of where it went. Wrapped in
+        // `motion::pane_in` below — see that helper's doc for why this
+        // animates opacity + a slide rather than the `w(px(..))` set here,
+        // which stays instant so every layout budget that reads
+        // `theme::SIDEBAR_WIDTH` (`app::layout::content_column_width`,
+        // `worktree_row_card_width`) is correct from frame one.
+        let sidebar = div()
             .w(px(theme::SIDEBAR_WIDTH))
             .h_full()
             .flex()
@@ -166,7 +173,12 @@ impl WtmApp {
                             this.on_open_settings(&OpenSettings, window, cx);
                         })),
                     ),
-            )
+            );
+
+        // Enters from further off the window's left edge than its resting
+        // position (`start_offset_px` negative — see `motion::pane_in`'s
+        // doc), so it slides in from its own home edge.
+        motion::pane_in("sidebar-pane", sidebar, -8.0, cx)
     }
 
     fn render_repo_row(
@@ -497,9 +509,20 @@ impl WtmApp {
         });
 
         if self.active.is_none() {
+            let theme = self.chrome_theme(cx);
+            let action = ui::button(
+                "empty-add-repository",
+                "Add Repository",
+                ButtonVariant::Primary,
+                &theme,
+            )
+            .on_click(cx.listener(|this, _, window, cx| {
+                this.on_add_repository(&AddRepository, window, cx);
+            }))
+            .into_any_element();
             return div()
                 .flex_1()
-                .child(worktree_list::render_no_repo(cx))
+                .child(worktree_list::render_no_repo(action, cx))
                 .on_mouse_down(MouseButton::Right, empty_space_menu)
                 .into_any_element();
         }
@@ -528,9 +551,20 @@ impl WtmApp {
                 .into_any_element();
         }
         if self.rows.is_empty() && !self.loading {
+            let theme = self.chrome_theme(cx);
+            let action = ui::button(
+                "empty-new-worktree",
+                "New Worktree",
+                ButtonVariant::Primary,
+                &theme,
+            )
+            .on_click(cx.listener(|this, _, window, cx| {
+                this.on_new_worktree(&NewWorktree, window, cx);
+            }))
+            .into_any_element();
             return div()
                 .flex_1()
-                .child(worktree_list::render_empty(cx))
+                .child(worktree_list::render_empty(action, cx))
                 .on_mouse_down(MouseButton::Right, empty_space_menu)
                 .into_any_element();
         }
@@ -824,6 +858,7 @@ impl WtmApp {
                                                     age,
                                                     card_width,
                                                     &theme,
+                                                    cx,
                                                 )
                                                 .flex_1()
                                                 .min_w_0()
@@ -1243,8 +1278,38 @@ impl WtmApp {
             DetailTab::Files => self.render_files_tab(&worktree_path, &theme, cx),
             DetailTab::Changes => self.render_changes_tab(&theme),
         };
+        // Continuity (SURFACES §4's Details/Files/Changes switch): tab
+        // content used to cut hard. `motion::fade_quick` keyed by the tab
+        // itself (not a fixed id) is what makes this replay on every
+        // switch rather than only once — a fixed id would stay mounted
+        // continuously as the *panel's* content slot across every switch,
+        // so gpui would never see it as newly appeared and the animation
+        // state would never restart. Keying by tab means the outgoing
+        // tab's content goes untouched (and gets pruned) the instant a
+        // different one is selected, so switching back to it later is
+        // always a fresh, real fade-in again — the correct behavior for a
+        // deliberate navigation action, unlike the status-pill fade in
+        // `worktree_list::render_status_pills`, which must NOT replay on
+        // every unrelated re-render.
+        let tab_key = match self.detail_tab {
+            DetailTab::Details => "details",
+            DetailTab::Files => "files",
+            DetailTab::Changes => "changes",
+        };
+        let content_id = SharedString::from(format!("detail-tab-content-{tab_key}"));
+        let content = motion::fade_quick(
+            content_id,
+            div().flex_1().min_h_0().min_w_0().child(content),
+            cx,
+        )
+        .into_any_element();
 
-        div()
+        // Continuity (SPEC §5 candidate 1) — same treatment and the same
+        // reasoning as `render_sidebar`'s `sidebar` binding: `w(px(width))`
+        // stays instant (every layout budget that reads
+        // `detail_panel_width` is correct from frame one), only opacity and
+        // a slide animate.
+        let panel = div()
             .w(px(width))
             .h_full()
             .flex_none()
@@ -1278,8 +1343,12 @@ impl WtmApp {
             .border_color(theme.border)
             .child(detail_panel::render_header(info, &theme))
             .child(self.render_detail_tab_bar(&theme, window, cx))
-            .child(content)
-            .into_any_element()
+            .child(content);
+
+        // Enters from further off the window's right edge than its resting
+        // position (`start_offset_px` positive — see `motion::pane_in`'s
+        // doc), mirroring the sidebar's own leading-edge slide.
+        motion::pane_in("detail-panel-pane", panel, 8.0, cx).into_any_element()
     }
 
     /// The Details/Files/Changes switch, as a segmented control rather than
@@ -1523,7 +1592,7 @@ impl WtmApp {
                     .children(rows.into_iter().map(|row| {
                         let rel_path = row.rel_path.to_path_buf();
                         let is_dir = row.is_dir;
-                        file_browser::render_row(&row, selected, theme).on_click(cx.listener(
+                        file_browser::render_row(&row, selected, theme, cx).on_click(cx.listener(
                             move |this, _, _window, cx| {
                                 if is_dir {
                                     this.toggle_file_dir(rel_path.clone(), cx);

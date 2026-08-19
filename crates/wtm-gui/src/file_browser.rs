@@ -24,10 +24,11 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use gpui::prelude::*;
-use gpui::{div, px, radians, svg, AnyElement, Div, Hsla, SharedString, Stateful, Transformation};
+use gpui::{div, px, svg, AnyElement, App, Div, Hsla, SharedString, Stateful};
 
 use crate::assets::icons;
 use crate::data::{FileEntry, FileStatus};
+use crate::motion;
 use crate::theme::{Theme, SPACE_6, SPACE_8};
 use crate::ui;
 
@@ -70,6 +71,9 @@ pub struct FileBrowserState {
     expanded: HashSet<PathBuf>,
     dirs: HashMap<PathBuf, DirState>,
     selected_file: Option<PathBuf>,
+    /// How many times each directory has been toggled, ever — see
+    /// [`toggle_generation`](Self::toggle_generation) for why this exists.
+    toggle_gen: HashMap<PathBuf, u32>,
 }
 
 impl FileBrowserState {
@@ -82,14 +86,28 @@ impl FileBrowserState {
     /// which rows are *visible* changes, not what's known; re-expanding the
     /// same directory later is then free (see [`dirs_needing_load`]).
     ///
+    /// Also bumps this directory's [`toggle_generation`](Self::toggle_generation).
+    ///
     /// [`dirs_needing_load`]: FileBrowserState::dirs_needing_load
     pub fn toggle_expanded(&mut self, rel_dir: PathBuf) -> bool {
+        *self.toggle_gen.entry(rel_dir.clone()).or_insert(0) += 1;
         if self.expanded.remove(&rel_dir) {
             false
         } else {
             self.expanded.insert(rel_dir);
             true
         }
+    }
+
+    /// How many times `rel_dir` has been expanded/collapsed this session —
+    /// `0` if it has never been toggled by hand (only ever set to its
+    /// initial state, or never touched at all). Folded into
+    /// `motion::disclosure_chevron`'s element id at the render site
+    /// (`app::chrome::WtmApp::render_file_tree`) so every toggle is a fresh
+    /// element identity and the chevron's rotation animates every time, not
+    /// just the first — see that function's own doc for the full "why".
+    pub fn toggle_generation(&self, rel_dir: &Path) -> u32 {
+        self.toggle_gen.get(rel_dir).copied().unwrap_or(0)
     }
 
     pub fn dir_state(&self, rel_dir: &Path) -> Option<&DirState> {
@@ -148,10 +166,13 @@ pub struct VisibleRow<'a> {
     pub is_dir: bool,
     pub depth: usize,
     pub status: Option<FileStatus>,
-    /// `Some((expanded, state))` for a directory row; `None` for a file.
-    /// `state` is `None` when the directory hasn't been requested yet (a
-    /// row can be expanded and still awaiting its first load).
-    pub dir: Option<(bool, Option<&'a DirState>)>,
+    /// `Some((expanded, state, toggle_generation))` for a directory row;
+    /// `None` for a file. `state` is `None` when the directory hasn't been
+    /// requested yet (a row can be expanded and still awaiting its first
+    /// load). `toggle_generation` is
+    /// [`FileBrowserState::toggle_generation`] for this directory — see
+    /// that method's doc.
+    pub dir: Option<(bool, Option<&'a DirState>, u32)>,
 }
 
 /// Depth-first flatten of `state`'s tree starting at the worktree root.
@@ -185,7 +206,11 @@ fn push_entries<'a>(
                 is_dir: true,
                 depth,
                 status: entry.status,
-                dir: Some((expanded, state.dir_state(&entry.rel_path))),
+                dir: Some((
+                    expanded,
+                    state.dir_state(&entry.rel_path),
+                    state.toggle_generation(&entry.rel_path),
+                )),
             });
             if expanded {
                 if let Some(DirState::Loaded(children)) = state.dir_state(&entry.rel_path) {
@@ -255,10 +280,12 @@ pub fn render_row(
     row: &VisibleRow<'_>,
     selected_file: Option<&Path>,
     theme: &Theme,
+    cx: &App,
 ) -> Stateful<Div> {
     let id = SharedString::from(format!("file-row:{}", row.rel_path.display()));
     let is_selected = !row.is_dir && selected_file == Some(row.rel_path);
-    let expanded = row.dir.is_some_and(|(expanded, _)| expanded);
+    let expanded = row.dir.is_some_and(|(expanded, ..)| expanded);
+    let toggle_gen = row.dir.map(|(_, _, gen)| gen).unwrap_or(0);
     let name_color = match row.status {
         Some(status) => status_color(status, theme),
         None if row.is_dir => theme.text,
@@ -270,7 +297,7 @@ pub fn render_row(
     // row with a spinner-less wait, or worse, an open folder that just
     // never shows anything, would both read as broken rather than pending.
     let trailing: Option<AnyElement> = if row.is_dir && expanded {
-        match row.dir.and_then(|(_, s)| s) {
+        match row.dir.and_then(|(_, s, _)| s) {
             Some(DirState::Loading) => Some(
                 div()
                     .flex_none()
@@ -296,23 +323,21 @@ pub fn render_row(
     };
 
     // A real chevron icon in place of the pre-redesign "▸"/"▾" text glyph
-    // (SURFACES §4). Rotation is a static snap between two fixed angles,
-    // not an animated tween through `motion::COLLAPSE`: this function has
-    // no `cx`/`App` to check `motion::reduced` or drive a real
-    // `AnimationElement` through (see the redesign report for the
-    // signature change an animated version would need).
+    // (SURFACES §4), rotating through `motion::COLLAPSE` (SPEC §5 candidate
+    // 4) rather than snapping between its two fixed angles. `toggle_gen`
+    // (folded into the animation's element id) is what makes every toggle
+    // — not just the first — actually animate; see
+    // `FileBrowserState::toggle_generation`'s doc for why a plain
+    // `expanded`-keyed id can't do that on its own.
     let disclosure: Option<AnyElement> = row.is_dir.then(|| {
-        svg()
+        let chevron_id =
+            SharedString::from(format!("chevron:{}:{toggle_gen}", row.rel_path.display()));
+        let icon = svg()
             .path(icons::CHEVRON_RIGHT)
             .size(px(10.0))
             .flex_none()
-            .text_color(theme.text_ghost)
-            .with_transformation(Transformation::rotate(radians(if expanded {
-                std::f32::consts::FRAC_PI_2
-            } else {
-                0.0
-            })))
-            .into_any_element()
+            .text_color(theme.text_ghost);
+        motion::disclosure_chevron(chevron_id, icon, expanded, cx)
     });
 
     ui::row(id, is_selected, theme)
@@ -427,6 +452,21 @@ mod tests {
         assert!(state.is_expanded(&dir));
         assert!(!state.toggle_expanded(dir.clone()));
         assert!(!state.is_expanded(&dir));
+    }
+
+    #[test]
+    fn toggle_generation_starts_at_zero_and_bumps_on_every_toggle() {
+        let mut state = FileBrowserState::default();
+        let dir = PathBuf::from("src");
+        // Never toggled: 0, so a never-touched row's chevron element id
+        // stays stable frame to frame (no spurious animation replay).
+        assert_eq!(state.toggle_generation(&dir), 0);
+        state.toggle_expanded(dir.clone());
+        assert_eq!(state.toggle_generation(&dir), 1);
+        state.toggle_expanded(dir.clone());
+        assert_eq!(state.toggle_generation(&dir), 2);
+        // A different directory's count is independent.
+        assert_eq!(state.toggle_generation(&PathBuf::from("other")), 0);
     }
 
     #[test]
@@ -546,7 +586,10 @@ mod tests {
         let rows = visible_rows(&state);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].name, "src");
-        assert!(matches!(rows[0].dir, Some((true, Some(DirState::Loading)))));
+        assert!(matches!(
+            rows[0].dir,
+            Some((true, Some(DirState::Loading), _))
+        ));
     }
 
     // ---------------- status_color / status_label ----------------

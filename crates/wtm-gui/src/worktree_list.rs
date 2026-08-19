@@ -18,6 +18,7 @@ use wtm::model::WorktreeInfo;
 
 use crate::assets::icons;
 use crate::detail_panel::{truncate_path_tail, truncate_tail};
+use crate::motion;
 use crate::theme::{Theme, LIST_ROW_HEIGHT, SPACE_4, SPACE_6, SPACE_8};
 use crate::ui;
 
@@ -263,10 +264,40 @@ fn pill_specs(info: &WorktreeInfo, awaiting_status: bool, theme: &Theme) -> Vec<
     specs
 }
 
-/// Renders [`pill_specs`]'s output: a real `ui::pill` for a colored spec, or
-/// plain `text_ghost` text for the loading/unknown placeholder.
-fn render_status_pills(specs: &[PillSpec], theme: &Theme) -> Vec<AnyElement> {
-    specs
+/// Renders [`pill_specs`]'s output as a single flex-row group: a real
+/// `ui::pill` for each colored spec, or plain `text_ghost` text for the
+/// loading/unknown placeholder. `None` when `specs` is empty (not actually
+/// reachable today — see [`pill_specs`] — but kept honest rather than
+/// assumed).
+///
+/// The colored-pill group (never the placeholder) is wrapped in
+/// [`motion::fade_quick`], keyed to this row: status resolves
+/// asynchronously (`app::loading::apply_rows`'s with-status pass, run after
+/// a fast, status-free listing paints the row first), and that pill group's
+/// *first* appearance in the tree — the instant the placeholder is replaced
+/// by a real answer — is the one moment SPEC §5's feedback pillar asks this
+/// app to acknowledge. Every reload starts by wiping status back to `None`
+/// (`reload_impl`'s fast pass), so this group is genuinely absent from the
+/// tree for at least one frame before the with-status pass lands — gpui
+/// prunes its animation state in that gap, so the *next* mount (status
+/// resolving again) is always a fresh, real fade-in, not a stale "already
+/// done" no-op. A render that merely re-notifies (a selection change, a
+/// hover) with status unchanged touches this same element id every frame in
+/// between, so its animation state is never pruned and never replays —
+/// exactly the "near-free" cost SPEC §5 requires: after the one bounded
+/// 150ms fade per resolution, every later render of an already-settled row
+/// is a plain, static paint, no per-row timer and no repaint loop.
+fn render_status_pills(
+    specs: &[PillSpec],
+    theme: &Theme,
+    row_ix: usize,
+    cx: &App,
+) -> Option<AnyElement> {
+    if specs.is_empty() {
+        return None;
+    }
+    let is_real = specs.iter().any(|spec| spec.color.is_some());
+    let children: Vec<AnyElement> = specs
         .iter()
         .map(|spec| match spec.color {
             Some(color) => ui::pill(spec.label.clone(), color).into_any_element(),
@@ -276,7 +307,18 @@ fn render_status_pills(specs: &[PillSpec], theme: &Theme) -> Vec<AnyElement> {
                 .child(spec.label.clone())
                 .into_any_element(),
         })
-        .collect()
+        .collect();
+    let group = div()
+        .flex_none()
+        .flex()
+        .items_center()
+        .gap(px(SPACE_8))
+        .children(children);
+    Some(if is_real {
+        motion::fade_quick(("worktree-pills", row_ix), group, cx).into_any_element()
+    } else {
+        group.into_any_element()
+    })
 }
 
 /// Reserved width for a `ui::badge`-shaped chip: `SPACE_6` padding on both
@@ -441,6 +483,13 @@ fn line2_layout(
 /// out: pills and the `main` badge/lock never shrink or clip; the branch
 /// name and then the path give way, in that order; the sha and age are
 /// dropped outright before a pill ever would be.
+///
+/// `cx` is only ever read for [`motion::reduced`] inside
+/// [`render_status_pills`]'s fade-in wrapper, never for color (COMPONENTS.md
+/// rule 2 is about `Theme`, not motion) — the same "needs `&App` purely to
+/// honor reduced motion" caveat `ui::spinner`'s own doc already documents
+/// for the same reason.
+#[allow(clippy::too_many_arguments)]
 pub fn render_row(
     info: &WorktreeInfo,
     row_ix: usize,
@@ -449,6 +498,7 @@ pub fn render_row(
     age: Option<String>,
     card_width: f32,
     theme: &Theme,
+    cx: &App,
 ) -> Stateful<Div> {
     // Takes `&Theme` directly rather than resolving `Theme::of(cx)` itself
     // (as this used to): `app::chrome::render_list`'s `uniform_list`
@@ -564,7 +614,10 @@ pub fn render_row(
                         )
                         .tooltip(ui::tooltip(info.path.display().to_string())),
                 )
-                .children(render_status_pills(&specs, &theme))
+                .when_some(
+                    render_status_pills(&specs, &theme, row_ix, cx),
+                    |this, pills| this.child(pills),
+                )
                 .when(layout.show_sha, |this| {
                     // HEAD is a sha in meta position — `FONT_MONO`, same as
                     // the path beside it, so columns of shas line up
@@ -651,37 +704,36 @@ pub fn render_header(shown: usize, total: usize, loading: bool, cx: &App) -> imp
 
 /// Shown in place of the list when a repository has no worktrees — the
 /// first thing a new user of this repo sees, so it gets the full
-/// `ui::empty_state` treatment (icon, headline, hint) rather than two lines
-/// of grey text in a void (SURFACES §3).
+/// `ui::empty_state` treatment (icon, headline, hint, and now an action)
+/// rather than two lines of grey text in a void (SURFACES §3).
 ///
-/// No action button is wired into the `ui::empty_state` slot here: this
-/// module renders `WorktreeInfo` values with no `Context<WtmApp>` (see the
-/// module doc) and cannot attach a click handler to "New Worktree" without
-/// one — that would need either a callback parameter on this function (a
-/// signature change `app/chrome.rs`'s call site would also need) or
-/// `chrome.rs` composing its own button beside this content. Flagged in the
-/// redesign report rather than done, per this phase's "report a needed
-/// signature change" rule.
-pub fn render_empty(cx: &App) -> impl IntoElement {
+/// `action` is built by the caller (`app::chrome::WtmApp::render_list`),
+/// which owns the `Context<WtmApp>` a real "New Worktree" click handler
+/// needs — this module renders `WorktreeInfo` values with no such context
+/// (see the module doc) and never will. An empty state whose next action is
+/// one click away is the highest-value delight this app has: a brand-new
+/// user's very first screen is otherwise a dead end until they discover the
+/// sidebar button or the `⌘N` shortcut on their own.
+pub fn render_empty(action: AnyElement, cx: &App) -> impl IntoElement {
     let theme = Theme::of(cx);
     ui::empty_state(
         icons::GIT_BRANCH,
         "No worktrees yet",
         "Create one from a branch to get started.",
-        None,
+        Some(action),
         &theme,
     )
 }
 
-/// Shown when no repository is selected at all. Same action-slot caveat as
+/// Shown when no repository is selected at all. Same action-slot wiring as
 /// [`render_empty`].
-pub fn render_no_repo(cx: &App) -> impl IntoElement {
+pub fn render_no_repo(action: AnyElement, cx: &App) -> impl IntoElement {
     let theme = Theme::of(cx);
     ui::empty_state(
         icons::FOLDER_OPEN,
         "No repository open",
         "Run `wtm` inside a git repository to add it here.",
-        None,
+        Some(action),
         &theme,
     )
 }

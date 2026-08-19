@@ -39,17 +39,38 @@
 //! SPEC §5's catalog table lists seven specs (`FADE_IN`, `FADE_QUICK`,
 //! `MENU_IN`, `DIALOG_IN`, `RESIZE`, `COLLAPSE`, `SPINNER`) and four curves;
 //! [`catalog_timings_match_spec`](tests::catalog_timings_match_spec) checks
-//! all seven together. `FADE_QUICK`/`MENU_IN`/`DIALOG_IN`/`SPINNER` (via
-//! [`fade_quick`]/[`menu_in`]/[`dialog_in`]/[`spin`]) now have real call
-//! sites in dialogs, the palette, and context menus; `FADE_IN`/[`fade_in`]
-//! (view entrances — nothing in this app mounts/unmounts a coarse "view"
-//! yet), `RESIZE` (sidebar/detail-panel width — those panes aren't
-//! drag-resizable yet), and `COLLAPSE` (disclosure height — the file
-//! browser's chevron rotates as a static snap today; see its own doc for
-//! the signature change an animated version needs) do not. Each is kept as
-//! part of the documented catalog rather than deleted — see the individual
-//! `#[allow(dead_code)]` reasons below.
-use std::f32::consts::TAU;
+//! all seven together. `FADE_QUICK`/`MENU_IN`/`DIALOG_IN`/`SPINNER`/`RESIZE`/
+//! `COLLAPSE` (via [`fade_quick`]/[`menu_in`]/[`dialog_in`]/[`spin`]/
+//! [`pane_in`]/[`disclosure_chevron`]) all have real call sites now: dialogs,
+//! the palette, context menus, the sidebar/detail-panel mount transition, the
+//! detail panel's per-row status-pill settle, and the file browser's
+//! disclosure chevron. Only `FADE_IN`/[`fade_in`] (view entrances — nothing
+//! in this app mounts/unmounts a coarse "view" yet) has no call site — kept
+//! as part of the documented catalog rather than deleted, per its own
+//! `#[allow(dead_code)]` reason below.
+//!
+//! `RESIZE` is catalogued for "sidebar/detail-panel width" but
+//! [`pane_in`] — its one call site — deliberately does not tween the
+//! `w(px(..))` itself. Both panes' widths are read elsewhere in this crate
+//! to budget the worktree list's own row layout (`app::layout::
+//! content_column_width`, `app::chrome::WtmApp::worktree_row_card_width`,
+//! `worktree_list::line1_max_chars`/`line2_layout`) as a flat, instantaneous
+//! number — never a value sampled mid-tween. Actually animating the width
+//! would desync those budgets from the real, taffy-allocated box for the
+//! whole 200ms the tween runs: a row's fixed-`px` name/path boxes would be
+//! sized for the *end* width while the pane occupying screen space is still
+//! some intermediate one, spilling or gapping every row for the duration
+//! (worse each frame, in the sidebar's case, since every row in the
+//! `uniform_list` re-lays-out against the same stale budget). SPEC §5
+//! explicitly sanctions the fallback for exactly this situation: "animate
+//! something cheaper (opacity + a fixed-offset slide) instead." [`pane_in`]
+//! is that fallback, still timed and eased per [`RESIZE`] — the pane's own
+//! `w(px(..))` snaps to its final value instantly (so every layout budget
+//! that reads it is correct from frame one), and only its opacity and a
+//! small horizontal offset animate, exactly the way [`menu_in`]/
+//! [`dialog_in`] already approximate a `scale()` component with fade +
+//! translate rather than a real transform.
+use std::f32::consts::{FRAC_PI_2, TAU};
 use std::time::Duration;
 
 use gpui::{px, radians, Animation, App, ElementId, Global, IntoElement, Radians, Styled, Svg};
@@ -175,10 +196,9 @@ impl CubicBezier {
 /// doc's "Catalog completeness" note.
 #[allow(dead_code)]
 pub const EASE_OUT_EXPO: CubicBezier = CubicBezier::new(0.16, 1.0, 0.3, 1.0);
-/// CSS `ease-out` — width/height transitions (sidebar/detail-panel resize).
-/// Only live caller is [`RESIZE`]/[`COLLAPSE`], neither of which has a call
-/// site yet — see the module doc's "Catalog completeness" note.
-#[allow(dead_code)]
+/// CSS `ease-out` — width/height transitions (sidebar/detail-panel resize),
+/// disclosure height. Live caller: [`RESIZE`] (via [`pane_in`]) and
+/// [`COLLAPSE`] (via [`disclosure_chevron`]).
 pub const EASE_OUT: CubicBezier = CubicBezier::new(0.0, 0.0, 0.58, 1.0);
 /// CSS `ease` — quick fades, menu/dialog entrances.
 pub const EASE: CubicBezier = CubicBezier::new(0.25, 0.1, 0.25, 1.0);
@@ -244,14 +264,12 @@ pub const FADE_QUICK: MotionSpec = MotionSpec::new(150, EASE);
 pub const MENU_IN: MotionSpec = MotionSpec::new(140, EASE);
 /// Modal dialogs.
 pub const DIALOG_IN: MotionSpec = MotionSpec::new(180, EASE);
-/// Sidebar / detail-panel width transitions. See the module doc's "Catalog
-/// completeness" note — those panes are not drag-resizable yet.
-#[allow(dead_code)]
+/// Sidebar / detail-panel mount transition. See [`pane_in`] and the module
+/// doc's "Catalog completeness" note for why this times an opacity + slide
+/// rather than the width itself.
 pub const RESIZE: MotionSpec = MotionSpec::new(200, EASE_OUT);
-/// Disclosure height. See the module doc's "Catalog completeness" note —
-/// the file browser's chevron rotates as a static snap today, not yet
-/// through this spec.
-#[allow(dead_code)]
+/// Disclosure rotation — the file browser's expand/collapse chevron, via
+/// [`disclosure_chevron`].
 pub const COLLAPSE: MotionSpec = MotionSpec::new(180, EASE_OUT);
 /// Loading indicator rotation — linear, repeating.
 pub const SPINNER: MotionSpec = MotionSpec::new(900, LINEAR);
@@ -321,6 +339,44 @@ where
     })
 }
 
+/// Sidebar/detail-panel mount transition over [`RESIZE`]: opacity 0->1 plus
+/// a small horizontal slide, `start_offset_px` -> 0. The pane's own
+/// `w(px(..))` is set by the caller, outside this wrapper, and never
+/// animates — see the module doc's "Catalog completeness" note for why a
+/// real width tween would desync every row-layout budget that reads that
+/// width for the duration of the animation.
+///
+/// `start_offset_px` carries both the distance and the direction: negative
+/// for a pane whose home edge is the window's left (the sidebar enters by
+/// sliding in *from* further left), positive for one whose home edge is the
+/// right (the detail panel enters from further right). Implemented as a
+/// relative `left` inset for the same reason [`fade_in`]/[`menu_in`] use a
+/// relative `top` inset for their own rise: taffy applies it after layout,
+/// so — like a CSS transform — the sibling content column never shifts.
+///
+/// Entrance-only, matching every other mount transition in this module
+/// (dialogs, the palette, context menus): this app has no exit-animation
+/// infrastructure anywhere, and retrofitting one just for these two panes
+/// would mean keeping an unmounted pane's box alive (and the content
+/// column's width wrong) for the length of a fade-out. A pane that stops
+/// being wanted (the user's own toggle, or the width breakpoint) disappears
+/// the same instant every dialog/menu does when dismissed.
+pub fn pane_in<E>(
+    id: impl Into<ElementId>,
+    element: E,
+    start_offset_px: f32,
+    cx: &App,
+) -> gpui::AnimationElement<E>
+where
+    E: Styled + IntoElement + 'static,
+{
+    animate(id, RESIZE, cx, element, move |el, t| {
+        el.relative()
+            .opacity(t)
+            .left(px(start_offset_px * (1.0 - t)))
+    })
+}
+
 /// A loading-indicator rotation over [`SPINNER`]: one full turn per period,
 /// linear, repeating. Reduced motion renders a static, unrotated icon and
 /// mounts no animation at all — a permanently-repeating spinner is exactly
@@ -344,6 +400,41 @@ pub fn spin(id: impl Into<ElementId>, icon: Svg, cx: &App) -> gpui::AnyElement {
 /// a window.
 fn spin_angle(t: f32) -> Radians {
     radians(t * TAU)
+}
+
+/// A disclosure chevron's expand/collapse rotation over [`COLLAPSE`]: a
+/// quarter turn between pointing right (collapsed) and down (expanded),
+/// eased rather than the static two-angle snap this used to be.
+///
+/// `id` must be unique *per toggle*, not just per row: an
+/// [`gpui::AnimationElement`]'s progress is `Instant`-based state gpui keeps
+/// alive for as long as the same element id keeps appearing in the tree
+/// (`window.with_element_state`), and a oneshot animation that has already
+/// finished never restarts just because its target flipped again — it would
+/// stay parked at whichever end of the turn it last reached. Folding a
+/// per-toggle generation counter into `id` (see
+/// `file_browser::FileBrowserState::toggle_generation`) makes every toggle
+/// a genuinely new element identity, so it always animates instead of only
+/// the first expand ever doing so. The two possible identities (this
+/// generation vs. the last one) still only ever cost one bounded 180ms
+/// animation each — nothing here reschedules once `t` reaches 1.
+pub fn disclosure_chevron(
+    id: impl Into<ElementId>,
+    icon: Svg,
+    expanded: bool,
+    cx: &App,
+) -> gpui::AnyElement {
+    let (from, to) = if expanded {
+        (0.0, FRAC_PI_2)
+    } else {
+        (FRAC_PI_2, 0.0)
+    };
+    animate(id, COLLAPSE, cx, icon, move |el, t| {
+        el.with_transformation(gpui::Transformation::rotate(radians(
+            from + (to - from) * t,
+        )))
+    })
+    .into_any_element()
 }
 
 /// Press feedback for buttons: gpui has no `div` scale transform, so
