@@ -608,11 +608,28 @@ pub fn render_header(shown: usize, total: usize, loading: bool, cx: &App) -> imp
     // entirely on its own wrapping `overflow_hidden()` to keep this from
     // overflowing the toolbar row — a hard clip, not a truncation, since
     // nothing here gave the count text itself a `min_w_0()`/`.truncate()` to
-    // ellipsize with. Wrapping the count in its own `min_w_0()`/`.truncate()`
-    // div (the "· loading status…" suffix stays `flex_none`, since it's
-    // short and always shown in full once there's any room at all) puts the
-    // truncation authority here instead, matching every other row in the
-    // list.
+    // ellipsize with.
+    //
+    // A later pass (this comment) found that giving the *count* the shrink
+    // authority was backwards: at the app's own default 1180px width, with
+    // the toolbar's five controls sharing this row, the count and the
+    // "· loading status…" suffix were routinely squeezed into less room
+    // than both demand together. `flex_none` on the suffix meant it always
+    // claimed its full width regardless, so 100% of that deficit landed on
+    // the count's `min_w_0()`/`.truncate()` — cutting "4 worktrees" down to
+    // "4 wo" mid-word, the one piece of text here that must never be
+    // mangled (SURFACES §4 — a corrupted count reads as a bug, not a
+    // degrade). The suffix, by contrast, is disposable: it repeats
+    // information (`loading`) the spinner in the titlebar already shows —
+    // see `chrome.rs`'s `render_titlebar` — so losing it under pressure
+    // costs nothing a user can't get elsewhere.
+    //
+    // Swapping which side carries `min_w_0()`/`.truncate()` fixes this: the
+    // count is now `flex_none()` (always its full natural width, so a
+    // narrow allocation instead forces the *row*'s own `flex_wrap()` —
+    // `app::chrome::render_list`'s toolbar row — to drop the actions group
+    // to its own line, per that row's doc comment, rather than clipping
+    // digits) and the suffix absorbs whatever shrink pressure is left.
     div()
         .flex()
         .min_w_0()
@@ -620,11 +637,12 @@ pub fn render_header(shown: usize, total: usize, loading: bool, cx: &App) -> imp
         .gap(px(SPACE_8))
         .text_size(px(ui::TEXT_SM))
         .text_color(theme.text_faint)
-        .child(div().min_w_0().truncate().child(count_text))
+        .child(div().flex_none().child(count_text))
         .when(loading, |this| {
             this.child(
                 div()
-                    .flex_none()
+                    .min_w_0()
+                    .truncate()
                     .text_color(theme.text_ghost)
                     .child("· loading status…"),
             )
