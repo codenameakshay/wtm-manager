@@ -55,7 +55,7 @@ use crate::dialogs;
 use crate::motion;
 use crate::prefs::{Appearance, Prefs};
 use crate::theme::{Theme, SPACE_12, SPACE_16, SPACE_2, SPACE_20, SPACE_4, SPACE_6, SPACE_8};
-use crate::ui::{self, ButtonVariant, TEXT_BASE, TEXT_SM, TEXT_XS};
+use crate::ui::{self, ButtonVariant, TEXT_SM, TEXT_XS};
 
 /// One keyboard shortcut, as registered with gpui and as shown in the
 /// "Keyboard Shortcuts" section below. Built by `main.rs`'s `key_bindings!`
@@ -214,8 +214,14 @@ fn render_terminal_section(theme: &Theme) -> impl IntoElement {
         .flex_col()
         .gap(px(SPACE_4))
         .child(
+            // Rendered as a value, not a heading: with the "Terminal App"
+            // eyebrow gone, heading-weight text here would be the only thing
+            // in the sheet that looked like a surviving section label. Match
+            // the treatment `config_row` below uses for config values — mono
+            // face, body size — so it reads as data, not a title.
             div()
-                .text_size(px(TEXT_BASE))
+                .font_family(ui::FONT_MONO)
+                .text_size(px(TEXT_SM))
                 .text_color(theme.text)
                 .child(terminal),
         )
@@ -389,14 +395,28 @@ fn config_path_row(
                         .child(label),
                 )
                 .child(
-                    // SPEC §6: paths take the bundled mono face.
+                    // SPEC §6: paths take the bundled mono face. When the
+                    // file doesn't exist there's no path to show — the
+                    // caption below already says so in words — so this
+                    // renders a plain em dash rather than a real (but
+                    // nonexistent) path. `.truncate()` is deliberately
+                    // dropped for that case: gpui 0.2.2's ellipsis
+                    // truncation is unreliable (see the crate's other
+                    // hand-rolled truncation), and a single glyph has
+                    // nothing to truncate anyway — keeping `.truncate()`
+                    // on it risked the exact "…"-only rendering this row
+                    // used to show for a missing file.
                     div()
                         .min_w_0()
-                        .truncate()
+                        .when(exists, |this| this.truncate())
                         .font_family(ui::FONT_MONO)
                         .text_size(px(TEXT_SM))
                         .text_color(theme.text)
-                        .child(home_relative(&path)),
+                        .child(if exists {
+                            home_relative(&path)
+                        } else {
+                            "—".to_string()
+                        }),
                 )
                 .when(!exists, |this| this.child(dim_note(missing_note, theme))),
         )
