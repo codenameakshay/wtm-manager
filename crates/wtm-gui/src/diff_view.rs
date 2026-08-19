@@ -66,6 +66,37 @@ fn diff_font() -> Font {
     f
 }
 
+/// Opts an `.overflow_x_scroll()` element out of gpui 0.2.2's default "either
+/// axis" wheel routing.
+///
+/// `elements/div.rs`'s scroll-wheel handler never calls `stop_propagation()`,
+/// so a wheel event always keeps bubbling up to the Changes tab's own
+/// `.overflow_y_scroll()` in `app/chrome.rs` regardless of this element —
+/// that part already works. The actual bug: without this, the *same* pure
+/// vertical delta that reaches this element also gets reinterpreted as
+/// horizontal input here, because its `overflow.x == Scroll` while its
+/// `overflow.y != Scroll`. So every wheel tick that lands on a diff body
+/// (SPEC's "Long lines" doc above — these fill most of the panel) also yanks
+/// that diff sideways, and with a whole tab of stacked diff bodies, that
+/// turns an intended vertical scroll into a distracting horizontal jitter
+/// that reads as "scrolling doesn't work" even though the ancestor's offset
+/// is quietly moving too. `restrict_scroll_to_axis` stops this element from
+/// repurposing vertical input as horizontal, so a vertical wheel gesture
+/// over a diff body only ever moves the ancestor.
+///
+/// `restrict_scroll_to_axis` is gpui's own documented opt-in fix
+/// (`gpui::Style::restrict_scroll_to_axis`), but there is no `Styled`
+/// builder method for it — every other builder (`.overflow_x_scroll()`,
+/// `.debug_below()`, …) is just sugar over poking the field on
+/// `StyleRefinement` through `Styled::style()`, so this does the same thing
+/// by hand. A genuine horizontal gesture (non-zero `delta.x`, which is what
+/// a real trackpad swipe or Shift+wheel produces) is untouched — this only
+/// changes what happens when `delta.x` is zero.
+fn restrict_scroll_to_horizontal_axis<E: Styled>(mut element: E) -> E {
+    element.style().restrict_scroll_to_axis = Some(true);
+    element
+}
+
 /// Number of characters needed to print the largest line number appearing
 /// anywhere in `diff`'s hunks — so a 9-line file's gutter isn't as wide as a
 /// 12,000-line file's, and a 12,000-line file's numbers don't get clipped by
@@ -255,26 +286,28 @@ fn render_hunks(diff: &FileDiff, theme: &Theme) -> AnyElement {
     // per changed file, and each needs a distinct element id to scroll
     // independently of the others.
     let id = SharedString::from(format!("diff-body:{}", diff.path));
-    div()
-        .id(id)
-        // Radius arithmetic (SPEC §4/COMPONENTS.md): the diff body is a
-        // self-contained bordered block at `RADIUS_CONTROL` (6) — the
-        // nearest token to the pre-redesign literal `6.0`, so this was
-        // already on-scale.
-        .rounded(px(RADIUS_CONTROL))
-        .flex()
-        .flex_col()
-        .w_full()
-        .border_1()
-        .border_color(theme.border)
-        .overflow_x_scroll()
-        .font(diff_font())
-        .children(
-            diff.hunks
-                .iter()
-                .map(|hunk| render_hunk(hunk, gutter_px, theme)),
-        )
-        .into_any_element()
+    restrict_scroll_to_horizontal_axis(
+        div()
+            .id(id)
+            // Radius arithmetic (SPEC §4/COMPONENTS.md): the diff body is a
+            // self-contained bordered block at `RADIUS_CONTROL` (6) — the
+            // nearest token to the pre-redesign literal `6.0`, so this was
+            // already on-scale.
+            .rounded(px(RADIUS_CONTROL))
+            .flex()
+            .flex_col()
+            .w_full()
+            .border_1()
+            .border_color(theme.border)
+            .overflow_x_scroll()
+            .font(diff_font()),
+    )
+    .children(
+        diff.hunks
+            .iter()
+            .map(|hunk| render_hunk(hunk, gutter_px, theme)),
+    )
+    .into_any_element()
 }
 
 fn render_hunk(hunk: &DiffHunk, gutter_px: f32, theme: &Theme) -> impl IntoElement {
@@ -437,5 +470,100 @@ mod tests {
     fn lineno_cell_formats_present_and_absent_numbers() {
         assert_eq!(lineno_cell(Some(42)), "42");
         assert_eq!(lineno_cell(None), "");
+    }
+
+    // ---------------- restrict_scroll_to_horizontal_axis ----------------
+    //
+    // Headless regression coverage for the scroll-hijack bug (see the
+    // function's own doc comment): a `TestAppContext`-driven `gpui::test`
+    // exercises the real `elements/div.rs` wheel-dispatch code (hit-testing
+    // included — `add_empty_window`/`draw` run a real prepaint+paint pass,
+    // so `Window::mouse_hit_test` is genuinely populated, not stubbed), so
+    // this is exactly the "reachable headlessly" case, not an event-routing
+    // behavior `TestAppContext` cannot drive.
+
+    use gpui::{
+        point, size, Render, ScrollDelta, ScrollHandle, ScrollWheelEvent, TestAppContext, Window,
+    };
+
+    /// Mirrors the real nesting this bug lives in: an outer vertically-
+    /// scrolling container (`app/chrome.rs`'s `changes-scroll`/
+    /// `file-diff-scroll`) wrapping an inner horizontally-scrolling one
+    /// (`render_hunks`'s diff body). Sized so both axes genuinely overflow
+    /// — asserted below — rather than trusting the layout by construction.
+    struct ScrollNestingTestView {
+        outer: ScrollHandle,
+        inner: ScrollHandle,
+    }
+
+    impl Render for ScrollNestingTestView {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .id("outer")
+                .w(px(200.))
+                .h(px(150.))
+                .overflow_y_scroll()
+                .track_scroll(&self.outer)
+                .child(restrict_scroll_to_horizontal_axis(
+                    div()
+                        .id("inner")
+                        .w(px(150.))
+                        .h(px(400.))
+                        .overflow_x_scroll()
+                        .track_scroll(&self.inner)
+                        .child(div().w(px(2000.)).h(px(400.))),
+                ))
+        }
+    }
+
+    #[gpui::test]
+    fn vertical_wheel_over_a_horizontally_scrolling_child_moves_only_the_ancestor(
+        cx: &mut TestAppContext,
+    ) {
+        let cx = cx.add_empty_window();
+        let outer = ScrollHandle::new();
+        let inner = ScrollHandle::new();
+
+        cx.draw(point(px(0.), px(0.)), size(px(200.), px(150.)), |_, cx| {
+            cx.new(|_| ScrollNestingTestView {
+                outer: outer.clone(),
+                inner: inner.clone(),
+            })
+        });
+
+        // Sanity-check the fixture actually overflows on both axes — a
+        // false pass from a fixture that never needed to scroll would prove
+        // nothing.
+        assert!(
+            outer.max_offset().height > px(0.),
+            "fixture bug: outer has nothing to scroll vertically"
+        );
+        assert!(
+            inner.max_offset().width > px(0.),
+            "fixture bug: inner has nothing to scroll horizontally"
+        );
+
+        // A pure vertical wheel gesture (delta.x == 0) landing on the inner
+        // (horizontally-scrolling) element — same as a diff body filling
+        // the panel under the user's cursor.
+        cx.simulate_event(ScrollWheelEvent {
+            position: point(px(50.), px(50.)),
+            delta: ScrollDelta::Pixels(point(px(0.), px(-40.))),
+            ..Default::default()
+        });
+
+        assert_eq!(
+            inner.offset().x,
+            px(0.),
+            "a pure vertical wheel gesture must not be reinterpreted as this \
+             element's own horizontal scroll"
+        );
+        assert_eq!(
+            outer.offset().y,
+            px(-40.),
+            "the same vertical wheel gesture must still reach the ancestor's \
+             vertical scroll (gpui's wheel handler never calls \
+             stop_propagation, so this was never the part that was broken)"
+        );
     }
 }
