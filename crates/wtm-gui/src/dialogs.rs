@@ -925,6 +925,7 @@ mod tests {
             is_prunable: false,
             status: Some(WorktreeStatus {
                 dirty,
+                dirty_count: usize::from(dirty),
                 ahead: None,
                 behind: None,
                 upstream_gone: false,
@@ -997,6 +998,7 @@ mod tests {
         let mut merged_row = worktree("feature", false, false);
         merged_row.status = Some(WorktreeStatus {
             dirty: false,
+            dirty_count: 0,
             ahead: None,
             behind: None,
             upstream_gone: false,
@@ -1021,6 +1023,7 @@ mod tests {
         let mut main_row = worktree("main", true, false);
         main_row.status = Some(WorktreeStatus {
             dirty: false,
+            dirty_count: 0,
             ahead: None,
             behind: None,
             upstream_gone: true,

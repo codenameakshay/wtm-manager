@@ -47,7 +47,7 @@
 use std::path::{Path, PathBuf};
 
 use gpui::prelude::*;
-use gpui::{div, px, AnyElement, Context, SharedString};
+use gpui::{div, px, AnyElement, Context, ScrollHandle, SharedString};
 
 use crate::app::WtmApp;
 use crate::data::OpenRepo;
@@ -85,6 +85,7 @@ pub struct ShortcutMeta {
 pub fn render(
     prefs: &Prefs,
     repo: Option<&OpenRepo>,
+    scroll: &ScrollHandle,
     theme: &Theme,
     cx: &mut Context<WtmApp>,
 ) -> AnyElement {
@@ -92,25 +93,41 @@ pub fn render(
     // `better-layout` §1 wants the gap *between* groups at least 2x the gap
     // *within* one (every section's own internal gap below tops out at
     // SPACE_12) — SPACE_20 clears that floor.
-    let body = div()
-        .id("settings-body")
-        .flex()
-        .flex_col()
-        .gap(px(SPACE_20))
-        .px(px(SPACE_16))
-        .py(px(SPACE_12))
+    //
+    // `.relative()` wrapper, sibling of the scrolling div — same reasoning
+    // as `app::chrome`'s scroll regions (`ui::scrollbar`'s own doc): the
+    // overlay must never be a descendant of the div it scrolls with.
+    let scroll_region = div()
+        .relative()
         .max_h(px(480.0))
-        .overflow_y_scroll()
-        .child(render_appearance_section(prefs.appearance, theme, cx))
-        .child(render_terminal_section(theme))
-        .child(render_config_section(repo, theme, cx))
-        .child(render_shortcuts_section(theme))
         .child(
-            ui::modal_footer(theme).child(
-                ui::button("settings-done", "Done", ButtonVariant::Secondary, theme)
-                    .on_click(cx.listener(|this, _, window, cx| this.close_dialog(window, cx))),
-            ),
-        );
+            div()
+                .id("settings-body")
+                .flex()
+                .flex_col()
+                .gap(px(SPACE_20))
+                .px(px(SPACE_16))
+                .py(px(SPACE_12))
+                .max_h(px(480.0))
+                .overflow_y_scroll()
+                .track_scroll(scroll)
+                .child(render_appearance_section(prefs.appearance, theme, cx))
+                .child(render_terminal_section(theme))
+                .child(render_config_section(repo, theme, cx))
+                .child(render_shortcuts_section(theme)),
+        )
+        .child(ui::scrollbar(
+            "settings-scrollbar",
+            scroll,
+            ui::ScrollAxis::Vertical,
+        ));
+
+    let body = div().flex().flex_col().child(scroll_region).child(
+        ui::modal_footer(theme).child(
+            ui::button("settings-done", "Done", ButtonVariant::Secondary, theme)
+                .on_click(cx.listener(|this, _, window, cx| this.close_dialog(window, cx))),
+        ),
+    );
 
     let card = ui::modal_card(480.0, theme)
         .id("settings-card")

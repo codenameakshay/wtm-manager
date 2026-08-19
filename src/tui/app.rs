@@ -729,6 +729,7 @@ mod tests {
     fn with_status(mut i: WorktreeInfo, dirty: bool, merged: bool) -> WorktreeInfo {
         i.status = Some(WorktreeStatus {
             dirty,
+            dirty_count: usize::from(dirty),
             ahead: Some(1),
             behind: Some(0),
             upstream_gone: false,

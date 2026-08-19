@@ -48,14 +48,15 @@ use std::rc::Rc;
 
 use gpui::prelude::*;
 use gpui::{
-    div, linear_color_stop, linear_gradient, px, svg, AnyElement, AnyView, App, Div, FontWeight,
-    Hsla, SharedString, Stateful, Window,
+    div, linear_color_stop, linear_gradient, point, px, svg, AnyElement, AnyView, App, Context,
+    Div, ElementId, FontWeight, Hsla, Render, ScrollHandle, SharedString, Stateful, Window,
 };
 
 use crate::motion;
 use crate::theme::{
-    scrim, Theme, ICON_BUTTON_SIZE, RADIUS_CHIP, RADIUS_CONTROL, RADIUS_DIALOG, RADIUS_PANEL,
-    RADIUS_ROW, SCRIM_ALPHA_DARK, SPACE_12, SPACE_16, SPACE_2, SPACE_32, SPACE_4, SPACE_6, SPACE_8,
+    hairline, scrim, Theme, ICON_BUTTON_SIZE, RADIUS_CHIP, RADIUS_CONTROL, RADIUS_DIALOG,
+    RADIUS_PANEL, RADIUS_ROW, SCRIM_ALPHA_DARK, SPACE_12, SPACE_16, SPACE_2, SPACE_32, SPACE_4,
+    SPACE_6, SPACE_8,
 };
 
 // ---------------------------------------------------------------------------
@@ -1031,11 +1032,11 @@ pub fn inline_error(message: impl Into<SharedString>, theme: &Theme) -> impl Int
 /// edge. `linear_gradient` over an **opaque** surface only — over the
 /// translucent (vibrancy) sidebar there is nothing to fade into, because
 /// "what is behind the window" is not a paintable color (COMPONENTS.md).
-/// Use on the worktree list and detail panel; do not use on the sidebar.
-/// Named as required vocabulary and its call sites specified exactly, but
-/// neither the list's `uniform_list` nor the detail panel wraps its
-/// scrollable region in this yet — no caller today.
-#[allow(dead_code)]
+/// Used on the worktree list and the detail panel's Details/Changes tabs
+/// (`app::chrome`); never on the sidebar (translucent) or the Files tab's
+/// tree column (`SPACE_2`-wide, no room to spare — see that call site).
+/// Caller decides *whether* to show it via [`scroll_edges`] — this function
+/// only paints.
 pub fn scroll_fade_top(surface: Hsla, height: f32) -> Div {
     div()
         .absolute()
@@ -1051,9 +1052,7 @@ pub fn scroll_fade_top(surface: Hsla, height: f32) -> Div {
         ))
 }
 
-/// The bottom-edge counterpart to [`scroll_fade_top`]. Same no-caller-yet
-/// case — see its doc.
-#[allow(dead_code)]
+/// The bottom-edge counterpart to [`scroll_fade_top`]. Same call sites.
 pub fn scroll_fade_bottom(surface: Hsla, height: f32) -> Div {
     div()
         .absolute()
@@ -1067,6 +1066,446 @@ pub fn scroll_fade_bottom(surface: Hsla, height: f32) -> Div {
             linear_color_stop(surface, 0.0),
             linear_color_stop(surface.opacity(0.0), 1.0),
         ))
+}
+
+/// Which edges of a scroll region currently have hidden content to fade
+/// into — the pure predicate behind "show [`scroll_fade_top`]/
+/// [`scroll_fade_bottom`] when there is overflow on that edge, hide it when
+/// there is not." Kept separate from painting so it is unit-testable
+/// without a live `ScrollHandle`/window.
+///
+/// `offset`/`max_offset` use gpui's own `ScrollHandle` sign convention
+/// (`ScrollHandle::offset()`/`max_offset()`, `elements/div.rs`): `offset` is
+/// `<= 0` and grows more negative as the region scrolls down/right;
+/// `max_offset` is the total overflow, always `>= 0` (`0` means nothing to
+/// scroll at all). [`scrollbar_thumb`] below takes the same convention, for
+/// the same reason.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ScrollEdges {
+    /// There is hidden content above/before the visible region.
+    pub leading: bool,
+    /// There is hidden content below/after the visible region.
+    pub trailing: bool,
+}
+
+pub fn scroll_edges(offset: f32, max_offset: f32) -> ScrollEdges {
+    if max_offset <= 0.0 {
+        return ScrollEdges::default();
+    }
+    ScrollEdges {
+        leading: offset < 0.0,
+        trailing: offset > -max_offset,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Scrollbar
+// ---------------------------------------------------------------------------
+
+/// gpui 0.2.2 ships no scrollbar widget at all — grepped the vendored
+/// source (`elements/`, `style.rs`) and found exactly one trace of the
+/// concept, `Style::scrollbar_width`, a layout-reservation number with no
+/// paint, no thumb, and no drag behind it. Zed hand-builds its own on top of
+/// its git-fork `gpui`; this is wtm's equivalent, built on the crates.io
+/// release (SPEC §0) from primitives that *do* exist here:
+/// `ScrollHandle::offset()`/`max_offset()` for geometry, and — for the
+/// drag — gpui's drag-and-drop pair `on_drag`/`on_drag_move`, repurposed
+/// for a non-DnD drag exactly the way `on_drag_move`'s own doc invites:
+/// "useful for implementing draggable UIs that don't conform to a drag and
+/// drop style interaction, like resizing."
+///
+/// # Why drag-and-drop primitives for a scrollbar thumb
+///
+/// A plain `.on_mouse_move(..)` only fires while the pointer stays over the
+/// element's own hitbox (`Interactivity::on_mouse_move`, gated on
+/// `hitbox.is_hovered(window)`) — exactly wrong for a drag, since a fast
+/// drag routinely carries the pointer outside a several-pixel-wide thumb.
+/// `on_drag_move::<T>` is the one listener gpui dispatches regardless of
+/// hover, for as long as a same-typed drag is active, which is what keeps
+/// the thumb tracking the cursor past its own edges. The trade-off: gpui
+/// matches `on_drag_move::<T>` purely by `TypeId`, not by which element
+/// started the drag, so *every* mounted scrollbar of the same axis receives
+/// every move event once any one of them is being dragged — see
+/// [`ScrollbarDrag`]'s `id` field for how each listener ignores a drag that
+/// isn't its own.
+///
+/// # Wiring
+///
+/// The caller wraps its scroll container in its own `.relative()` ancestor
+/// and adds this element as a **sibling** of the scrolling div, never a
+/// descendant — a child of the scrolling element scrolls away with its own
+/// content, which would drag the overlay out of view along with the list.
+///
+/// # Focus
+///
+/// The thumb is drag-only and takes no click/keyboard action of its own, so
+/// it is intentionally not part of `Theme::tab_stops`' focus trap — the
+/// scroll region it belongs to is already keyboard-scrollable by other
+/// means (arrow keys on the list/tree, page up/down), and a tab stop that
+/// does nothing on Enter/Space would be a trap, not an affordance.
+///
+/// Renders an empty, zero-size element when [`scrollbar_thumb`] finds no
+/// overflow — hidden, not just invisible, so it never reserves layout room
+/// (COMPONENTS.md: "overlay it inside the scroll container, do not consume
+/// layout width").
+///
+/// Takes no `&Theme` — like [`pill`], it paints from the context-free
+/// `hairline()` helper alone, so there is nothing theme-shaped to plumb
+/// through.
+pub fn scrollbar(id: impl Into<ElementId>, handle: &ScrollHandle, axis: ScrollAxis) -> AnyElement {
+    let id = id.into();
+    let bounds = handle.bounds();
+    let max = handle.max_offset();
+    let off = handle.offset();
+    let (viewport, max_offset, offset) = match axis {
+        ScrollAxis::Vertical => (
+            f32::from(bounds.size.height),
+            f32::from(max.height),
+            f32::from(off.y),
+        ),
+        ScrollAxis::Horizontal => (
+            f32::from(bounds.size.width),
+            f32::from(max.width),
+            f32::from(off.x),
+        ),
+    };
+
+    let Some(geometry) = scrollbar_thumb(viewport, max_offset, offset) else {
+        return div().into_any_element();
+    };
+
+    let track_id = id.clone();
+    let thumb_color = hairline(0.5);
+    let thumb_hover_color = hairline(0.9);
+
+    let thumb = div()
+        .id(id)
+        .absolute()
+        .rounded(px(RADIUS_CHIP))
+        .bg(thumb_color)
+        .hover(|s| s.bg(thumb_hover_color))
+        .on_drag(
+            ScrollbarDrag {
+                id: track_id.clone(),
+                handle: handle.clone(),
+                axis,
+            },
+            |_payload, _cursor_offset, _window, cx| cx.new(|_cx| DragGhost),
+        );
+    let thumb = match axis {
+        ScrollAxis::Vertical => thumb
+            .top(px(geometry.position))
+            .right(px(SCROLLBAR_INSET))
+            .w(px(SCROLLBAR_THICKNESS))
+            .h(px(geometry.length)),
+        ScrollAxis::Horizontal => thumb
+            .left(px(geometry.position))
+            .bottom(px(SCROLLBAR_INSET))
+            .h(px(SCROLLBAR_THICKNESS))
+            .w(px(geometry.length)),
+    };
+
+    div()
+        .absolute()
+        .top_0()
+        .left_0()
+        .right_0()
+        .bottom_0()
+        // Deliberately *not* `.id(..)` — `on_drag_move` is an
+        // `InteractiveElement`-only method (unlike `on_drag`, it needs no
+        // `Stateful<Div>`), and this track div's only job is supplying
+        // `DragMoveEvent::bounds` (its own painted bounds, used below to
+        // convert the live cursor position back into a scroll fraction) —
+        // see this function's own "why drag-and-drop primitives" doc.
+        .on_drag_move::<ScrollbarDrag>(move |event, _window, cx| {
+            let drag = event.drag(cx);
+            if drag.id != track_id {
+                // Not this scrollbar's own drag — see `ScrollbarDrag::id`'s
+                // doc for why every mounted scrollbar of this axis sees
+                // every drag move event and must filter for its own.
+                return;
+            }
+            let track_bounds = event.bounds;
+            let (track_len, track_origin, cursor) = match drag.axis {
+                ScrollAxis::Vertical => (
+                    f32::from(track_bounds.size.height),
+                    f32::from(track_bounds.origin.y),
+                    f32::from(event.event.position.y),
+                ),
+                ScrollAxis::Horizontal => (
+                    f32::from(track_bounds.size.width),
+                    f32::from(track_bounds.origin.x),
+                    f32::from(event.event.position.x),
+                ),
+            };
+            let max_offset = match drag.axis {
+                ScrollAxis::Vertical => f32::from(drag.handle.max_offset().height),
+                ScrollAxis::Horizontal => f32::from(drag.handle.max_offset().width),
+            };
+            let Some(new_offset) =
+                scrollbar_drag_offset(track_len, track_origin, cursor, max_offset)
+            else {
+                return;
+            };
+            let current = drag.handle.offset();
+            let updated = match drag.axis {
+                ScrollAxis::Vertical => point(current.x, px(new_offset)),
+                ScrollAxis::Horizontal => point(px(new_offset), current.y),
+            };
+            drag.handle.set_offset(updated);
+        })
+        .child(thumb)
+        .into_any_element()
+}
+
+/// Axis a [`scrollbar`] tracks — the caller already knows this from its own
+/// layout (a vertical list, a horizontally-scrolling diff line), so it is a
+/// parameter rather than something [`scrollbar`] infers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScrollAxis {
+    Vertical,
+    /// No call site yet: `diff_view::render_hunks` is this app's one
+    /// horizontally-scrolling region (per SPEC's own "Long lines" doc), but
+    /// it scrolls *per file* inside the Changes tab, and `diff_view.rs` is
+    /// deliberately pure rendering with no `Context<WtmApp>` to persist a
+    /// per-file `ScrollHandle` across frames in (see that module's doc) —
+    /// wiring it needs `WtmApp` to own a `ScrollHandle` keyed by diff path
+    /// and thread it down, which is more than this pass's five named scroll
+    /// regions (Changes tab, Files tab, worktree list, settings sheet,
+    /// palette results) called for. Kept, not deleted, since [`scrollbar`]
+    /// is already fully axis-generic and this is exactly what the variant
+    /// is for once that wiring lands.
+    #[allow(dead_code)]
+    Horizontal,
+}
+
+/// Scrollbar thumb thickness — thin and "quiet at rest" (COMPONENTS.md),
+/// derived from [`SPACE_6`] rather than an invented pixel value.
+const SCROLLBAR_THICKNESS: f32 = SPACE_6;
+/// Gap between the thumb and the scroll region's own edge.
+const SCROLLBAR_INSET: f32 = SPACE_2;
+/// Floor on thumb length so a very long list's thumb never shrinks below a
+/// comfortably grabbable size — [`SPACE_32`], the scale this module already
+/// uses elsewhere for minimum interactive sizes.
+const SCROLLBAR_MIN_THUMB: f32 = SPACE_32;
+
+/// One scrollbar thumb's length and position within its track, in px along
+/// the scroll axis — pure arithmetic (tested below) so painting and the
+/// "is there overflow at all" check can never disagree.
+///
+/// `viewport`/`max_offset`/`offset` all read straight off a live
+/// `ScrollHandle` — see [`scroll_edges`]'s doc for the shared sign
+/// convention. `None` when there is nothing to scroll (`max_offset <= 0`, or
+/// a degenerate `viewport <= 0` before the region's first real layout
+/// pass) — the caller hides the scrollbar entirely in that case
+/// (COMPONENTS.md: "show it when there is overflow; hide it when there is
+/// not").
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ThumbGeometry {
+    /// Thumb length along the scroll axis, in px.
+    pub length: f32,
+    /// Distance from the track's leading edge to the thumb's leading edge.
+    pub position: f32,
+}
+
+pub fn scrollbar_thumb(viewport: f32, max_offset: f32, offset: f32) -> Option<ThumbGeometry> {
+    if viewport <= 0.0 || max_offset <= 0.0 {
+        return None;
+    }
+    let content = viewport + max_offset;
+    let min_thumb = SCROLLBAR_MIN_THUMB.min(viewport);
+    let length = (viewport * viewport / content).clamp(min_thumb, viewport);
+    let travel = (viewport - length).max(0.0);
+    let scrolled = (-offset).clamp(0.0, max_offset);
+    let fraction = scrolled / max_offset;
+    Some(ThumbGeometry {
+        length,
+        position: travel * fraction,
+    })
+}
+
+/// The drag half of [`scrollbar_thumb`]: given the track's own painted
+/// length/origin (`DragMoveEvent::bounds`), the live cursor position, and
+/// the handle's `max_offset`, returns gpui's own signed scroll offset
+/// (`<= 0`, see [`scroll_edges`]'s doc) that puts the thumb's *center*
+/// under the cursor.
+///
+/// Centering under the cursor rather than preserving the exact pixel the
+/// user grabbed is a deliberate simplification: gpui 0.2.2's
+/// `on_drag`/`on_drag_move` pair carries a drag *payload* fixed at the
+/// moment the drag element was last built (before the mouse-down that
+/// starts the drag even happens — verified against `elements/div.rs`'s
+/// `on_drag`/`on_drag_move`), with no channel back from "where inside the
+/// thumb did the mouse go down" into that payload. Recomputing the offset
+/// fresh from the current cursor position every event sidesteps needing
+/// that channel at all, at the cost of a small jump on the very first move
+/// past the drag threshold when the grab point wasn't already the thumb's
+/// center — an acceptable trade for a scrollbar thumb, where every position
+/// within the thumb represents the same "jump to here" intent anyway.
+///
+/// `None` when the track has no travel to give (`max_offset <= 0`, a
+/// degenerate `track_len <= 0`, or a thumb that already fills the whole
+/// track) — the caller leaves the handle's offset untouched rather than
+/// dividing by zero.
+pub fn scrollbar_drag_offset(
+    track_len: f32,
+    track_origin: f32,
+    cursor: f32,
+    max_offset: f32,
+) -> Option<f32> {
+    if track_len <= 0.0 || max_offset <= 0.0 {
+        return None;
+    }
+    let content = track_len + max_offset;
+    let min_thumb = SCROLLBAR_MIN_THUMB.min(track_len);
+    let thumb_len = (track_len * track_len / content).clamp(min_thumb, track_len);
+    let travel = track_len - thumb_len;
+    if travel <= 0.0 {
+        return None;
+    }
+    let target = (cursor - track_origin - thumb_len / 2.0).clamp(0.0, travel);
+    let fraction = target / travel;
+    Some(-(fraction * max_offset))
+}
+
+/// Drag payload carried while a [`scrollbar`] thumb is being dragged — see
+/// [`scrollbar`]'s own "why drag-and-drop primitives" doc for the mechanism
+/// this rides on. `id` exists solely so two independently-mounted
+/// scrollbars sharing an axis (e.g. the Files tab's tree column and its
+/// diff both scroll vertically at once) never cross-talk: gpui dispatches
+/// `on_drag_move::<ScrollbarDrag>` to *every* mounted listener of this type
+/// once any one of them starts a drag, matching purely by `TypeId` and not
+/// by which element originated it, so every listener must check `id`
+/// against its own before touching `handle`.
+#[derive(Clone)]
+struct ScrollbarDrag {
+    id: ElementId,
+    handle: ScrollHandle,
+    axis: ScrollAxis,
+}
+
+/// The `on_drag` API requires *some* `Render` view to show under the cursor
+/// while dragging — ordinary drag-and-drop uses this to preview the thing
+/// being dropped. A scrollbar thumb drag has no such payload to preview
+/// (the thumb itself stays put, tracking the scroll position — it is not
+/// "the thing being moved" in the DnD sense), so this renders nothing; it
+/// exists only because `on_drag`'s `constructor` parameter is required to
+/// return *some* `Entity<impl Render>`.
+struct DragGhost;
+
+impl Render for DragGhost {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+    }
+}
+
+#[cfg(test)]
+mod scroll_tests {
+    use super::*;
+
+    #[test]
+    fn scroll_edges_hides_both_when_there_is_nothing_to_scroll() {
+        let edges = scroll_edges(0.0, 0.0);
+        assert!(!edges.leading);
+        assert!(!edges.trailing);
+    }
+
+    #[test]
+    fn scroll_edges_shows_only_trailing_at_the_very_top() {
+        let edges = scroll_edges(0.0, 200.0);
+        assert!(!edges.leading, "nothing scrolled past yet");
+        assert!(edges.trailing, "more content below");
+    }
+
+    #[test]
+    fn scroll_edges_shows_only_leading_at_the_very_bottom() {
+        let edges = scroll_edges(-200.0, 200.0);
+        assert!(edges.leading, "content scrolled past above");
+        assert!(!edges.trailing, "nothing more below");
+    }
+
+    #[test]
+    fn scroll_edges_shows_both_in_the_middle() {
+        let edges = scroll_edges(-100.0, 200.0);
+        assert!(edges.leading);
+        assert!(edges.trailing);
+    }
+
+    #[test]
+    fn scrollbar_thumb_hides_when_content_fits_the_viewport() {
+        assert_eq!(scrollbar_thumb(400.0, 0.0, 0.0), None);
+    }
+
+    #[test]
+    fn scrollbar_thumb_hides_on_a_degenerate_zero_viewport() {
+        // The very first frame, before the tracked div's own bounds have
+        // ever been painted — `ScrollHandle::bounds()` starts at
+        // `Bounds::default()`. Must not divide by zero.
+        assert_eq!(scrollbar_thumb(0.0, 500.0, 0.0), None);
+    }
+
+    #[test]
+    fn scrollbar_thumb_sizes_proportionally_to_the_visible_fraction() {
+        // 400px viewport over 800px content (half visible) => thumb is half
+        // the track, comfortably above the min-thumb floor.
+        let geometry = scrollbar_thumb(400.0, 400.0, 0.0).expect("has overflow");
+        assert!((geometry.length - 200.0).abs() < 1.0);
+        assert_eq!(geometry.position, 0.0, "at the top, thumb starts flush");
+    }
+
+    #[test]
+    fn scrollbar_thumb_never_shrinks_below_the_min_size_on_a_huge_list() {
+        // 400px viewport over 40,000px content — the proportional formula
+        // alone would compute a ~4px thumb, unusably small to grab.
+        let geometry = scrollbar_thumb(400.0, 39_600.0, 0.0).expect("has overflow");
+        assert_eq!(geometry.length, SCROLLBAR_MIN_THUMB);
+    }
+
+    #[test]
+    fn scrollbar_thumb_reaches_the_track_end_when_fully_scrolled() {
+        let max_offset = 400.0;
+        let geometry = scrollbar_thumb(400.0, max_offset, -max_offset).expect("has overflow");
+        let travel = 400.0 - geometry.length;
+        assert!((geometry.position - travel).abs() < 1e-3);
+    }
+
+    #[test]
+    fn scrollbar_thumb_position_is_monotonic_in_scroll_offset() {
+        let max_offset = 1000.0;
+        let mut last = -1.0;
+        let mut offset = 0.0;
+        while offset >= -max_offset {
+            let geometry = scrollbar_thumb(300.0, max_offset, offset).unwrap();
+            assert!(geometry.position >= last - 1e-6);
+            last = geometry.position;
+            offset -= 100.0;
+        }
+    }
+
+    #[test]
+    fn scrollbar_drag_offset_centers_the_thumb_under_the_cursor() {
+        // 400px track, 400px overflow => thumb length is
+        // `400*400/800 = 200px`, so `travel = 200px`. Cursor at the track's
+        // exact midpoint (200px from `track_origin`) should center the
+        // 200px thumb there too: `target = 200 - 100 = 100`, half of
+        // `travel` => half of `max_offset` scrolled.
+        let offset = scrollbar_drag_offset(400.0, 0.0, 200.0, 400.0).expect("has travel to give");
+        assert!((offset - (-200.0)).abs() < 1.0);
+    }
+
+    #[test]
+    fn scrollbar_drag_offset_clamps_past_either_end_of_the_track() {
+        let past_start = scrollbar_drag_offset(400.0, 0.0, -1000.0, 400.0).unwrap();
+        assert_eq!(past_start, 0.0);
+        let past_end = scrollbar_drag_offset(400.0, 0.0, 1000.0, 400.0).unwrap();
+        assert_eq!(past_end, -400.0);
+    }
+
+    #[test]
+    fn scrollbar_drag_offset_is_none_when_there_is_no_travel() {
+        assert_eq!(scrollbar_drag_offset(0.0, 0.0, 0.0, 400.0), None);
+        assert_eq!(scrollbar_drag_offset(400.0, 0.0, 0.0, 0.0), None);
+    }
 }
 
 // ---------------------------------------------------------------------------

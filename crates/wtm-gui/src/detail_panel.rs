@@ -459,7 +459,16 @@ fn status_pills(info: &WorktreeInfo, theme: &Theme) -> Vec<AnyElement> {
 
     let mut pills = Vec::new();
     if status.dirty {
-        pills.push(ui::pill("dirty", theme.warning).into_any_element());
+        // Same "N dirty" wording as `worktree_list`'s row pill — the user's
+        // ask ("show that number somewhere") applies here too, and the list
+        // and the panel must never disagree about what the pill means.
+        pills.push(
+            ui::pill(
+                crate::worktree_list::dirty_pill_label(status.dirty_count),
+                theme.warning,
+            )
+            .into_any_element(),
+        );
     }
     if let Some(ahead) = status.ahead.filter(|n| *n > 0) {
         pills.push(ui::pill(format!("{ahead} ahead"), theme.success).into_any_element());
@@ -480,8 +489,14 @@ fn status_pills(info: &WorktreeInfo, theme: &Theme) -> Vec<AnyElement> {
     pills
 }
 
-/// "Recent commits": a skeleton while `details` loads, an honest empty state
-/// when the worktree genuinely has none, otherwise compact sha/subject rows.
+/// A skeleton while `details` loads, an honest empty state when the
+/// worktree genuinely has no commits, otherwise compact sha/subject rows —
+/// no "Recent commits" eyebrow above it. A list of shas and subjects
+/// already announces what it is; the `SPACE_16` gap `render_details` puts
+/// ahead of this section (double this section's own internal `SPACE_8`/
+/// `SPACE_6` row gap) is what tells it apart from the facts/status groups
+/// above, per `better-layout` §1 — a muted label restating "these are
+/// commits" on top of that spacing was grammar nobody chose.
 fn render_commits(details: Option<&WorktreeDetails>, theme: &Theme) -> impl IntoElement {
     div()
         .w_full()
@@ -491,13 +506,6 @@ fn render_commits(details: Option<&WorktreeDetails>, theme: &Theme) -> impl Into
         .flex()
         .flex_col()
         .gap(px(SPACE_8))
-        .child(
-            div()
-                .flex_none()
-                .text_size(px(ui::TEXT_SM))
-                .text_color(theme.text_muted)
-                .child("Recent commits"),
-        )
         .child(match details {
             None => render_commit_skeleton(theme).into_any_element(),
             Some(details) if details.commits.is_empty() => {

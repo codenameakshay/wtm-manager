@@ -182,6 +182,25 @@ struct PillSpec {
     color: Option<Hsla>,
 }
 
+/// Label for the dirty pill: the exact count, not just "dirty" — the user's
+/// own words for this were "there is no way to check how many files are
+/// edited/dirty in a worktree, show that number somewhere." `n` is always
+/// `>= 1` at every real call site (a dirty pill only renders when
+/// `status.dirty`, and `dirty_count` is `0` iff `dirty` is `false` — see
+/// `WorktreeStatus::dirty_count`'s doc), but this stays total rather than
+/// panicking or asserting on `0` so a future caller with a genuinely-unknown
+/// count can't accidentally UB this.
+///
+/// `pub(crate)` so `detail_panel::status_pills` shares this exact wording
+/// instead of a second, driftable copy — the list row and the detail panel
+/// must never disagree about what "N dirty" means.
+pub(crate) fn dirty_pill_label(n: usize) -> String {
+    match n {
+        1 => "1 dirty".to_string(),
+        n => format!("{n} dirty"),
+    }
+}
+
 /// Status pills for a row, in the order they matter when scanning: what
 /// blocks you (dirty, missing), then how far the branch has drifted.
 ///
@@ -207,7 +226,7 @@ fn pill_specs(info: &WorktreeInfo, awaiting_status: bool, theme: &Theme) -> Vec<
     let mut specs = Vec::new();
     if status.dirty {
         specs.push(PillSpec {
-            label: "dirty".to_string(),
+            label: dirty_pill_label(status.dirty_count),
             color: Some(theme.warning),
         });
     }
@@ -708,6 +727,24 @@ mod layout_tests {
     }
 
     #[test]
+    fn dirty_pill_label_singular_is_not_pluralized() {
+        assert_eq!(dirty_pill_label(1), "1 dirty");
+    }
+
+    #[test]
+    fn dirty_pill_label_plural_reads_n_dirty() {
+        assert_eq!(dirty_pill_label(2), "2 dirty");
+        assert_eq!(dirty_pill_label(42), "42 dirty");
+    }
+
+    #[test]
+    fn dirty_pill_label_zero_still_reads_n_dirty_rather_than_panicking() {
+        // No real call site renders this (see the function's own doc), but
+        // it must stay total.
+        assert_eq!(dirty_pill_label(0), "0 dirty");
+    }
+
+    #[test]
     fn status_pills_reserve_is_zero_for_an_empty_row() {
         assert_eq!(status_pills_reserve_px(&[]), 0.0);
     }
@@ -818,6 +855,7 @@ mod sort_tests {
     fn clean() -> WorktreeStatus {
         WorktreeStatus {
             dirty: false,
+            dirty_count: 0,
             ahead: None,
             behind: None,
             upstream_gone: false,
@@ -828,6 +866,7 @@ mod sort_tests {
     fn dirty() -> WorktreeStatus {
         WorktreeStatus {
             dirty: true,
+            dirty_count: 3,
             ..clean()
         }
     }

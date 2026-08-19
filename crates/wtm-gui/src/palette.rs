@@ -35,7 +35,9 @@
 use std::collections::HashSet;
 
 use gpui::prelude::*;
-use gpui::{div, px, AnyElement, Context, Entity, SharedString, Subscription, Window};
+use gpui::{
+    div, px, AnyElement, Context, Entity, ScrollHandle, SharedString, Subscription, Window,
+};
 use wtm::model::WorktreeInfo;
 
 use crate::app::WtmApp;
@@ -426,6 +428,10 @@ pub struct PaletteState {
     /// so this is the only piece of navigation state that persists between
     /// keystrokes.
     pub highlighted: usize,
+    /// The results column's own scroll position — `ui::scrollbar` needs a
+    /// handle that survives across renders (Task 2: "wire it to every
+    /// scroll region that can overflow ... the palette results").
+    scroll: ScrollHandle,
 }
 
 impl PaletteState {
@@ -465,6 +471,7 @@ impl PaletteState {
             input,
             _input_sub: sub,
             highlighted: 0,
+            scroll: ScrollHandle::new(),
         }
     }
 }
@@ -492,13 +499,14 @@ pub fn render(
         .into_iter()
         .partition(|(_, e)| matches!(e, PaletteEntry::Worktree { .. }));
 
-    let results_col = div()
+    let results_list = div()
         .id("palette-results")
         .flex()
         .flex_col()
         .gap(px(SPACE_2))
         .max_h(px(MAX_RESULTS_HEIGHT))
         .overflow_y_scroll()
+        .track_scroll(&state.scroll)
         .px(px(SPACE_6))
         .py(px(SPACE_6))
         .when(!worktree_entries.is_empty(), |this| {
@@ -535,6 +543,16 @@ pub fn render(
                     .child("No matches"),
             )
         });
+
+    // `.relative()` wrapper, sibling of `results_list` itself — same
+    // reasoning as `app::chrome`'s scroll regions (`ui::scrollbar`'s own
+    // doc): the overlay must never be a descendant of the div it scrolls
+    // with, or it scrolls away with the very results it's annotating.
+    let results_col = div().relative().child(results_list).child(ui::scrollbar(
+        "palette-results-scrollbar",
+        &state.scroll,
+        ui::ScrollAxis::Vertical,
+    ));
 
     // Search field: a borderless inset well with a leading search icon
     // (SURFACES §6). `TextInput` itself paints no background/border in

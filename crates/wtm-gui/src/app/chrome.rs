@@ -737,49 +737,70 @@ impl WtmApp {
                     .when(multi_count > 1, |this| {
                         this.child(self.render_selection_bar(multi_count, &theme, cx))
                     })
-                    .child(
-                        uniform_list(
-                            "worktrees",
-                            shown,
-                            cx.processor(|this, range: std::ops::Range<usize>, window, cx| {
-                                let visible = this.visible_row_indices(cx);
-                                let theme = this.chrome_theme(cx);
-                                // Computed once per visible range rather
-                                // than once per row: every row's age is
-                                // relative to the same "now", and a fresh
-                                // syscall per row would be pure waste.
-                                let now = std::time::SystemTime::now()
-                                    .duration_since(std::time::UNIX_EPOCH)
-                                    .map(|d| d.as_secs() as i64)
-                                    .unwrap_or(0);
-                                // "Whenever any multi-selection is active" —
-                                // `multi_selected` is never exactly one
-                                // element (see `apply_selection_set`), so
-                                // this is the same "is this a real,
-                                // 2-or-more multi-selection" test the footer
-                                // chip and the selection bar above use.
-                                let force_checkbox_visible = !this.multi_selected.is_empty();
-                                // Nothing in this formula varies row to row
-                                // (Task 1) — computed once per visible range,
-                                // like `now` above, not once per row.
-                                let card_width = this.worktree_row_card_width(window);
-                                range
-                                    .map(|display_ix| {
-                                        let ix = visible[display_ix];
-                                        let selected = this.is_row_selected(ix);
-                                        let age = this
-                                            .activity
-                                            .get(&this.rows[ix].path)
-                                            .map(|&t| data::relative_age(t, now));
-                                        // Unique per row rather than one
-                                        // shared name: `uniform_list`
-                                        // recycles element identities across
-                                        // scroll positions, and a shared
-                                        // group name would make every row's
-                                        // checkbox reveal together the
-                                        // moment any one of them is hovered.
-                                        let group_name = SharedString::from(format!("wt-row-{ix}"));
-                                        div()
+                    .child({
+                        // `.relative()` wrapper, sibling (not ancestor) of
+                        // the scrolling `uniform_list` itself — the
+                        // scrollbar/fade overlays below must never be
+                        // descendants of the div that actually scrolls, or
+                        // they would scroll away with the very content
+                        // they're annotating (`ui::scrollbar`'s own doc).
+                        let list_handle = self.list_scroll.0.borrow().base_handle.clone();
+                        let edges = ui::scroll_edges(
+                            f32::from(list_handle.offset().y),
+                            f32::from(list_handle.max_offset().height),
+                        );
+                        div()
+                            .relative()
+                            .flex_1()
+                            .min_h_0()
+                            .flex()
+                            .flex_col()
+                            .child(
+                                uniform_list(
+                                    "worktrees",
+                                    shown,
+                                    cx.processor(
+                                        |this, range: std::ops::Range<usize>, window, cx| {
+                                            let visible = this.visible_row_indices(cx);
+                                            let theme = this.chrome_theme(cx);
+                                            // Computed once per visible range rather
+                                            // than once per row: every row's age is
+                                            // relative to the same "now", and a fresh
+                                            // syscall per row would be pure waste.
+                                            let now = std::time::SystemTime::now()
+                                                .duration_since(std::time::UNIX_EPOCH)
+                                                .map(|d| d.as_secs() as i64)
+                                                .unwrap_or(0);
+                                            // "Whenever any multi-selection is active" —
+                                            // `multi_selected` is never exactly one
+                                            // element (see `apply_selection_set`), so
+                                            // this is the same "is this a real,
+                                            // 2-or-more multi-selection" test the footer
+                                            // chip and the selection bar above use.
+                                            let force_checkbox_visible =
+                                                !this.multi_selected.is_empty();
+                                            // Nothing in this formula varies row to row
+                                            // (Task 1) — computed once per visible range,
+                                            // like `now` above, not once per row.
+                                            let card_width = this.worktree_row_card_width(window);
+                                            range
+                                                .map(|display_ix| {
+                                                    let ix = visible[display_ix];
+                                                    let selected = this.is_row_selected(ix);
+                                                    let age = this
+                                                        .activity
+                                                        .get(&this.rows[ix].path)
+                                                        .map(|&t| data::relative_age(t, now));
+                                                    // Unique per row rather than one
+                                                    // shared name: `uniform_list`
+                                                    // recycles element identities across
+                                                    // scroll positions, and a shared
+                                                    // group name would make every row's
+                                                    // checkbox reveal together the
+                                                    // moment any one of them is hovered.
+                                                    let group_name =
+                                                        SharedString::from(format!("wt-row-{ix}"));
+                                                    div()
                                             .px(px(theme::SPACE_8))
                                             .pb(px(2.0))
                                             .flex()
@@ -849,14 +870,28 @@ impl WtmApp {
                                                     },
                                                 ),
                                             )
-                                    })
-                                    .collect()
-                            }),
-                        )
-                        .flex_1()
-                        .px(px(theme::SPACE_8))
-                        .on_mouse_down(MouseButton::Right, empty_space_menu),
-                    ),
+                                                })
+                                                .collect()
+                                        },
+                                    ),
+                                )
+                                .track_scroll(self.list_scroll.clone())
+                                .flex_1()
+                                .px(px(theme::SPACE_8))
+                                .on_mouse_down(MouseButton::Right, empty_space_menu),
+                            )
+                            .when(edges.leading, |this| {
+                                this.child(ui::scroll_fade_top(theme.bg, theme::SPACE_24))
+                            })
+                            .when(edges.trailing, |this| {
+                                this.child(ui::scroll_fade_bottom(theme.bg, theme::SPACE_24))
+                            })
+                            .child(ui::scrollbar(
+                                "worktree-list-scrollbar",
+                                &list_handle,
+                                ui::ScrollAxis::Vertical,
+                            ))
+                    }),
             )
             .into_any_element()
     }
@@ -1258,6 +1293,16 @@ impl WtmApp {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let wide_tabs_fit = layout::wide_tabs_fit(f32::from(window.viewport_size().width));
+        // TUI parity (`tui::view`'s `"changes ({})"`): the Changes tab wears
+        // the same exact-count convention once `self.details` has loaded —
+        // zero extra cost, `dirty_total` is already computed for the
+        // selected worktree's detail panel. Plain "Changes" while it's
+        // still loading, same as every other detail-panel field that
+        // degrades to its bare label until `details` arrives.
+        let changes_label: SharedString = match &self.details {
+            Some(details) => format!("Changes ({})", details.dirty_total).into(),
+            None => "Changes".into(),
+        };
         div()
             .flex_none()
             .flex()
@@ -1267,9 +1312,30 @@ impl WtmApp {
             .py(px(theme::SPACE_8))
             .border_b_1()
             .border_color(theme.border)
-            .child(self.render_detail_tab(DetailTab::Details, "Details", true, theme, cx))
-            .child(self.render_detail_tab(DetailTab::Files, "Files", wide_tabs_fit, theme, cx))
-            .child(self.render_detail_tab(DetailTab::Changes, "Changes", wide_tabs_fit, theme, cx))
+            .child(self.render_detail_tab(
+                DetailTab::Details,
+                "Details",
+                "Details".into(),
+                true,
+                theme,
+                cx,
+            ))
+            .child(self.render_detail_tab(
+                DetailTab::Files,
+                "Files",
+                "Files".into(),
+                wide_tabs_fit,
+                theme,
+                cx,
+            ))
+            .child(self.render_detail_tab(
+                DetailTab::Changes,
+                "Changes",
+                changes_label,
+                wide_tabs_fit,
+                theme,
+                cx,
+            ))
     }
 
     /// One tab segment. SURFACES §4: "the selected tab carries the wash +
@@ -1293,14 +1359,19 @@ impl WtmApp {
     fn render_detail_tab(
         &self,
         tab: DetailTab,
-        label: &'static str,
+        id_label: &'static str,
+        display_label: SharedString,
         enabled: bool,
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let active = self.detail_tab == tab;
         let styled = div()
-            .id(label)
+            // `.id(..)` stays keyed on the tab's static label — never the
+            // dynamic `"Changes (N)"` display text — so this element's
+            // identity (and gpui's per-frame diffing of it) doesn't change
+            // shape every time the dirty count does.
+            .id(id_label)
             .relative()
             .px(px(theme::SPACE_12))
             .py(px(theme::SPACE_6))
@@ -1315,7 +1386,7 @@ impl WtmApp {
                     .hover(|s| s.bg(theme.element_hover))
             })
             .when(!enabled, |d| d.text_color(theme.text_faint))
-            .child(label)
+            .child(display_label)
             .when(active, |d| {
                 d.child(
                     div()
@@ -1357,32 +1428,63 @@ impl WtmApp {
             .min_h_0()
             .flex()
             .child(
+                // `.relative()` wrapper, sibling of the scrolling div — see
+                // `render_changes_tab`'s identical reasoning.
                 div()
-                    .id("file-tree-scroll")
+                    .relative()
                     .w(px(220.0))
                     .flex_none()
                     .h_full()
                     .min_h_0()
                     .flex()
                     .flex_col()
-                    .overflow_y_scroll()
                     .border_r_1()
                     .border_color(theme.border)
-                    .py(px(6.0))
-                    .child(tree_panel),
+                    .child(
+                        div()
+                            .id("file-tree-scroll")
+                            .flex_1()
+                            .min_h_0()
+                            .flex()
+                            .flex_col()
+                            .overflow_y_scroll()
+                            .track_scroll(&self.files_tree_scroll)
+                            .py(px(6.0))
+                            .child(tree_panel),
+                    )
+                    .child(ui::scrollbar(
+                        "file-tree-scrollbar",
+                        &self.files_tree_scroll,
+                        ui::ScrollAxis::Vertical,
+                    )),
             )
             .child(
                 div()
-                    .id("file-diff-scroll")
+                    .relative()
                     .flex_1()
                     .min_w_0()
                     .h_full()
                     .min_h_0()
                     .flex()
                     .flex_col()
-                    .overflow_y_scroll()
-                    .p(px(14.0))
-                    .child(diff_panel),
+                    .child(
+                        div()
+                            .id("file-diff-scroll")
+                            .flex_1()
+                            .min_w_0()
+                            .min_h_0()
+                            .flex()
+                            .flex_col()
+                            .overflow_y_scroll()
+                            .track_scroll(&self.files_diff_scroll)
+                            .p(px(14.0))
+                            .child(diff_panel),
+                    )
+                    .child(ui::scrollbar(
+                        "file-diff-scrollbar",
+                        &self.files_diff_scroll,
+                        ui::ScrollAxis::Vertical,
+                    )),
             )
             .into_any_element()
     }
@@ -1463,16 +1565,45 @@ impl WtmApp {
             }
             ChangesState::Loaded(diffs) => diff_view::render_changes(diffs, theme),
         };
+        // Task 2 ("the changes panel has no scrollbar, check that"): this
+        // region already scrolled (`.overflow_y_scroll()` below), gpui
+        // 0.2.2 just never painted anything to show it. `.relative()`
+        // wrapper + sibling overlay, same reasoning as `render_list`'s.
+        let edges = ui::scroll_edges(
+            f32::from(self.changes_scroll.offset().y),
+            f32::from(self.changes_scroll.max_offset().height),
+        );
         div()
-            .id("changes-scroll")
+            .relative()
             .flex_1()
             .min_w_0()
             .min_h_0()
             .flex()
             .flex_col()
-            .overflow_y_scroll()
-            .p(px(14.0))
-            .child(content)
+            .child(
+                div()
+                    .id("changes-scroll")
+                    .flex_1()
+                    .min_w_0()
+                    .min_h_0()
+                    .flex()
+                    .flex_col()
+                    .overflow_y_scroll()
+                    .track_scroll(&self.changes_scroll)
+                    .p(px(14.0))
+                    .child(content),
+            )
+            .when(edges.leading, |this| {
+                this.child(ui::scroll_fade_top(theme.surface, theme::SPACE_24))
+            })
+            .when(edges.trailing, |this| {
+                this.child(ui::scroll_fade_bottom(theme.surface, theme::SPACE_24))
+            })
+            .child(ui::scrollbar(
+                "changes-scrollbar",
+                &self.changes_scroll,
+                ui::ScrollAxis::Vertical,
+            ))
             .into_any_element()
     }
 }
@@ -1682,6 +1813,7 @@ mod tests {
             is_prunable: prunable,
             status: Some(WorktreeStatus {
                 dirty: false,
+                dirty_count: 0,
                 ahead: None,
                 behind: None,
                 upstream_gone: false,

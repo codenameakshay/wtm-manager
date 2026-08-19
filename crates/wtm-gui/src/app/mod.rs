@@ -78,7 +78,8 @@ use gpui::prelude::*;
 use gpui::{
     actions, deferred, div, px, uniform_list, AnyElement, App, ClickEvent, Context, Decorations,
     Div, Entity, FocusHandle, Focusable, KeyDownEvent, MouseButton, MouseDownEvent, Pixels, Point,
-    SharedString, Stateful, Subscription, Window, WindowAppearance,
+    ScrollHandle, SharedString, Stateful, Subscription, UniformListScrollHandle, Window,
+    WindowAppearance,
 };
 use wtm::commands::prune::{PruneCandidate, PruneReport};
 use wtm::model::WorktreeInfo;
@@ -371,6 +372,26 @@ pub struct WtmApp {
     /// there is nowhere to persist this across a restart yet — a follow-up
     /// for whoever owns that file next.
     recent_commands: HashMap<PathBuf, Vec<String>>,
+    /// The worktree list's own scroll position — `ui::scrollbar`/
+    /// `ui::scroll_fade_*` (Task 2: "the changes panel has no scrollbar,
+    /// check that") both need a live handle to read geometry off of, which
+    /// `uniform_list` only exposes once tracked (`UniformListScrollHandle`
+    /// wraps a plain `ScrollHandle` — see `UniformListScrollState::base_handle`
+    /// in the vendored `gpui-0.2.2` source).
+    list_scroll: UniformListScrollHandle,
+    /// The Changes tab's own scroll position — same reasoning as
+    /// `list_scroll`, for `render_changes_tab`'s `"changes-scroll"` region
+    /// (the literal panel the user reported has no scrollbar).
+    changes_scroll: ScrollHandle,
+    /// The Files tab's tree column's own scroll position.
+    files_tree_scroll: ScrollHandle,
+    /// The Files tab's diff column's own scroll position.
+    files_diff_scroll: ScrollHandle,
+    /// The settings sheet's own scroll position, threaded into
+    /// `settings::render` (`settings.rs` owns no persistent state of its
+    /// own — see that module's doc — so this lives here like every other
+    /// overlay's scroll handle).
+    settings_scroll: ScrollHandle,
 }
 
 impl WtmApp {
@@ -433,6 +454,11 @@ impl WtmApp {
             bulk_remove: None,
             run_command: None,
             recent_commands: HashMap::new(),
+            list_scroll: UniformListScrollHandle::new(),
+            changes_scroll: ScrollHandle::new(),
+            files_tree_scroll: ScrollHandle::new(),
+            files_diff_scroll: ScrollHandle::new(),
+            settings_scroll: ScrollHandle::new(),
         };
 
         if let Some(repo) = initial {
@@ -598,6 +624,7 @@ impl Render for WtmApp {
             Some(settings::render(
                 &self.prefs,
                 self.active.as_ref(),
+                &self.settings_scroll,
                 &theme,
                 cx,
             ))
