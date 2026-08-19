@@ -8,6 +8,27 @@
 //! the command palette, the run panel) are touched rarely and animate
 //! properly, using the catalog below.
 //!
+//! # Motion thesis (`animate`/`delight` pass)
+//!
+//! This pass's motion serves exactly two jobs and nothing else. **Feedback**
+//! for the app's one genuinely asynchronous answer landing: a worktree row's
+//! status resolving from the fast pass's placeholder to a real pill
+//! ([`fade_quick`], called from `worktree_list::render_status_pills`), and a
+//! file-tree directory's disclosure state changing hands
+//! ([`disclosure_chevron`]). **Continuity** for two structural changes that
+//! used to happen with no transition at all: the sidebar/detail-panel mount
+//! ([`pane_in`]) and a detail-panel tab switch ([`fade_quick`], called from
+//! `app::chrome::WtmApp::render_detail_panel`) — both used to pop or cut
+//! instantly, leaving no sense of where a pane went or that a switch even
+//! happened. The list and sidebar rows still run no entrance animation at
+//! all; that restraint is unchanged and this pass adds nothing to it. Every
+//! spec used here already existed in the catalog for exactly this purpose
+//! (`RESIZE`/`COLLAPSE` were reserved but unused, `FADE_QUICK` already had
+//! other call sites), so nothing new was invented, and every call site is
+//! gated on gpui's own per-element animation-state lifecycle so idle UI
+//! never repaints (see [`pane_in`] and `render_status_pills`'s doc for the
+//! specific pruning argument each one relies on).
+//!
 //! `CubicBezier` is a straight port of Zeron/comet's evaluator
 //! (`crates/ui/src/motion.rs`) — CSS `cubic-bezier()`, solved by Newton's
 //! method with a bisection fallback, hard-clamped to `[0, 1]` because f32
