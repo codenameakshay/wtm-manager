@@ -74,6 +74,27 @@ impl WtmApp {
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.on_open_palette(&OpenPalette, window, cx);
                             })),
+                    )
+                    // The "Repositories" eyebrow (and the hand-rolled header
+                    // copy it replaced before that) is gone — the user's
+                    // call, final: every eyebrow in the app goes. Its `+`
+                    // button is promoted here to a third `action_row`
+                    // alongside "New Worktree" and "Search" rather than
+                    // left to float without a header to anchor it; the
+                    // sidebar already speaks this vocabulary (icon, label,
+                    // shortcut chip), so this reads as consistency, not
+                    // loss.
+                    .child(
+                        ui::action_row(
+                            "add-repository",
+                            icons::PLUS,
+                            "Add Repository",
+                            Some("⌘⇧O"),
+                            &theme,
+                        )
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.on_add_repository(&AddRepository, window, cx);
+                        })),
                     ),
             )
             .child(div().h(px(theme::SPACE_12)).flex_none())
@@ -86,29 +107,6 @@ impl WtmApp {
                     .flex_col()
                     .px(px(theme::SPACE_8))
                     .child(
-                        // `ui::section_header_with_action` is exactly the
-                        // slot this needed — the hand-rolled copy of
-                        // `section_header`'s styling that used to live here
-                        // (its own comment admitted it was a copy, made only
-                        // because that slot didn't exist yet) is gone.
-                        ui::section_header_with_action(
-                            "Repositories",
-                            Some(
-                                ui::icon_button_with_tooltip(
-                                    "add-repository",
-                                    icons::PLUS,
-                                    "Add Repository · ⌘⇧O",
-                                    &theme,
-                                )
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.on_add_repository(&AddRepository, window, cx);
-                                }))
-                                .into_any_element(),
-                            ),
-                            &theme,
-                        ),
-                    )
-                    .child(
                         div()
                             .flex()
                             .flex_col()
@@ -117,37 +115,19 @@ impl WtmApp {
                                 self.render_repo_row(entry, active_path.as_deref(), &theme, cx)
                             }))
                             .when(self.repos.is_empty(), |this| {
+                                // The empty state no longer repeats its own
+                                // "Add Repository" affordance — the action
+                                // row above (always visible, not scoped to
+                                // "the list happens to be empty") already
+                                // covers it; a second one here would just be
+                                // the same control twice.
                                 this.child(
                                     div()
-                                        .flex()
-                                        .flex_col()
-                                        .gap(px(theme::SPACE_6))
                                         .px(px(theme::SPACE_8))
                                         .py(px(theme::SPACE_6))
-                                        .child(
-                                            div()
-                                                .text_size(px(ui::TEXT_SM))
-                                                .text_color(theme.text_ghost)
-                                                .child("No repositories yet."),
-                                        )
-                                        .child(
-                                            ui::action_row(
-                                                "add-repository-empty",
-                                                icons::PLUS,
-                                                "Add Repository…",
-                                                Some("⌘⇧O"),
-                                                &theme,
-                                            )
-                                            .on_click(
-                                                cx.listener(|this, _, window, cx| {
-                                                    this.on_add_repository(
-                                                        &AddRepository,
-                                                        window,
-                                                        cx,
-                                                    );
-                                                }),
-                                            ),
-                                        ),
+                                        .text_size(px(ui::TEXT_SM))
+                                        .text_color(theme.text_ghost)
+                                        .child("No repositories yet."),
                                 )
                             }),
                     ),

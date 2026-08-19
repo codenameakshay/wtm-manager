@@ -198,9 +198,12 @@ pub const TEXT_BASE: f32 = 13.0;
 /// Section titles, dialog field labels per SPEC §6's own table — though
 /// `detail_panel.rs`'s branch name (at 600 weight, one step heavier than the
 /// list row's `TEXT_BASE`/500) is this scale's one real call site today;
-/// `section_header` and SURFACES §7's dialog field labels both use
-/// `TEXT_SM` instead, which disagrees with this scale's own "dialog labels"
-/// row. Flagged rather than silently resolved one way or the other.
+/// SURFACES §7's dialog field labels use `TEXT_SM` instead, which disagrees
+/// with this scale's own "dialog labels" row. (The former "section titles"
+/// call site, `ui::section_header`, also used `TEXT_SM` rather than this —
+/// moot now that every eyebrow label, `section_header` included, has been
+/// removed from the app.) Flagged rather than silently resolved one way or
+/// the other.
 pub const TEXT_MD: f32 = 14.0;
 /// Dialog titles.
 pub const TEXT_LG: f32 = 16.0;

@@ -336,34 +336,30 @@ fn render_form(
                 .child(state.command_input.clone()),
         )
         .when(!suggestions.is_empty(), |this| {
+            // The "Recent" eyebrow that used to sit here is gone (every
+            // eyebrow in the app is); nothing else replaces it — the
+            // outer form's own `SPACE_12` gap above this list (more than
+            // 2x this list's own `SPACE_2` row gap, `better-layout` §1)
+            // already reads as a new group below the Command field, and
+            // this is a "Run Command" dialog, so a list of plain command
+            // strings under the command field is unambiguous without a
+            // label.
             this.child(
                 div()
+                    .id("run-command-recent")
                     .flex()
                     .flex_col()
                     .gap(px(SPACE_2))
-                    .child(
-                        div()
-                            .text_size(px(TEXT_XS))
-                            .text_color(theme.text_ghost)
-                            .child("Recent"),
-                    )
-                    .child(
-                        div()
-                            .id("run-command-recent")
-                            .flex()
-                            .flex_col()
-                            .gap(px(SPACE_2))
-                            .max_h(px(150.0))
-                            .overflow_y_scroll()
-                            .children(suggestions.into_iter().map(|command| {
-                                let picked = command.clone();
-                                render_recent_row(command, theme).on_click(cx.listener(
-                                    move |this, _, window, cx| {
-                                        this.select_recent_command(picked.clone(), window, cx);
-                                    },
-                                ))
-                            })),
-                    ),
+                    .max_h(px(150.0))
+                    .overflow_y_scroll()
+                    .children(suggestions.into_iter().map(|command| {
+                        let picked = command.clone();
+                        render_recent_row(command, theme).on_click(cx.listener(
+                            move |this, _, window, cx| {
+                                this.select_recent_command(picked.clone(), window, cx);
+                            },
+                        ))
+                    })),
             )
         })
         .child(

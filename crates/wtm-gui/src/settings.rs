@@ -92,7 +92,12 @@ pub fn render(
     // SPACE_20 between sections: SURFACES §9 groups sections with space, and
     // `better-layout` §1 wants the gap *between* groups at least 2x the gap
     // *within* one (every section's own internal gap below tops out at
-    // SPACE_12) — SPACE_20 clears that floor.
+    // SPACE_12) — SPACE_20 clears that floor. None of the four sections
+    // carry their own eyebrow anymore, so a hairline `ui::divider` sits in
+    // that SPACE_20 gap between each pair — spacing alone separated them
+    // before too, but with every group name gone at once a purely blank gap
+    // reads as one long, undifferentiated column rather than four groups;
+    // the divider makes the boundary itself visible, not just wide.
     //
     // `.relative()` wrapper, sibling of the scrolling div — same reasoning
     // as `app::chrome`'s scroll regions (`ui::scrollbar`'s own doc): the
@@ -112,8 +117,11 @@ pub fn render(
                 .overflow_y_scroll()
                 .track_scroll(scroll)
                 .child(render_appearance_section(prefs.appearance, theme, cx))
+                .child(ui::divider(theme))
                 .child(render_terminal_section(theme))
+                .child(ui::divider(theme))
                 .child(render_config_section(repo, theme, cx))
+                .child(ui::divider(theme))
                 .child(render_shortcuts_section(theme)),
         )
         .child(ui::scrollbar(
@@ -165,7 +173,6 @@ fn render_appearance_section(
         .flex()
         .flex_col()
         .gap(px(SPACE_8))
-        .child(ui::section_header("Appearance", theme))
         .child(ui::segmented(
             "appearance",
             &options,
@@ -206,7 +213,6 @@ fn render_terminal_section(theme: &Theme) -> impl IntoElement {
         .flex()
         .flex_col()
         .gap(px(SPACE_4))
-        .child(ui::section_header("Terminal App", theme))
         .child(
             div()
                 .text_size(px(TEXT_BASE))
@@ -228,14 +234,16 @@ fn render_config_section(
     theme: &Theme,
     cx: &mut Context<WtmApp>,
 ) -> impl IntoElement {
-    let mut section = div()
-        .flex()
-        .flex_col()
-        .gap(px(SPACE_8))
-        .child(ui::section_header(
-            "Effective Repository Configuration",
-            theme,
-        ));
+    // No eyebrow names this group anymore, and unlike Appearance or
+    // Terminal App, a bare table of paths and values doesn't say what it is
+    // on its own — so this note (previously placed after the table) moves
+    // to the top and now does double duty: it's still the "why you can't
+    // edit this" caveat, and it's also the only thing left telling you
+    // you're looking at wtm's own repo config in the first place.
+    let mut section = div().flex().flex_col().gap(px(SPACE_8)).child(dim_note(
+        "Read-only — this is wtm's own TOML config; the app never rewrites it.",
+        theme,
+    ));
 
     section = match repo {
         None => section.child(dim_note(
@@ -299,18 +307,13 @@ fn render_config_section(
             )),
     };
 
-    section
-        .child(dim_note(
-            "Read-only — this is wtm's own TOML config; the app never rewrites it.",
-            theme,
-        ))
-        .child(render_config_paths(repo, theme, cx))
+    section.child(render_config_paths(repo, theme, cx))
 }
 
 /// The config file(s) the values above were merged from, each with a
-/// "Reveal" button so the note above ("read-only... the app never rewrites
-/// it") points at something concrete rather than asking the user to take it
-/// on faith.
+/// "Reveal" button so the note at the top of this section ("read-only...
+/// the app never rewrites it") points at something concrete rather than
+/// asking the user to take it on faith.
 fn render_config_paths(
     repo: Option<&OpenRepo>,
     theme: &Theme,
@@ -439,16 +442,11 @@ fn relativize_to_home(path: &str, home: Option<&str>) -> String {
 // ---------------------------------------------------------------------
 
 fn render_shortcuts_section(theme: &Theme) -> impl IntoElement {
-    div()
-        .flex()
-        .flex_col()
-        .gap(px(SPACE_6))
-        .child(ui::section_header("Keyboard Shortcuts", theme))
-        .children(
-            crate::REGISTERED_BINDINGS
-                .iter()
-                .map(|entry| shortcut_row(entry, theme)),
-        )
+    div().flex().flex_col().gap(px(SPACE_6)).children(
+        crate::REGISTERED_BINDINGS
+            .iter()
+            .map(|entry| shortcut_row(entry, theme)),
+    )
 }
 
 fn shortcut_row(entry: &ShortcutMeta, theme: &Theme) -> impl IntoElement {

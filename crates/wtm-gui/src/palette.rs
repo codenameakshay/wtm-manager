@@ -416,12 +416,14 @@ pub fn compute_results(query: &str, rows: &[WorktreeInfo]) -> Vec<PaletteEntry> 
 
 /// Position of the flat result index `highlighted` (as `compute_results`
 /// numbers it: worktrees then commands, see that function's own doc) within
-/// the `results_list` div `render` actually paints, once section headers
-/// are accounted for — `render` puts a `section_header` row ahead of each
-/// non-empty group, so the DOM child index runs one or two rows ahead of
-/// the flat result index the moment `highlighted` reaches the worktrees
-/// section (offset by the worktrees header) or the commands section
-/// (offset by both headers). Pure, and given plain counts rather than the
+/// the `results_list` div `render` actually paints. `render` no longer opens
+/// each group with a `section_header` row (the eyebrow labels are gone —
+/// see the redesign report); the only extra DOM child is a single
+/// `ui::divider` between the two groups, and only when both are non-empty.
+/// So the DOM child index matches the flat result index exactly until
+/// `highlighted` reaches the commands section, where it is offset by one
+/// for that divider (but only if there were worktrees ahead of it to
+/// divide from). Pure, and given plain counts rather than the
 /// `PaletteEntry` list itself, so `palette_move_highlight` can call it
 /// without `render`'s own borrow of `self.palette`. Returns `None` for an
 /// out-of-range `highlighted` (an empty results list, or a stale highlight
@@ -435,14 +437,10 @@ pub fn results_scroll_child_index(
         return None;
     }
     if highlighted < worktree_count {
-        Some(1 + highlighted)
+        Some(highlighted)
     } else {
-        let header_offset = if worktree_count > 0 {
-            1 + worktree_count
-        } else {
-            0
-        };
-        Some(header_offset + 1 + (highlighted - worktree_count))
+        let divider_offset = if worktree_count > 0 { 1 } else { 0 };
+        Some(worktree_count + divider_offset + (highlighted - worktree_count))
     }
 }
 
@@ -560,14 +558,30 @@ pub fn render(
         .px(px(SPACE_6))
         .py(px(SPACE_6))
         .when(!worktree_entries.is_empty(), |this| {
-            this.child(ui::section_header("Worktrees", theme)).children(
+            this.children(
                 worktree_entries
                     .iter()
                     .map(|(ix, e)| render_entry(*ix, e, *ix == highlighted, theme, cx)),
             )
         })
+        // The only thing that used to separate the two kinds of result —
+        // the "Worktrees" / "Commands" eyebrows — is gone; a hairline
+        // divider between the groups (only when both are present) carries
+        // the grouping instead, alongside the per-row icon that already
+        // differs (branch glyph vs. command glyph, see `render_entry`).
+        .when(
+            !worktree_entries.is_empty() && !command_entries.is_empty(),
+            |this| {
+                this.child(
+                    div()
+                        .px(px(SPACE_6))
+                        .py(px(SPACE_4))
+                        .child(ui::divider(theme)),
+                )
+            },
+        )
         .when(!command_entries.is_empty(), |this| {
-            this.child(ui::section_header("Commands", theme)).children(
+            this.children(
                 command_entries
                     .iter()
                     .map(|(ix, e)| render_entry(*ix, e, *ix == highlighted, theme, cx)),
@@ -921,22 +935,22 @@ mod tests {
     // -------------------------------------------------------------
 
     #[test]
-    fn results_scroll_child_index_skips_the_worktrees_header() {
-        // 2 worktrees, 1 command: DOM is [header, wt0, wt1, header, cmd0].
-        assert_eq!(results_scroll_child_index(2, 1, 0), Some(1));
-        assert_eq!(results_scroll_child_index(2, 1, 1), Some(2));
+    fn results_scroll_child_index_matches_the_flat_index_within_worktrees() {
+        // 2 worktrees, 1 command: DOM is [wt0, wt1, divider, cmd0].
+        assert_eq!(results_scroll_child_index(2, 1, 0), Some(0));
+        assert_eq!(results_scroll_child_index(2, 1, 1), Some(1));
     }
 
     #[test]
-    fn results_scroll_child_index_skips_both_headers_for_a_command() {
-        assert_eq!(results_scroll_child_index(2, 1, 2), Some(4));
+    fn results_scroll_child_index_skips_the_divider_for_a_command() {
+        assert_eq!(results_scroll_child_index(2, 1, 2), Some(3));
     }
 
     #[test]
-    fn results_scroll_child_index_has_no_worktrees_header_when_that_group_is_empty() {
-        // DOM is [header, cmd0, cmd1] — no worktrees section at all.
-        assert_eq!(results_scroll_child_index(0, 2, 0), Some(1));
-        assert_eq!(results_scroll_child_index(0, 2, 1), Some(2));
+    fn results_scroll_child_index_has_no_divider_when_worktrees_is_empty() {
+        // DOM is [cmd0, cmd1] — no worktrees section, so no divider either.
+        assert_eq!(results_scroll_child_index(0, 2, 0), Some(0));
+        assert_eq!(results_scroll_child_index(0, 2, 1), Some(1));
     }
 
     #[test]

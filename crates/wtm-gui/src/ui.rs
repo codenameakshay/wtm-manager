@@ -27,16 +27,18 @@
 //! # Back-compat during the migration
 //!
 //! Roughly 600 call sites across every render module use the pre-redesign
-//! names and signatures below (`icon`, `icon_button`, `section_header`,
+//! names and signatures below (`icon`, `icon_button`,
 //! `row`, `action_row`, `meta`, `pill`, `button`, `ButtonVariant`, `kbd`,
 //! `modal_backdrop`, `modal_card`, `modal_header`, `modal_footer`,
 //! `empty_hint`, and the `ROW_HEIGHT`/`TITLEBAR_HEIGHT`/
 //! `TRAFFIC_LIGHT_CLEARANCE` consts). Every one of them is reimplemented
 //! against the new tokens below but kept **signature-compatible**, so this
-//! rewrite does not require touching any of those call sites. Where a
-//! component genuinely needs a new shape (`section_header`'s trailing
-//! slot), the old name stays as a thin wrapper around a new function with
-//! the new shape — see [`section_header`]/[`section_header_with_action`].
+//! rewrite does not require touching any of those call sites. `section_header`
+//! and `section_header_with_action` used to live here too, for every screen's
+//! muted group label ("Repositories", "Worktrees"/"Commands", the four
+//! settings groups); every one of those eyebrows has since been removed in
+//! favor of spacing and hairline dividers, so both functions lost their last
+//! call site and were deleted rather than kept as unused vocabulary.
 //!
 //! A handful of components below are named as required vocabulary by
 //! COMPONENTS.md but have no render call site yet; each carries its own
@@ -305,40 +307,6 @@ pub fn meta(path: &'static str, label: impl Into<SharedString>, theme: &Theme) -
                 .text_color(theme.text_muted)
                 .child(label.into()),
         )
-}
-
-/// A small section label, e.g. "Repositories". Kept at its original
-/// 2-argument shape for the ~existing call sites; delegates to
-/// [`section_header_with_action`] with no trailing action.
-pub fn section_header(label: impl Into<SharedString>, theme: &Theme) -> Div {
-    section_header_with_action(label, None, theme)
-}
-
-/// [`section_header`] with an optional trailing action slot (e.g. the
-/// sidebar's "Repositories" `+` button). This is the new shape
-/// `section_header` itself cannot take without breaking its existing
-/// 2-argument call sites — see the migration-alias convention in this
-/// module's doc. `chrome.rs` currently hand-rolls an exact copy of
-/// `section_header`'s styling (28px height, `pl-8 pr-4`, `text_muted` at
-/// `TEXT_SM`) around a `+` button specifically because this slot did not
-/// exist; once this phase lands, that copy should call this function
-/// instead and delete itself.
-pub fn section_header_with_action(
-    label: impl Into<SharedString>,
-    action: Option<AnyElement>,
-    theme: &Theme,
-) -> Div {
-    div()
-        .h(px(28.0))
-        .pl(px(SPACE_8))
-        .pr(px(SPACE_4))
-        .flex()
-        .items_center()
-        .justify_between()
-        .text_size(px(TEXT_SM))
-        .text_color(theme.text_muted)
-        .child(div().min_w_0().truncate().child(label.into()))
-        .when_some(action, |this, action| this.child(action))
 }
 
 // ---------------------------------------------------------------------------
