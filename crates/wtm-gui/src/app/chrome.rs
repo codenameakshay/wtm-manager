@@ -462,14 +462,15 @@ impl WtmApp {
     /// option (gpui has no API to measure real shaped text outside of an
     /// actual layout pass).
     fn worktree_row_card_width(&self, window: &Window) -> f32 {
-        let mut content_column = f32::from(window.viewport_size().width);
-        if self.sidebar_visible {
-            content_column -= theme::SIDEBAR_WIDTH;
-        }
-        if self.show_detail_panel() {
-            content_column -= self.detail_panel_width();
-        }
-        let content_column = content_column.min(LIST_MAX_WIDTH);
+        let panel_width = self
+            .show_detail_panel(window)
+            .then(|| self.detail_panel_width());
+        let content_column = layout::content_column_width(
+            f32::from(window.viewport_size().width),
+            self.sidebar_visible,
+            panel_width,
+        )
+        .min(LIST_MAX_WIDTH);
         content_column
             - theme::SPACE_8 * 2.0 // the list's own `.px(px(theme::SPACE_8))`
             - theme::SPACE_8 * 2.0 // the per-row wrapper's own `.px(px(theme::SPACE_8))`
@@ -1003,8 +1004,26 @@ impl WtmApp {
     /// The footer: the current message on the left, context chips on the
     /// right, in the spirit of a status line that never shouts (SURFACES
     /// §5: "ambient information — it must never out-shout the list").
-    pub(super) fn render_footer(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(super) fn render_footer(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let theme = self.chrome_theme(cx);
+        // The footer spans the same content column the list/titlebar above
+        // it do (`app/mod.rs`'s root layout puts all three in one
+        // `flex_1` child) — reusing `layout::content_column_width` rather
+        // than a second copy of the sidebar/panel subtraction lets the
+        // hint row degrade by the same width signal the detail-panel
+        // collapse uses, instead of drifting out of sync with it.
+        let panel_width = self
+            .show_detail_panel(window)
+            .then(|| self.detail_panel_width());
+        let content_column = layout::content_column_width(
+            f32::from(window.viewport_size().width),
+            self.sidebar_visible,
+            panel_width,
+        );
 
         div()
             .h(px(theme::FOOTER_HEIGHT))
@@ -1039,7 +1058,7 @@ impl WtmApp {
                             })
                             .child(message.text.clone())
                             .into_any_element(),
-                        None => render_footer_hints(&theme),
+                        None => render_footer_hints(&theme, content_column),
                     }),
             )
             .when_some(self.active.as_ref(), |this, repo| {
@@ -1074,10 +1093,16 @@ impl WtmApp {
     // -------------------------------------------------------------
 
     /// Whether the detail panel column should be shown this frame: visible
-    /// per its own toggle, and only meaningful when a row is actually
-    /// selected.
-    pub(super) fn show_detail_panel(&self) -> bool {
-        self.detail_panel_visible && self.selected.is_some()
+    /// per its own toggle (folded together with the width-driven
+    /// auto-collapse — see `layout::detail_panel_should_show`), and only
+    /// meaningful when a row is actually selected.
+    pub(super) fn show_detail_panel(&self, window: &Window) -> bool {
+        self.selected.is_some()
+            && layout::detail_panel_should_show(
+                f32::from(window.viewport_size().width),
+                self.detail_panel_visible,
+                self.detail_panel_narrow_override,
+            )
     }
 
     /// The Details/Files/Changes tab switch, invoked both by the tab bar's
@@ -1093,22 +1118,35 @@ impl WtmApp {
         self.set_detail_tab(DetailTab::Details, cx);
     }
 
+    /// Unlike `on_show_details_tab`, gated on `layout::wide_tabs_fit`: the
+    /// wide Files/Changes panel has no narrow-width override (see that
+    /// function's doc — the list column it would leave behind can go
+    /// negative, not just tight), so the keyboard shortcut simply does
+    /// nothing at a width where the panel wouldn't fit, the same as it
+    /// would if the tab bar's own click were disabled (see
+    /// `render_detail_tab`). `Render::render`'s own per-frame width sync
+    /// covers the other direction — the window narrowing out from under an
+    /// already-active tab.
     pub(super) fn on_show_files_tab(
         &mut self,
         _: &ShowFilesTab,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.set_detail_tab(DetailTab::Files, cx);
+        if layout::wide_tabs_fit(f32::from(window.viewport_size().width)) {
+            self.set_detail_tab(DetailTab::Files, cx);
+        }
     }
 
     pub(super) fn on_show_changes_tab(
         &mut self,
         _: &ShowChangesTab,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.set_detail_tab(DetailTab::Changes, cx);
+        if layout::wide_tabs_fit(f32::from(window.viewport_size().width)) {
+            self.set_detail_tab(DetailTab::Changes, cx);
+        }
     }
 
     fn set_detail_tab(&mut self, tab: DetailTab, cx: &mut Context<Self>) {
@@ -1133,8 +1171,15 @@ impl WtmApp {
     /// The detail panel: a persistent header (branch/main badge/lock),
     /// then the tab bar, then whichever tab's content is active. The outer
     /// frame's width tracks the active tab (see
-    /// [`detail_panel_width`](Self::detail_panel_width)).
-    pub(super) fn render_detail_panel(&self, cx: &mut Context<Self>) -> AnyElement {
+    /// [`detail_panel_width`](Self::detail_panel_width)). Takes `window`
+    /// only to thread it down to [`render_detail_tab_bar`], which needs the
+    /// live width to know whether the Files/Changes tabs currently fit —
+    /// see [`render_detail_tab`].
+    pub(super) fn render_detail_panel(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let Some(info) = self.selected.and_then(|ix| self.rows.get(ix)) else {
             return div().into_any_element();
         };
@@ -1183,14 +1228,22 @@ impl WtmApp {
             .border_l_1()
             .border_color(theme.border)
             .child(detail_panel::render_header(info, &theme))
-            .child(self.render_detail_tab_bar(&theme, cx))
+            .child(self.render_detail_tab_bar(&theme, window, cx))
             .child(content)
             .into_any_element()
     }
 
     /// The Details/Files/Changes switch, as a segmented control rather than
-    /// three plain text buttons (SURFACES §4).
-    fn render_detail_tab_bar(&self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
+    /// three plain text buttons (SURFACES §4). The Files/Changes segments
+    /// are disabled below `layout::WIDE_TABS_BREAKPOINT` — see
+    /// [`render_detail_tab`]'s doc for why there's no override for this one.
+    fn render_detail_tab_bar(
+        &self,
+        theme: &Theme,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let wide_tabs_fit = layout::wide_tabs_fit(f32::from(window.viewport_size().width));
         div()
             .flex_none()
             .flex()
@@ -1200,9 +1253,9 @@ impl WtmApp {
             .py(px(theme::SPACE_8))
             .border_b_1()
             .border_color(theme.border)
-            .child(self.render_detail_tab(DetailTab::Details, "Details", theme, cx))
-            .child(self.render_detail_tab(DetailTab::Files, "Files", theme, cx))
-            .child(self.render_detail_tab(DetailTab::Changes, "Changes", theme, cx))
+            .child(self.render_detail_tab(DetailTab::Details, "Details", true, theme, cx))
+            .child(self.render_detail_tab(DetailTab::Files, "Files", wide_tabs_fit, theme, cx))
+            .child(self.render_detail_tab(DetailTab::Changes, "Changes", wide_tabs_fit, theme, cx))
     }
 
     /// One tab segment. SURFACES §4: "the selected tab carries the wash +
@@ -1212,15 +1265,27 @@ impl WtmApp {
     /// uses) is what tells a tab apart from a sort option at a glance,
     /// while still keeping the accent off the fill (SPEC §3: identity/focus
     /// only, never structural).
+    ///
+    /// `enabled` is `false` only for Files/Changes below
+    /// `layout::WIDE_TABS_BREAKPOINT` (Details is always enabled — the
+    /// panel itself is already hidden below its own, narrower breakpoint,
+    /// so if this is rendering at all, Details fits). A disabled segment
+    /// keeps its label (so the tab set doesn't visibly shrink — a control
+    /// that's merely unreachable at this width reads very differently from
+    /// one that doesn't exist) but drops its hover/click and explains why
+    /// in a tooltip, rather than accepting a click into a state
+    /// `Render::render`'s own width sync would just snap back out of on
+    /// the very next frame.
     fn render_detail_tab(
         &self,
         tab: DetailTab,
         label: &'static str,
+        enabled: bool,
         theme: &Theme,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    ) -> AnyElement {
         let active = self.detail_tab == tab;
-        div()
+        let styled = div()
             .id(label)
             .relative()
             .px(px(theme::SPACE_12))
@@ -1231,10 +1296,11 @@ impl WtmApp {
             .when(active, |d| {
                 d.bg(theme.element_active).text_color(theme.text)
             })
-            .when(!active, |d| {
+            .when(!active && enabled, |d| {
                 d.text_color(theme.text_muted)
                     .hover(|s| s.bg(theme.element_hover))
             })
+            .when(!enabled, |d| d.text_color(theme.text_faint))
             .child(label)
             .when(active, |d| {
                 d.child(
@@ -1246,10 +1312,18 @@ impl WtmApp {
                         .h(px(2.0))
                         .bg(theme.accent),
                 )
-            })
-            .on_click(cx.listener(move |this, _, _window, cx| {
-                this.set_detail_tab(tab, cx);
-            }))
+            });
+        if enabled {
+            styled
+                .on_click(cx.listener(move |this, _, _window, cx| {
+                    this.set_detail_tab(tab, cx);
+                }))
+                .into_any_element()
+        } else {
+            styled
+                .tooltip(ui::tooltip("Widen the window to use this tab"))
+                .into_any_element()
+        }
     }
 
     /// The Files tab: a fixed-width, independently scrolling tree column,
@@ -1510,34 +1584,50 @@ fn maximize_glyph(theme: &Theme) -> impl IntoElement {
 /// value keybindings as [`ui::kbd`] chips rather than plain text (SPEC §1's
 /// `kbd` vocabulary), so a shortcut named in the footer looks like the same
 /// shortcut everywhere else in the app instead of a bare string.
-fn render_footer_hints(theme: &Theme) -> AnyElement {
+fn render_footer_hints(theme: &Theme, content_column: f32) -> AnyElement {
     // FINDINGS-2.md G1: this row used to hard-clip its trailing hints with
-    // no ellipsis at 900×600. An earlier attempt made the last hint
+    // no ellipsis at 900×600 (with the detail panel open — plain sidebar
+    // widths never got this narrow). An earlier attempt made the last hint
     // `min_w_0()`/`.truncate()` so it would shrink and ellipsize instead —
     // that made things *worse* (gpui 0.2.2's text-measurement caching bug,
     // documented once at `detail_panel::LABEL_WIDTH`, meant it collapsed to
     // 2-3 characters with no ellipsis and a large unused gap, rather than
-    // clipping cleanly). The actual fix: every hint here is a short, fixed,
-    // known-at-compile-time string, not user content, and all of them
-    // together comfortably fit even at the narrowest supported window
-    // (900×600) — confirmed by screenshot. So this row does not need to
-    // shrink or truncate at all; every child stays at its natural size
-    // (gpui's default for a `flex()` child with no `min_w_0()`), which is
-    // both simpler and correct here, unlike the genuinely-long, unbounded
-    // strings elsewhere in this app (paths, commit subjects) that do need
-    // one of the truncation strategies `detail_panel::LABEL_WIDTH` explains.
-    div()
+    // clipping cleanly). Every hint here is a short, fixed,
+    // known-at-compile-time string, not user content, so — unlike the
+    // genuinely-long, unbounded strings elsewhere in this app (paths,
+    // commit subjects) that need one of the truncation strategies
+    // `detail_panel::LABEL_WIDTH` explains — there is no per-glyph
+    // ellipsis story to lean on here. The actual fix: drop whole hints by
+    // priority (`layout::FooterHints`) once the live content column
+    // reports there isn't room for all of them, rather than shrinking any
+    // one of them.
+    let row = div()
         .flex()
         .items_center()
         .gap(px(theme::SPACE_6))
-        .text_color(theme.text_ghost)
-        .child(ui::kbd("↑↓", theme))
-        .child("select")
-        .child(ui::kbd("⏎", theme))
-        .child("open in editor")
-        .child(ui::kbd("⌘R", theme))
-        .child("reload")
-        .into_any_element()
+        .text_color(theme.text_ghost);
+    use layout::FooterHints;
+    match FooterHints::for_content_column(content_column) {
+        FooterHints::All => row
+            .child(ui::kbd("↑↓", theme))
+            .child("select")
+            .child(ui::kbd("⏎", theme))
+            .child("open in editor")
+            .child(ui::kbd("⌘R", theme))
+            .child("reload")
+            .into_any_element(),
+        FooterHints::Core => row
+            .child(ui::kbd("↑↓", theme))
+            .child("select")
+            .child(ui::kbd("⏎", theme))
+            .child("open in editor")
+            .into_any_element(),
+        FooterHints::Minimal => row
+            .child(ui::kbd("↑↓", theme))
+            .child("select")
+            .into_any_element(),
+        FooterHints::None => div().into_any_element(),
+    }
 }
 
 #[cfg(test)]

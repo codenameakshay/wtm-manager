@@ -18,11 +18,22 @@ impl WtmApp {
     pub(super) fn on_toggle_detail_panel(
         &mut self,
         _: &ToggleDetailPanel,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.detail_panel_visible = !self.detail_panel_visible;
         self.prefs.detail_panel_visible = self.detail_panel_visible;
+        // An explicit reopen while the window is too narrow for the panel
+        // to fit on its own (`layout::DETAIL_PANEL_BREAKPOINT`) is the one
+        // thing that's allowed to override the width-driven auto-collapse
+        // — see `layout::detail_panel_should_show`'s doc for why this is a
+        // separate bit from `detail_panel_visible` rather than folded into
+        // it. Closing always clears the override: there's nothing left to
+        // override once the panel is hidden by the user's own choice, and
+        // leaving it set would let a *later* reopen at a wide width (which
+        // needs no override at all) carry a stale one for no reason.
+        self.detail_panel_narrow_override = self.detail_panel_visible
+            && f32::from(window.viewport_size().width) < layout::DETAIL_PANEL_BREAKPOINT;
         self.save_prefs();
         cx.notify();
     }

@@ -43,10 +43,18 @@ pub const WIDTH: f32 = 320.0;
 /// diff wide enough for ~70-80 monospace characters before horizontal
 /// scrolling kicks in (see `crate::diff_view`'s "Long lines" doc), while
 /// still leaving the worktree list a usable width at the window's default
-/// 1180px size. Below the window's 820px minimum the list's own
-/// `flex_1`/`min_w_0` lets it shrink rather than break — a real tradeoff at
-/// the smallest window size, accepted in favor of a diff that's actually
-/// legible the rest of the time.
+/// 1180px size — that leftover column (1180 - `SIDEBAR_WIDTH` - `WIDE_WIDTH`
+/// = 292px) is what `app::layout::MIN_CONTENT_COLUMN` names and reuses as
+/// the whole app's "usable content column" floor.
+///
+/// Below `app::layout::WIDE_TABS_BREAKPOINT` (which works out to exactly
+/// 1180px, by construction — see that constant's doc), the Files/Changes
+/// tabs are unreachable rather than squeezing the list: at the window's
+/// 820px minimum this width alongside the sidebar leaves `820 - 248 - 640 =
+/// -68px` for the list, a negative column, not merely a tight one. That's a
+/// structural impossibility a click can't opt back into, unlike the
+/// ordinary detail panel's own narrower, user-overridable auto-collapse
+/// (`app::layout::detail_panel_should_show`).
 pub const WIDE_WIDTH: f32 = 640.0;
 
 /// Which section of the detail panel is currently shown.

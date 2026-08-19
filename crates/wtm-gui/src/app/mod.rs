@@ -48,6 +48,10 @@
 //!   keep separate from those dialogs' logic; that separation is now a
 //!   file boundary instead of a banner comment).
 //! - `chrome` — the sidebar, title bar, worktree list, and footer.
+//! - `layout` — pure, width-only functions deciding when the detail panel
+//!   auto-collapses, when the Files/Changes tabs' wide panel fits, and how
+//!   the footer's hint row degrades; `chrome`/`commands`/this file call
+//!   these and paint the result rather than re-deriving the arithmetic.
 //!
 //! A few small, genuinely cross-cutting pieces stay here rather than in any
 //! one submodule: `MenuTarget`, `StatusMessage`, and `BulkRemoveState` are
@@ -61,6 +65,7 @@ mod dialog_actions;
 mod dialog_forms;
 #[cfg(test)]
 mod integration_tests;
+mod layout;
 mod loading;
 mod selection;
 
@@ -274,6 +279,16 @@ pub struct WtmApp {
     /// every reload.
     watched: Option<(PathBuf, Vec<PathBuf>)>,
     detail_panel_visible: bool,
+    /// True once the user has explicitly reopened the detail panel
+    /// (`commands::on_toggle_detail_panel`) while the window was too narrow
+    /// for it to fit under `layout::DETAIL_PANEL_BREAKPOINT` — see
+    /// `layout::detail_panel_should_show`'s doc for what this overrides and
+    /// why. Session-only, never persisted to `Prefs`: it describes "the
+    /// window is narrow right now and I asked for this anyway," not a
+    /// standing preference, and `layout::narrow_override_after_resize`
+    /// (called once per render in `Render::render`) drops it again the
+    /// moment the window is wide enough that it isn't doing anything.
+    detail_panel_narrow_override: bool,
     /// Detail data for the selected worktree, loaded in the background by
     /// [`WtmApp::load_details_for_selection`]. `None` while loading or when
     /// nothing is selected.
@@ -397,6 +412,7 @@ impl WtmApp {
             watcher: None,
             watched: None,
             detail_panel_visible: prefs.detail_panel_visible,
+            detail_panel_narrow_override: false,
             details: None,
             details_path: None,
             details_generation: 0,
@@ -515,6 +531,32 @@ impl Focusable for WtmApp {
 impl Render for WtmApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::of(cx);
+
+        // Width-adaptive state, resolved once per render before anything
+        // below reads it — see `layout`'s module doc. Two things happen
+        // here, both driven purely by the current viewport width:
+        //
+        // 1. The detail panel's `narrow_override` (see that field's doc)
+        //    is dropped the instant the window is wide enough that it
+        //    isn't overriding anything — so a *future* narrowing
+        //    auto-collapses fresh rather than staying silently exempted by
+        //    a click from an earlier, unrelated narrow session.
+        // 2. The Files/Changes tabs' wide panel (`layout::wide_tabs_fit`)
+        //    has no user override at all (see `layout::WIDE_TABS_BREAKPOINT`'s
+        //    doc: below it, the list column the wide panel would leave
+        //    behind isn't just tight, it can go negative) — so if the
+        //    window has narrowed out from under an already-active
+        //    Files/Changes tab, this snaps back to Details before the tree
+        //    below ever builds, rather than painting a tab whose panel
+        //    doesn't fit for one frame and then yanking it back.
+        let viewport_width = f32::from(window.viewport_size().width);
+        self.detail_panel_narrow_override =
+            layout::narrow_override_after_resize(viewport_width, self.detail_panel_narrow_override);
+        if !layout::wide_tabs_fit(viewport_width)
+            && matches!(self.detail_tab, DetailTab::Files | DetailTab::Changes)
+        {
+            self.detail_tab = DetailTab::Details;
+        }
 
         // The list is the window's subject, so it holds focus by default —
         // but only when no dialog is open. This must be gated on
@@ -651,10 +693,10 @@ impl Render for WtmApp {
                     .bg(theme.bg)
                     .child(self.render_titlebar(window, cx))
                     .child(self.render_list(cx))
-                    .child(self.render_footer(cx)),
+                    .child(self.render_footer(window, cx)),
             )
-            .when(self.show_detail_panel(), |this| {
-                this.child(self.render_detail_panel(cx))
+            .when(self.show_detail_panel(window), |this| {
+                this.child(self.render_detail_panel(window, cx))
             })
             // Rendered last and via `deferred` so it paints above the list
             // and sidebar regardless of source order, and is never clipped

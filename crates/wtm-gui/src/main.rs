@@ -125,7 +125,12 @@ key_bindings! {
 
 /// The default window size and position, used when no saved frame exists or
 /// the saved one no longer lands on a connected display.
-const DEFAULT_WINDOW_SIZE: (f32, f32) = (1180.0, 760.0);
+///
+/// `pub(crate)`, not private: `app::layout::MIN_CONTENT_COLUMN` derives the
+/// width-adaptation breakpoints from `DEFAULT_WINDOW_SIZE.0` directly
+/// rather than repeating `1180.0` as a second, independently-typed literal
+/// that could silently drift from this one.
+pub(crate) const DEFAULT_WINDOW_SIZE: (f32, f32) = (1180.0, 760.0);
 
 /// The titlebar `WindowOptions` asks for, per platform.
 ///
