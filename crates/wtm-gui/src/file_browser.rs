@@ -273,9 +273,9 @@ pub fn status_label(status: FileStatus) -> &'static str {
 ///
 /// Built on [`ui::row`] (SURFACES §4: "selected row uses the standard row
 /// selection") rather than a hand-rolled `item_selected`/`item_wash`
-/// pairing — the same wash-plus-accent-leading-bar selection every other
-/// selectable row in the app uses, in place of what used to be this
-/// module's own copy of that logic.
+/// pairing — the same wash-based selection every other selectable row in
+/// the app uses, in place of what used to be this module's own copy of
+/// that logic.
 pub fn render_row(
     row: &VisibleRow<'_>,
     selected_file: Option<&Path>,

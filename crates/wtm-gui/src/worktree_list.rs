@@ -531,9 +531,9 @@ pub fn render_row(
     let path_box_width = path_text.chars().count() as f32 * CHAR_WIDTH_APPROX;
 
     // A two-line card at `LIST_ROW_HEIGHT` (SURFACES §3): `ui::row` owns the
-    // radius, the hover/selection wash, and the accent leading bar; this
-    // function only lays out the two lines inside it and centers them in
-    // the fixed height, since neither line alone fills it.
+    // radius and the hover/selection wash; this function only lays out the
+    // two lines inside it and centers them in the fixed height, since
+    // neither line alone fills it.
     ui::row(("worktree", row_ix), selected, &theme)
         .h(px(LIST_ROW_HEIGHT))
         .flex()

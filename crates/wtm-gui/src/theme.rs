@@ -594,7 +594,13 @@ pub struct Theme {
     pub surface_overlay: Hsla,
     /// Hover wash for interactive rows/buttons.
     pub element_hover: Hsla,
-    /// Selected/active wash.
+    /// Selected/active wash. This is now the *only* thing that marks a
+    /// selected row — `ui::row` used to also paint a 2px accent bar down
+    /// the leading edge, which read as a stray line rather than a selection
+    /// cue, so it was removed. Alpha is 0.16 here vs. `element_hover`'s
+    /// 0.06 (was 0.10, too close to read as a distinct state once the bar
+    /// was gone) so selection stays legible next to hover, unfocused, and
+    /// with the pointer elsewhere — without reaching for a tinted fill.
     pub element_active: Hsla,
     /// Hairline border.
     pub border: Hsla,
@@ -796,7 +802,7 @@ impl Theme {
             surface_dialog: neutral(0.205),
             surface_overlay: neutral(0.235),
             element_hover: hsla(0.0, 0.0, 0.92, 0.06),
-            element_active: hsla(0.0, 0.0, 0.92, 0.10),
+            element_active: hsla(0.0, 0.0, 0.92, 0.16),
             border: hsla(0.0, 0.0, 1.0, 0.08),
             border_strong: hsla(0.0, 0.0, 1.0, 0.14),
 
@@ -893,7 +899,7 @@ impl Theme {
             surface_dialog: bg,
             surface_overlay: bg,
             element_hover: hsla(0.0, 0.0, 0.10, 0.06),
-            element_active: hsla(0.0, 0.0, 0.10, 0.10),
+            element_active: hsla(0.0, 0.0, 0.10, 0.16),
             border: hsla(0.0, 0.0, 0.0, 0.10),
             border_strong: hsla(0.0, 0.0, 0.0, 0.17),
 

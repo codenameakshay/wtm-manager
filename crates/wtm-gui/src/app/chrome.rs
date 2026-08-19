@@ -970,11 +970,11 @@ impl WtmApp {
             .border_1()
             // FINDINGS F4: the accent is identity/focus only (SPEC §3) and
             // must never be a structural fill — a checked checkbox is a
-            // selection state, already carried by the row's own wash and
-            // leading bar. So the plate stays neutral (`element_active`,
-            // the same wash every other selected state in the app uses)
-            // and only the border and the check glyph itself carry the
-            // accent, rather than filling the whole square with it.
+            // selection state, already carried by the row's own wash. So
+            // the plate stays neutral (`element_active`, the same wash
+            // every other selected state in the app uses) and only the
+            // border and the check glyph itself carry the accent, rather
+            // than filling the whole square with it.
             .border_color(if checked {
                 theme.accent
             } else {
@@ -1389,11 +1389,14 @@ impl WtmApp {
 
     /// One tab segment. SURFACES §4: "the selected tab carries the wash +
     /// accent underline; unselected are `text_muted`" — a wash alone would
-    /// read the same as `render_sort_control`'s segments, so the 2px accent
-    /// underline (the same thickness `ui::row`'s own leading selection bar
-    /// uses) is what tells a tab apart from a sort option at a glance,
+    /// read the same as `render_sort_control`'s segments, so a 2px accent
+    /// underline is what tells a tab apart from a sort option at a glance,
     /// while still keeping the accent off the fill (SPEC §3: identity/focus
-    /// only, never structural).
+    /// only, never structural). This is a tab indicator, not a selected-row
+    /// mark — it stays even though `ui::row`'s own leading accent bar was
+    /// removed (see that function's doc); a horizontal underline under a
+    /// tab label reads as navigation, not the left-edge decoration that
+    /// prompted the row change.
     ///
     /// `enabled` is `false` only for Files/Changes below
     /// `layout::WIDE_TABS_BREAKPOINT` (Details is always enabled — the

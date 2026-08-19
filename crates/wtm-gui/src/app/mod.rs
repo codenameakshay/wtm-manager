@@ -214,7 +214,10 @@ struct BulkRemoveState {
 }
 
 pub struct WtmApp {
-    /// Repositories in the sidebar, most recently opened first.
+    /// Repositories in the sidebar, alphabetical by name (see
+    /// `sidebar_sorted`) — a stable order that does not reshuffle when a
+    /// repo is opened, unlike `Registry::entries()`'s own
+    /// most-recently-opened-first order, which is what the CLI still uses.
     repos: Vec<RepoEntry>,
     /// The repository currently shown, if any.
     active: Option<OpenRepo>,
@@ -394,6 +397,32 @@ pub struct WtmApp {
     settings_scroll: ScrollHandle,
 }
 
+/// Sort registry entries into the order the sidebar displays them in.
+///
+/// `Registry::entries()` (shared with the CLI) returns most-recently-opened
+/// first, which is genuinely useful there — the CLI uses it to pick a
+/// default repo at launch — so that contract stays put. But it means
+/// selecting a repo (which calls `registry::remember`, bumping
+/// `last_opened`) jumps that repo to the top of the *sidebar* under the
+/// user's cursor: a navigation list that rearranges itself because you used
+/// it. The sidebar sorts its own copy instead, alphabetically by name
+/// (case-insensitive) with the path as a tie-break so two repos sharing a
+/// name never swap — an order that is predictable, stays put when the list
+/// is long, and never moves under the user. `last_opened` is still recorded
+/// (it still picks the repo a fresh window opens); only *display* order
+/// changes here. Both call sites that populate `self.repos`
+/// (`loading::begin_activate_repo`, `commands::forget_repo`) route through
+/// this so the two cannot drift apart.
+fn sidebar_sorted(mut entries: Vec<RepoEntry>) -> Vec<RepoEntry> {
+    entries.sort_by(|a, b| {
+        a.name
+            .to_lowercase()
+            .cmp(&b.name.to_lowercase())
+            .then_with(|| a.path.cmp(&b.path))
+    });
+    entries
+}
+
 impl WtmApp {
     pub fn new(
         initial: Option<OpenRepo>,
@@ -414,7 +443,7 @@ impl WtmApp {
         });
 
         let mut this = Self {
-            repos: registry::load().entries(),
+            repos: sidebar_sorted(registry::load().entries()),
             active: None,
             rows: Vec::new(),
             selected: None,

@@ -209,19 +209,18 @@ pub fn disabled(el: Stateful<Div>) -> Stateful<Div> {
 // ---------------------------------------------------------------------------
 
 /// The base of every selectable row: `RADIUS_ROW`, one neutral wash for
-/// hover, a stronger one for selection, and the accent only as a 2px
-/// leading indicator bar on the selected row — never as a fill. The bar is
-/// an absolutely-positioned child (not a real left border) so selecting a
-/// row never reflows its content.
+/// hover, a stronger one for selection.
+///
+/// This used to also paint a 2px accent bar down the row's leading edge on
+/// selection. Users read that mark as a stray line rather than a selection
+/// cue ("eyebrows... on the left side"), and it was never load-bearing —
+/// `element_active` already carries the selected state. It's gone; a
+/// coloured left border above 1px on a list item is decoration, not
+/// signal, and the app should not violate that rule anywhere. Selection now
+/// reads from the wash alone (see `element_active`'s doc in `theme.rs` for
+/// how it stays distinguishable from `element_hover`), with the focus ring
+/// still handling keyboard focus.
 pub fn row(id: impl Into<gpui::ElementId>, selected: bool, theme: &Theme) -> Stateful<Div> {
-    let bar = div()
-        .absolute()
-        .left_0()
-        .top_0()
-        .bottom_0()
-        .w(px(2.0))
-        .when(selected, |this| this.bg(theme.accent));
-
     let styled = div()
         .id(id.into())
         .relative()
@@ -239,8 +238,7 @@ pub fn row(id: impl Into<gpui::ElementId>, selected: bool, theme: &Theme) -> Sta
         // `theme.tab_stops` — see that field's doc — so this stays out of
         // the tab order for the background shell while a dialog covers it.
         .when(theme.tab_stops, |this| this.tab_index(0))
-        .focus(focus_ring(theme))
-        .child(bar);
+        .focus(focus_ring(theme));
 
     press_feedback(styled, theme)
 }

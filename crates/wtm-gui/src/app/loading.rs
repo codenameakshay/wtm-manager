@@ -41,7 +41,7 @@ impl WtmApp {
             // the session still works, so say so and carry on.
             self.set_status(format!("could not save the repo list: {e}"), true);
         }
-        self.repos = registry::load().entries();
+        self.repos = sidebar_sorted(registry::load().entries());
         self.prefs.last_repo = Some(repo.path().to_path_buf());
         self.save_prefs();
         self.active = Some(repo);

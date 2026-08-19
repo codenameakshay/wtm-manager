@@ -446,7 +446,7 @@ impl WtmApp {
         if reg.forget(path) {
             match registry::save(&reg) {
                 Ok(()) => {
-                    self.repos = reg.entries();
+                    self.repos = sidebar_sorted(reg.entries());
                     self.set_status("removed from sidebar", false);
                 }
                 Err(e) => self.set_status(format!("could not save the repo list: {e}"), true),

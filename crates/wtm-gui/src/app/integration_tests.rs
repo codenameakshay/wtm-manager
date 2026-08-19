@@ -1435,6 +1435,59 @@ fn add_repository_rejects_non_repository_directory_with_a_message(cx: &mut TestA
     });
 }
 
+/// `Registry::entries()` sorts most-recently-opened first, and selecting a
+/// repository calls `registry::remember`, which bumps `last_opened` — so if
+/// the sidebar rendered that order directly, the repo you just clicked
+/// would jump to the top and the whole list would reshuffle under your
+/// cursor. `app.repos` must stay in its own stable (alphabetical) order
+/// regardless of which repo was most recently selected.
+#[gpui::test]
+fn selecting_a_repo_does_not_reorder_the_sidebar(cx: &mut TestAppContext) {
+    let fx = Fixture::new();
+    let alpha = fx.sibling_repo("alpha-repo");
+    let zulu = fx.sibling_repo("zulu-repo");
+    // `fx.root()` is named "repo" — alphabetically between the two above.
+    let (view, cx) = open_app(cx, Some(fx.open()));
+    cx.run_until_parked();
+
+    // Add both siblings; each `finish_add_repository` call activates (and
+    // so `remember`s) the repo it adds, leaving `zulu-repo` the most
+    // recently opened of the three.
+    view.update_in(cx, |app, _window, cx| {
+        app.finish_add_repository(alpha.clone(), cx)
+    });
+    cx.run_until_parked();
+    view.update_in(cx, |app, _window, cx| {
+        app.finish_add_repository(zulu.clone(), cx)
+    });
+    cx.run_until_parked();
+
+    let order_before: Vec<PathBuf> = view.read_with(cx, |app, _| {
+        app.repos.iter().map(|r| r.path.clone()).collect()
+    });
+    assert_eq!(
+        order_before,
+        vec![alpha.clone(), fx.root().to_path_buf(), zulu.clone()],
+        "the sidebar must start alphabetical by name, not most-recently-opened"
+    );
+
+    // Select the repo furthest from the top of the most-recently-opened
+    // order (the fixture's own root, opened first of the three) — this is
+    // exactly the click the bug report described.
+    view.update_in(cx, |app, _window, cx| {
+        app.select_repo(fx.root().to_path_buf(), cx)
+    });
+    cx.run_until_parked();
+
+    let order_after: Vec<PathBuf> = view.read_with(cx, |app, _| {
+        app.repos.iter().map(|r| r.path.clone()).collect()
+    });
+    assert_eq!(
+        order_before, order_after,
+        "selecting a repo must not reorder the sidebar"
+    );
+}
+
 // ---------------------------------------------------------------------
 // 12. Escape layering
 // ---------------------------------------------------------------------
