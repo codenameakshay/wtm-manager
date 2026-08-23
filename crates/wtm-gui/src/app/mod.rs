@@ -72,7 +72,6 @@ mod selection;
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
-use std::time::Duration;
 
 use gpui::prelude::*;
 use gpui::{
@@ -282,6 +281,13 @@ pub struct WtmApp {
     /// needed" without tearing down and recreating OS watch descriptors on
     /// every reload.
     watched: Option<(PathBuf, Vec<PathBuf>)>,
+    /// Whether the window is currently active. Filesystem changes received
+    /// while inactive only mark the repository stale; activation performs one
+    /// coalesced refresh so background Git activity cannot spend CPU scanning
+    /// every worktree while the app is hidden behind another window.
+    window_active: bool,
+    repository_stale: bool,
+    _activation_sub: Subscription,
     detail_panel_visible: bool,
     /// True once the user has explicitly reopened the detail panel
     /// (`commands::on_toggle_detail_panel`) while the window was too narrow
@@ -461,6 +467,11 @@ impl WtmApp {
             pending_select: None,
             watcher: None,
             watched: None,
+            window_active: window.is_window_active(),
+            repository_stale: false,
+            _activation_sub: cx.observe_window_activation(window, |app, window, cx| {
+                app.on_window_activation(window, cx)
+            }),
             detail_panel_visible: prefs.detail_panel_visible,
             detail_panel_narrow_override: false,
             details: None,

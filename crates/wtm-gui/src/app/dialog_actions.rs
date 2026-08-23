@@ -495,54 +495,58 @@ impl WtmApp {
         .detach();
 
         cx.spawn(async move |this, cx| {
+            #[cfg(not(test))]
+            let mut rx = rx;
+            #[cfg(test)]
+            let rx = rx;
             loop {
-                let mut batch = Vec::new();
-                let mut finished = false;
-                // Non-blocking: `try_recv` never stalls this foreground
-                // task waiting for the background thread. A blocking
-                // `rx.recv()` here would freeze the whole window until the
-                // create finished — this loop instead polls on an interval,
-                // draining whatever has arrived since the last tick.
+                // TestDispatcher runs background tasks cooperatively, so a
+                // blocking std receiver would stall the test thread. Keep
+                // this test-only path deterministic; production waits on
+                // the background executor without polling or timers.
+                #[cfg(test)]
+                let first = loop {
+                    match rx.try_recv() {
+                        Ok(msg) => break Result::<StreamMsg, mpsc::RecvError>::Ok(msg),
+                        Err(mpsc::TryRecvError::Disconnected) => return,
+                        Err(mpsc::TryRecvError::Empty) => {}
+                    }
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(16))
+                        .await;
+                };
+                #[cfg(not(test))]
+                let first = {
+                    let (first, returned_rx) = cx
+                        .background_spawn(async move {
+                            let first = rx.recv();
+                            (first, rx)
+                        })
+                        .await;
+                    rx = returned_rx;
+                    first
+                };
+                let Ok(first) = first else {
+                    return;
+                };
+                let mut batch = vec![first];
                 while let Ok(msg) = rx.try_recv() {
                     let is_done = matches!(msg, StreamMsg::Done(_));
                     batch.push(msg);
                     if is_done {
-                        finished = true;
                         break;
                     }
                 }
-                if !batch.is_empty() {
-                    let alive = this
-                        .update(cx, |this, cx| this.apply_create_stream(batch, cx))
-                        .is_ok();
-                    if !alive {
-                        return;
-                    }
+                let finished = batch.iter().any(|msg| matches!(msg, StreamMsg::Done(_)));
+                let alive = this
+                    .update(cx, |this, cx| this.apply_create_stream(batch, cx))
+                    .is_ok();
+                if !alive {
+                    return;
                 }
                 if finished {
                     break;
                 }
-                // `cx.background_executor().timer(..)`, NOT `gpui::Timer`
-                // (a bare re-export of `smol::Timer`): the latter is a raw
-                // wall-clock timer that bypasses gpui's platform dispatcher
-                // entirely, so `TestAppContext`'s `TestDispatcher` — and
-                // therefore `cx.executor().advance_clock(..)` — has no way
-                // to know it exists or make it fire. A `#[gpui::test]` that
-                // completes fast enough (no real git subprocess on the
-                // critical path — e.g. an early validation failure) would
-                // hang waiting on a real 16ms of wall-clock time that
-                // `advance_clock` can never simulate, while a slower one
-                // (one that actually shells out to git) could pass by
-                // accident once real elapsed time happened to clear 16ms
-                // during unrelated work. `background_executor().timer(..)`
-                // schedules through `PlatformDispatcher::dispatch_after`
-                // instead, which both the real platform backend and
-                // `TestDispatcher` implement, making this loop's delay
-                // deterministic and testable exactly like every other
-                // background operation in this file.
-                cx.background_executor()
-                    .timer(Duration::from_millis(16))
-                    .await;
             }
         })
         .detach();
@@ -1161,9 +1165,9 @@ impl WtmApp {
     /// `crate::run_panel`'s module doc) for why this uses an mpsc channel
     /// plus a foreground drain loop rather than calling back into `self`
     /// straight from `data::run_command_streaming`'s sink (which runs on a
-    /// background thread and cannot touch `this`), and why the drain loop's
-    /// poll delay must be `cx.background_executor().timer(..)`, never
-    /// `gpui::Timer`.
+    /// background thread and cannot touch `this`). The drain waits for each
+    /// first message on a background executor and batches any messages already
+    /// queued before applying them on the foreground.
     pub(crate) fn submit_run_command(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(state) = &mut self.run_command else {
             return;
@@ -1205,35 +1209,58 @@ impl WtmApp {
         .detach();
 
         cx.spawn(async move |this, cx| {
+            #[cfg(not(test))]
+            let mut rx = rx;
+            #[cfg(test)]
+            let rx = rx;
             loop {
-                let mut batch = Vec::new();
-                let mut finished = false;
+                #[cfg(test)]
+                let first = loop {
+                    match rx.try_recv() {
+                        Ok(msg) => {
+                            break Result::<run_panel::RunStreamMsg, mpsc::RecvError>::Ok(msg)
+                        }
+                        Err(mpsc::TryRecvError::Disconnected) => return,
+                        Err(mpsc::TryRecvError::Empty) => {}
+                    }
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(16))
+                        .await;
+                };
+                #[cfg(not(test))]
+                let first = {
+                    let (first, returned_rx) = cx
+                        .background_spawn(async move {
+                            let first = rx.recv();
+                            (first, rx)
+                        })
+                        .await;
+                    rx = returned_rx;
+                    first
+                };
+                let Ok(first) = first else {
+                    return;
+                };
+                let mut batch = vec![first];
                 while let Ok(msg) = rx.try_recv() {
                     let is_done = matches!(msg, run_panel::RunStreamMsg::Done(_));
                     batch.push(msg);
                     if is_done {
-                        finished = true;
                         break;
                     }
                 }
-                if !batch.is_empty() {
-                    let alive = this
-                        .update(cx, |this, cx| this.apply_run_command_stream(batch, cx))
-                        .is_ok();
-                    if !alive {
-                        return;
-                    }
+                let finished = batch
+                    .iter()
+                    .any(|msg| matches!(msg, run_panel::RunStreamMsg::Done(_)));
+                let alive = this
+                    .update(cx, |this, cx| this.apply_run_command_stream(batch, cx))
+                    .is_ok();
+                if !alive {
+                    return;
                 }
                 if finished {
                     break;
                 }
-                // `cx.background_executor().timer(..)`, NOT `gpui::Timer` —
-                // see `submit_create_dialog`'s matching comment for the full
-                // explanation of why the latter is invisible to
-                // `TestDispatcher`/`advance_clock`.
-                cx.background_executor()
-                    .timer(Duration::from_millis(16))
-                    .await;
             }
         })
         .detach();

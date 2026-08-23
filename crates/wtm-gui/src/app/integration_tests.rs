@@ -102,26 +102,11 @@
 //!
 //! ## Determinism
 //!
-//! `submit_create_dialog`'s progress view drains a channel from a polling
-//! loop (a 16ms delay between checks), so a create is only driven to
-//! completion with `cx.executor().advance_clock(...)` after
-//! `run_until_parked` — see `TestDispatcher::advance_clock`'s doc: it makes
-//! due timers ready and re-drains ready work in a loop, which is what lets
-//! a bounded, single call unstick an arbitrary number of 16ms poll ticks
-//! deterministically rather than guessing how many are needed. That delay
-//! **must** be `cx.background_executor().timer(..)`, not `gpui::Timer`
-//! (`smol::Timer::after`, a raw wall-clock timer gpui merely re-exports):
-//! the latter bypasses the platform dispatcher entirely, so
-//! `TestDispatcher` — and therefore `advance_clock` — cannot see or control
-//! it at all. This was a real, previously-latent bug in
-//! `submit_create_dialog` (and in `TextInput::start_blinking`, fixed the
-//! same way): found because a *fast* create (an early validation failure,
-//! no real `git worktree add` on the critical path) reliably hung waiting
-//! on genuine, un-simulatable wall-clock time, while a *slow* one (a real
-//! git subprocess call) happened to pass by accident, once enough real time
-//! had elapsed incidentally elsewhere in the test. Both call sites now use
-//! the dispatcher-integrated timer; see `app/dialog_actions.rs` and
-//! `text_input.rs` for the fix and its full explanation.
+//! The create and run progress views wait for streamed channel events on the
+//! background executor, then apply each batch on the UI executor. Tests use
+//! `run_until_parked` followed by `advance_clock` to flush the cooperative
+//! test dispatcher deterministically; there is no wall-clock polling loop to
+//! wake the app while it is idle.
 //!
 //! Every other background operation here (reload, remove, prune, bulk
 //! remove, add repository) is a single `background_spawn().await` with no
@@ -1768,6 +1753,114 @@ fn selection_survives_a_reload_that_reorders_rows_by_path_not_index(cx: &mut Tes
     });
 }
 
+/// Filesystem notifications must not launch a full status walk while the
+/// window is inactive. Multiple notifications are represented by one stale
+/// bit and produce exactly one refresh when the window becomes active again.
+#[gpui::test]
+fn watcher_changes_are_coalesced_while_window_is_inactive(cx: &mut TestAppContext) {
+    let fx = Fixture::new();
+    let repo = fx.open();
+    let (view, cx) = open_app(cx, Some(repo));
+    cx.run_until_parked();
+
+    let generation_before = view.read_with(cx, |app, _| {
+        assert!(app.window_active);
+        app.generation
+    });
+    cx.deactivate_window();
+
+    view.update_in(cx, |app, _window, cx| {
+        app.on_watcher_change(cx);
+        app.on_watcher_change(cx);
+    });
+    view.read_with(cx, |app, _| {
+        assert!(!app.window_active);
+        assert!(app.repository_stale);
+        assert_eq!(app.generation, generation_before);
+    });
+
+    cx.update(|window, _| window.activate_window());
+    cx.run_until_parked();
+    view.read_with(cx, |app, _| {
+        assert!(app.window_active);
+        assert!(!app.repository_stale);
+        assert_eq!(
+            app.generation,
+            generation_before + 1,
+            "activation must issue one coalesced refresh"
+        );
+    });
+}
+
+/// An active watcher event that arrives during a reload must not be dropped:
+/// it schedules one follow-up generation after the in-flight status pass.
+#[gpui::test]
+fn watcher_change_during_reload_gets_one_follow_up_refresh(cx: &mut TestAppContext) {
+    let fx = Fixture::new();
+    let repo = fx.open();
+    let (view, cx) = open_app(cx, Some(repo));
+    cx.run_until_parked();
+
+    let generation_before = view.read_with(cx, |app, _| {
+        assert!(app.window_active);
+        app.generation
+    });
+    view.update_in(cx, |app, _window, cx| {
+        app.reload(cx);
+        app.on_watcher_change(cx);
+    });
+    view.read_with(cx, |app, _| {
+        assert!(app.loading);
+        assert!(app.repository_stale);
+        assert_eq!(app.generation, generation_before + 1);
+    });
+
+    cx.run_until_parked();
+    view.read_with(cx, |app, _| {
+        assert!(!app.loading);
+        assert!(!app.repository_stale);
+        assert_eq!(
+            app.generation,
+            generation_before + 2,
+            "the in-flight event must cause one follow-up refresh"
+        );
+    });
+}
+
+/// If the window is deactivated while a reload is in flight, its completion
+/// must not start background work. The stale event waits for activation.
+#[gpui::test]
+fn watcher_change_during_reload_waits_for_reactivation(cx: &mut TestAppContext) {
+    let fx = Fixture::new();
+    let repo = fx.open();
+    let (view, cx) = open_app(cx, Some(repo));
+    cx.run_until_parked();
+
+    let generation_before = view.read_with(cx, |app, _| app.generation);
+    view.update_in(cx, |app, _window, cx| app.reload(cx));
+    cx.deactivate_window();
+    view.update_in(cx, |app, _window, cx| app.on_watcher_change(cx));
+
+    cx.run_until_parked();
+    view.read_with(cx, |app, _| {
+        assert!(!app.window_active);
+        assert!(app.repository_stale);
+        assert_eq!(
+            app.generation,
+            generation_before + 1,
+            "an inactive completion must not launch a follow-up refresh"
+        );
+    });
+
+    cx.update(|window, _| window.activate_window());
+    cx.run_until_parked();
+    view.read_with(cx, |app, _| {
+        assert!(app.window_active);
+        assert!(!app.repository_stale);
+        assert_eq!(app.generation, generation_before + 2);
+    });
+}
+
 #[gpui::test]
 fn multi_selection_survives_a_sort_mode_change_by_path_not_index(cx: &mut TestAppContext) {
     let fx = Fixture::new();
@@ -1939,11 +2032,9 @@ fn run_command_that_succeeds_reaches_finished_state_with_expected_output(cx: &mu
     cx.simulate_input("echo hello");
     cx.simulate_keystrokes("enter");
     cx.run_until_parked();
-    // The drain loop polls the streaming channel on a 16ms
-    // `cx.background_executor().timer(..)` — see `submit_run_command`'s doc
-    // comment (and `submit_create_dialog`'s, which this mirrors) for why
-    // `advance_clock` is required to unstick it deterministically rather
-    // than racing real wall-clock time.
+    // The drain loop waits for streamed channel events on the background
+    // executor. Advance the cooperative dispatcher so the subprocess and its
+    // UI batches finish deterministically.
     cx.executor().advance_clock(Duration::from_secs(2));
 
     view.read_with(cx, |app, _| {

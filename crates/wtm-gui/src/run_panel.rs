@@ -27,10 +27,10 @@
 //! streaming channel) lives in `crate::app::dialog_actions`, mirroring the
 //! split `dialogs::CreateState`/`WtmApp::submit_create_dialog` already use
 //! for the create-worktree dialog's own streaming progress view — including
-//! the same background-task-plus-channel-plus-foreground-drain-loop shape,
-//! and the same `cx.background_executor().timer(..)` (never `gpui::Timer`)
-//! for the drain loop's poll interval; see that method's doc comment for why
-//! the distinction matters.
+//! the same background-task-plus-channel-plus-foreground-drain-loop shape.
+//! Production waits for each channel message on the background executor and
+//! only then hops to the foreground; tests use a dispatcher-aware polling
+//! bridge because GPUI's cooperative test executor cannot block on a channel.
 //!
 //! ## The child process outlives a closed dialog
 //!

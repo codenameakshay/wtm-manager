@@ -113,6 +113,9 @@ impl WtmApp {
     /// without status so the list paints immediately, then the full listing
     /// with dirty/ahead/behind/merged computed in parallel.
     pub(super) fn reload(&mut self, cx: &mut Context<Self>) {
+        // A user-requested reload (or the single reload emitted by window
+        // activation) satisfies any pending stale notification.
+        self.repository_stale = false;
         self.reload_impl(true, cx);
     }
 
@@ -170,6 +173,7 @@ impl WtmApp {
             self.awaiting_status = false;
         }
 
+        let completed_status_pass = with_status && result.is_ok();
         match result {
             Ok(rows) => {
                 // Capture the current selection by *worktree identity*
@@ -273,6 +277,14 @@ impl WtmApp {
                 self.set_status(format!("could not list worktrees: {e}"), true);
             }
         }
+        // A watcher event that arrived during the full pass cannot start a
+        // second load concurrently. Once the pass succeeded, consume the
+        // coalesced notification with one follow-up refresh. Keep the stale
+        // bit on errors so an activation or later successful load can retry;
+        // never spin on a failing repository.
+        if completed_status_pass && self.window_active && self.repository_stale {
+            self.reload(cx);
+        }
         cx.notify();
     }
 
@@ -329,6 +341,17 @@ impl WtmApp {
     // Live refresh (filesystem watcher)
     // -------------------------------------------------------------
 
+    /// Keep filesystem notifications cheap while the window is hidden. The
+    /// activation observer is the only place that turns the coalesced stale
+    /// bit back into work, so an arbitrary burst of background Git activity
+    /// results in one refresh at most.
+    pub(super) fn on_window_activation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.window_active = window.is_window_active();
+        if self.window_active && self.repository_stale {
+            self.reload(cx);
+        }
+    }
+
     /// (Re)target the watcher at the active repository's git directory and
     /// its current worktree paths. A no-op when both already match what is
     /// being watched, which is what keeps this from tearing down and
@@ -336,7 +359,7 @@ impl WtmApp {
     /// the watcher itself triggered, whose own `apply_rows` call reaches
     /// here with an unchanged path set.
     ///
-    /// This, together with `on_watcher_change`'s in-flight check, is the
+    /// This, together with `on_watcher_change`'s stale-bit coalescing, is the
     /// whole loop-prevention story: retargeting touches no files (it only
     /// opens watch descriptors), and nothing on the read path this app
     /// takes to list worktrees or compute status ever writes into `.git` —
@@ -387,16 +410,18 @@ impl WtmApp {
     }
 
     /// Called on the gpui foreground when the watcher notices a change.
-    /// Reuses the exact same `reload` path ⌘R uses, but skips triggering a
-    /// second one while a reload is already in flight — a burst of git
-    /// operations (a rebase, `git worktree add` followed immediately by a
-    /// commit) can debounce into more than one notification, and stacking a
-    /// reload per notification would only produce redundant work: the
-    /// `generation` counter already discards a reload superseded by a newer
-    /// one, so anything queued behind the in-flight reload would just be
-    /// thrown away the moment it lands.
-    fn on_watcher_change(&mut self, cx: &mut Context<Self>) {
-        if !self.loading {
+    /// Inactive windows and in-flight reloads only record one stale bit. The
+    /// activation observer, or the successful full pass that is already in
+    /// flight, consumes it with one follow-up `reload`; a failed pass leaves
+    /// the bit set without retrying in a loop.
+    pub(super) fn on_watcher_change(&mut self, cx: &mut Context<Self>) {
+        if !self.window_active {
+            self.repository_stale = true;
+            return;
+        }
+        if self.loading {
+            self.repository_stale = true;
+        } else {
             self.reload(cx);
         }
     }
