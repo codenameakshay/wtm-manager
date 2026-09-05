@@ -275,12 +275,14 @@ fn existing_ancestor(path: &Path) -> Option<PathBuf> {
         .map(Path::to_path_buf)
 }
 
-/// Open a worktree in a terminal app.
+/// Open a worktree in a terminal app. `app` (`Prefs::terminal`) takes
+/// precedence over `$WTM_TERMINAL`, which takes precedence over the
+/// platform default.
 ///
-/// macOS: `$WTM_TERMINAL` names the app for `open -a <app> <path>`, falling
+/// macOS: the resolved name is used for `open -a <app> <path>`, falling
 /// back to `Terminal`.
 ///
-/// Linux: `$WTM_TERMINAL` names the emulator binary to try first (a bare
+/// Linux: the resolved name is the emulator binary to try first (a bare
 /// name resolved on `$PATH`, or a full path); failing that, the first
 /// installed of, in order, `x-terminal-emulator`, `gnome-terminal`,
 /// `konsole`, `alacritty`, `kitty`, `wezterm`, `foot`, `xterm`. Each is
@@ -290,13 +292,15 @@ fn existing_ancestor(path: &Path) -> Option<PathBuf> {
 /// wezterm) run in the foreground and don't return control until their
 /// window closes, so waiting on them here would block for as long as the
 /// user keeps the terminal open.
-pub fn open_in_terminal(path: &Path) -> Result<(), String> {
+pub fn open_in_terminal(path: &Path, app: Option<&str>) -> Result<(), String> {
+    let explicit = app
+        .filter(|t| !t.is_empty())
+        .map(str::to_string)
+        .or_else(|| std::env::var("WTM_TERMINAL").ok().filter(|t| !t.is_empty()));
+
     #[cfg(target_os = "macos")]
     {
-        let terminal = std::env::var("WTM_TERMINAL")
-            .ok()
-            .filter(|t| !t.is_empty())
-            .unwrap_or_else(|| "Terminal".to_string());
+        let terminal = explicit.unwrap_or_else(|| "Terminal".to_string());
         std::process::Command::new("open")
             .arg("-a")
             .arg(&terminal)
@@ -313,10 +317,8 @@ pub fn open_in_terminal(path: &Path) -> Result<(), String> {
     }
     #[cfg(not(target_os = "macos"))]
     {
-        if let Ok(explicit) = std::env::var("WTM_TERMINAL") {
-            if !explicit.is_empty() {
-                return spawn_terminal(&explicit, path);
-            }
+        if let Some(explicit) = explicit {
+            return spawn_terminal(&explicit, path);
         }
         const CANDIDATES: &[&str] = &[
             "x-terminal-emulator",
@@ -406,10 +408,6 @@ pub fn copy_to_clipboard(text: &str) -> Result<(), String> {
 #[derive(Debug, Clone)]
 pub struct BranchInfo {
     pub name: String,
-    /// `dialogs.rs` constructs `BranchInfo` values with this field but only
-    /// ever reads `name`/`is_checked_out`/`upstream_gone` back.
-    #[allow(dead_code)]
-    pub is_local: bool,
     /// Already checked out in some worktree of this repository (a `wtm add`
     /// for it would fail with `BranchInUse`).
     pub is_checked_out: bool,
@@ -454,7 +452,6 @@ pub fn list_branches(repo: &OpenRepo) -> Result<Vec<BranchInfo>, String> {
         locals.push(BranchInfo {
             is_checked_out: checked_out.contains(&name),
             name,
-            is_local: true,
             upstream_gone,
         });
     }
@@ -480,7 +477,6 @@ pub fn list_branches(repo: &OpenRepo) -> Result<Vec<BranchInfo>, String> {
         }
         remotes.push(BranchInfo {
             name: short.to_string(),
-            is_local: false,
             is_checked_out: checked_out.contains(short),
             upstream_gone: false,
         });
@@ -537,10 +533,9 @@ pub enum RefKind {
 /// One ref as shown in the create-worktree dialog's base-ref picker.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RefInfo {
-    /// What to pass to git as the base (e.g. `main`, `origin/feature/x`).
+    /// What to pass to git as the base (e.g. `main`, `origin/feature/x`) —
+    /// also what the picker shows.
     pub name: String,
-    /// What to show in the picker (may equal `name`).
-    pub display: String,
     pub kind: RefKind,
     /// Commit subject + short sha for a secondary line, if cheap to get.
     pub subject: Option<String>,
@@ -642,11 +637,10 @@ struct RawRef {
     remote: Option<String>,
 }
 
-/// A `RefInfo` with only `name`/`display`/`kind` filled in — what
+/// A `RefInfo` with only `name`/`kind` filled in — what
 /// [`assemble_ref_order`] can produce without touching git.
 fn bare_ref(name: String, kind: RefKind) -> RefInfo {
     RefInfo {
-        display: name.clone(),
         name,
         kind,
         subject: None,
@@ -1604,7 +1598,7 @@ mod tests {
         }
     }
 
-    // ---------------- Task 1: reveal_in_finder ----------------
+    // ---------------- reveal_in_finder ----------------
 
     #[test]
     fn existing_ancestor_of_a_dir_is_itself() {
@@ -1652,7 +1646,7 @@ mod tests {
         assert_eq!(xdg_open_fallback_target(&file), tmp.path());
     }
 
-    // ---------------- Task: open_in_terminal (Linux) ----------------
+    // ---------------- open_in_terminal (Linux) ----------------
 
     #[cfg(not(target_os = "macos"))]
     #[test]
@@ -1720,7 +1714,7 @@ mod tests {
         assert!(terminal_args("some-custom-term", path).is_empty());
     }
 
-    // ---------------- Task 2: list_refs ordering ----------------
+    // ---------------- list_refs ordering ----------------
 
     fn raw_local(name: &str) -> RawRef {
         RawRef {
@@ -1855,7 +1849,7 @@ mod tests {
         assert!(default.subject.is_some());
     }
 
-    // ---------------- Task 3: list_files ----------------
+    // ---------------- list_files ----------------
 
     #[test]
     fn escapes_worktree_rejects_any_parent_dir_component() {
@@ -1934,7 +1928,7 @@ mod tests {
         assert!(src_pos < new_pos);
     }
 
-    // ---------------- Task 4: worktree_diff / file_diff ----------------
+    // ---------------- worktree_diff / file_diff ----------------
 
     #[test]
     fn worktree_diff_reports_hunks_with_line_numbers() {
@@ -2018,7 +2012,7 @@ mod tests {
         assert_eq!(total_lines, MAX_DIFF_LINES_PER_FILE);
     }
 
-    // ---------------- Task 5: fetch ----------------
+    // ---------------- fetch ----------------
 
     #[test]
     fn count_updated_refs_counts_arrow_lines_only() {
@@ -2083,7 +2077,7 @@ Fetching origin
         assert!(err.contains("no configured remotes"), "{err}");
     }
 
-    // ---------------- Task 6: worktree_activity / relative_age ----------------
+    // ---------------- worktree_activity / relative_age ----------------
 
     #[test]
     fn worktree_activity_reports_head_commit_time_and_skips_missing_paths() {
@@ -2163,7 +2157,7 @@ Fetching origin
         assert_eq!(relative_age(NOW - 2 * 365 * 86400, NOW), "2y");
     }
 
-    // ---------------- Task 7: run_command_streaming ----------------
+    // ---------------- run_command_streaming ----------------
 
     #[test]
     fn run_command_streaming_reports_output_and_success() {
@@ -2224,7 +2218,7 @@ Fetching origin
             .any(|e| matches!(e, CommandEvent::Output { line } if line == "marker.txt")));
     }
 
-    // ---------------- Task 8: remote_branch_url ----------------
+    // ---------------- remote_branch_url ----------------
 
     #[test]
     fn build_remote_branch_url_over_a_table_of_inputs() {

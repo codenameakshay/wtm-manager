@@ -169,18 +169,16 @@ pub const ROW_HEIGHT: f32 = 32.0;
 pub const LIST_ROW_HEIGHT: f32 = 56.0;
 /// The list wraps each row in 2px of bottom padding, so keyboard-scroll math
 /// must step by this, not by [`LIST_ROW_HEIGHT`] alone.
-#[allow(dead_code)]
 pub const LIST_ROW_PITCH: f32 = LIST_ROW_HEIGHT + 2.0;
 /// Sidebar width.
 pub const SIDEBAR_WIDTH: f32 = 248.0;
 /// Footer strip height.
 pub const FOOTER_HEIGHT: f32 = 28.0;
-/// Square icon-button hit area (titlebar, sidebar, toolbars). Was 26 — a
-/// macOS toolbar button reads closer to ~28, and at `TITLEBAR_HEIGHT` (44)
-/// this still leaves 8px of clearance above and below, so the bump costs no
-/// layout. The one source of truth for every hand-built copy of this
-/// control (`ui::icon_button`, `app/chrome.rs`'s reload button and its
-/// Linux window-control buttons).
+/// Square icon-button hit area (titlebar, sidebar, toolbars): a macOS
+/// toolbar button reads closer to ~28, and at `TITLEBAR_HEIGHT` (44) this
+/// still leaves 8px of clearance above and below. The one source of truth
+/// for every hand-built copy of this control (`ui::icon_button`,
+/// `app/chrome.rs`'s reload button and its Linux window-control buttons).
 pub const ICON_BUTTON_SIZE: f32 = 28.0;
 
 /// The text scale (px). `ui.rs` re-exports every one of these under the same
@@ -318,8 +316,8 @@ pub(crate) fn hsl_to_rgb(h: f32, s: f32, l: f32) -> [f32; 3] {
     [hue(h + 1.0 / 3.0), hue(h), hue(h - 1.0 / 3.0)]
 }
 
-/// Inverse of [`gamma_encode`]: gamma-encoded sRGB (0..1) -> linear sRGB.
-/// Only used to compute WCAG luminance for the palette's contrast tests.
+/// Inverse of [`gamma_encode`]: gamma-encoded sRGB (0..1) -> linear sRGB,
+/// for computing WCAG luminance in the palette's contrast tests.
 #[cfg(test)]
 fn gamma_decode(x: f32) -> f32 {
     if x <= 0.040_45 {
@@ -465,13 +463,10 @@ pub struct Theme {
     pub surface_overlay: Hsla,
     /// Hover wash for interactive rows/buttons.
     pub element_hover: Hsla,
-    /// Selected/active wash. This is now the *only* thing that marks a
-    /// selected row — `ui::row` used to also paint a 2px accent bar down
-    /// the leading edge, which read as a stray line rather than a selection
-    /// cue, so it was removed. Alpha is 0.16 here vs. `element_hover`'s
-    /// 0.06 (was 0.10, too close to read as a distinct state once the bar
-    /// was gone) so selection stays legible next to hover, unfocused, and
-    /// with the pointer elsewhere — without reaching for a tinted fill.
+    /// Selected/active wash — the only thing that marks a selected row in
+    /// `ui::row`. Alpha is 0.16 here vs. `element_hover`'s 0.06, so
+    /// selection stays legible next to hover, unfocused, and with the
+    /// pointer elsewhere, without reaching for a tinted fill.
     pub element_active: Hsla,
     /// Hairline border.
     pub border: Hsla,

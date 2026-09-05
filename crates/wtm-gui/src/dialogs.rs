@@ -199,8 +199,8 @@ impl CreateState {
             .default_base
             .clone()
             .unwrap_or_else(|| "HEAD".to_string());
-        let branch_input = cx.new(|cx| TextInput::new("branch name", window, cx));
-        let base_input = cx.new(|cx| TextInput::new(base_placeholder, window, cx));
+        let branch_input = cx.new(|cx| TextInput::new("branch name", cx));
+        let base_input = cx.new(|cx| TextInput::new(base_placeholder, cx));
 
         // `subscribe_in` rather than `subscribe`: closing the dialog or
         // submitting the form both need to hand focus back to the root
@@ -467,16 +467,16 @@ pub fn render_toggle(
 /// Refs matching `query`, ranked by `crate::palette::fuzzy_match`'s score
 /// (best first) — the same fuzzy scorer the command palette uses, reused
 /// rather than reimplemented since `fuzzy_match` is a public function of
-/// this crate. Matching is against `display`, the same field the row
-/// renders. `sort_by_key` is stable, so an empty query — every ref scores
-/// `0` — leaves `refs`' own order untouched: `list_refs`' Current, Default,
+/// this crate. Matching is against `name`, the same field the row renders.
+/// `sort_by_key` is stable, so an empty query — every ref scores `0` —
+/// leaves `refs`' own order untouched: `list_refs`' Current, Default,
 /// locals-then-remotes ordering is exactly what a picker should browse
 /// before the user has typed anything to rank by.
 pub fn filter_refs<'a>(refs: &'a [RefInfo], query: &str) -> Vec<&'a RefInfo> {
     let mut scored: Vec<(i64, &RefInfo)> = refs
         .iter()
         .filter_map(|r| {
-            let m = crate::palette::fuzzy_match(query, &r.display)?;
+            let m = crate::palette::fuzzy_match(query, &r.name)?;
             Some((m.score, r))
         })
         .collect();
@@ -560,7 +560,7 @@ pub fn render_ref_row(r: &RefInfo, highlighted: bool, theme: &Theme) -> Stateful
                     .truncate()
                     .text_size(px(TEXT_BASE))
                     .text_color(theme.text)
-                    .child(r.display.clone()),
+                    .child(r.name.clone()),
             )
             .when_some(tag, |this, tag| {
                 this.child(
@@ -771,7 +771,6 @@ mod tests {
     fn branch(name: &str, checked_out: bool) -> BranchInfo {
         BranchInfo {
             name: name.to_string(),
-            is_local: true,
             is_checked_out: checked_out,
             upstream_gone: false,
         }
@@ -780,7 +779,6 @@ mod tests {
     fn ref_info(name: &str, kind: RefKind) -> RefInfo {
         RefInfo {
             name: name.to_string(),
-            display: name.to_string(),
             kind,
             subject: None,
             short_id: None,

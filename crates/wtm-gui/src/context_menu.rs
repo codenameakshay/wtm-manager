@@ -1,12 +1,11 @@
 //! A reusable right-click context menu that any view can host. See
 //! `crate::app::WtmApp`'s `context_menu` field for a real call site.
 //!
-//! [`ContextMenu<T>`] is generic over whatever the menu was opened *for* (a
-//! row index, a `PathBuf`, an enum of hoverable things — the host decides),
-//! so [`ContextMenu::open`] type-checks against whatever a host actually
-//! opens the menu for. `T` is *not* retained: [`open`](ContextMenu::open)
-//! takes a `target: T` and drops it — the host keeps its own copy alongside
-//! the id it gets from `on_select`, set at the same time it calls `open`.
+//! The menu tracks no notion of what it was opened *for* — a host that
+//! needs that back once the menu acts on a choice keeps its own copy
+//! alongside the id it gets from `on_select`, set at the same time it
+//! calls [`ContextMenu::open`], the way `crate::app`'s `context_menu_target`
+//! does.
 //!
 //! `render` takes `Window`/`App` because GPUI only routes key events to the
 //! currently *focused* element, so the menu has to briefly claim keyboard
@@ -20,7 +19,6 @@
 //! `on_select` can assume the menu is already gone.
 
 use std::cell::{Cell, RefCell};
-use std::marker::PhantomData;
 use std::rc::Rc;
 
 use gpui::prelude::*;
@@ -120,9 +118,6 @@ impl MenuItem {
 
 /// Everything that exists only while the menu is open, including the pieces
 /// GPUI's `'static` listeners need to reach without a `&mut ContextMenu`.
-///
-/// Not generic over `T`: see the module doc for why the target itself is
-/// not part of this state.
 struct OpenState {
     position: Point<Pixels>,
     items: Vec<MenuItem>,
@@ -141,37 +136,22 @@ struct OpenState {
 
 /// A small, reusable right-click menu. Owned by whichever view hosts it —
 /// typically one field alongside the rest of that view's UI state.
-pub struct ContextMenu<T: 'static> {
+pub struct ContextMenu {
     state: Rc<RefCell<Option<OpenState>>>,
-    /// `open` accepts a `target: T` purely so a caller cannot hand this menu
-    /// instance a target of the wrong type; the value itself is dropped
-    /// rather than stored (see the module doc). This marker is what lets the
-    /// struct stay generic over `T` — and so keep that compile-time check —
-    /// without an `OpenState` field of type `T` to hold a value that is
-    /// never actually kept.
-    _target: PhantomData<T>,
 }
 
-impl<T: 'static> Default for ContextMenu<T> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<T: 'static> ContextMenu<T> {
+impl ContextMenu {
     pub fn new() -> Self {
         Self {
             state: Rc::new(RefCell::new(None)),
-            _target: PhantomData,
         }
     }
 
-    /// Open at `position` (window coordinates) for `target`, replacing
-    /// whatever the menu is currently showing. `target` is not retained —
-    /// see the module doc — so a host that needs it back once the menu acts
-    /// on a choice must keep its own copy, as `crate::app`'s
-    /// `context_menu_target` does.
-    pub fn open(&mut self, _target: T, position: Point<Pixels>, items: Vec<MenuItem>) {
+    /// Open at `position` (window coordinates), replacing whatever the menu
+    /// is currently showing. A host that needs to know what the menu was
+    /// opened for once it acts on a choice keeps its own copy, as
+    /// `crate::app`'s `context_menu_target` does.
+    pub fn open(&mut self, position: Point<Pixels>, items: Vec<MenuItem>) {
         *self.state.borrow_mut() = Some(OpenState {
             position,
             items,
@@ -525,7 +505,7 @@ mod tests {
     fn open_marks_menu_open() {
         let mut menu = ContextMenu::new();
         let position = point(px(10.0), px(20.0));
-        menu.open(42usize, position, sample_items());
+        menu.open(position, sample_items());
 
         assert!(menu.is_open());
     }
@@ -533,7 +513,7 @@ mod tests {
     #[test]
     fn close_clears_state() {
         let mut menu = ContextMenu::new();
-        menu.open(1usize, point(px(0.0), px(0.0)), sample_items());
+        menu.open(point(px(0.0), px(0.0)), sample_items());
 
         menu.close();
 
@@ -544,9 +524,9 @@ mod tests {
     fn selecting_a_disabled_item_is_rejected() {
         let items = sample_items();
 
-        assert!(ContextMenu::<usize>::selectable_id(&items, "rename").is_none());
-        assert!(ContextMenu::<usize>::selectable_id(&items, "open").is_some());
-        assert!(ContextMenu::<usize>::selectable_id(&items, "no-such-id").is_none());
+        assert!(ContextMenu::selectable_id(&items, "rename").is_none());
+        assert!(ContextMenu::selectable_id(&items, "open").is_some());
+        assert!(ContextMenu::selectable_id(&items, "no-such-id").is_none());
     }
 
     #[test]
@@ -556,34 +536,22 @@ mod tests {
         // [3] delete (selectable).
 
         // From nothing highlighted, down lands on the first selectable row.
-        assert_eq!(
-            ContextMenu::<usize>::next_selectable(&items, None, 1),
-            Some(0)
-        );
+        assert_eq!(ContextMenu::next_selectable(&items, None, 1), Some(0));
 
         // From "open", down skips the disabled row and the separator.
-        assert_eq!(
-            ContextMenu::<usize>::next_selectable(&items, Some(0), 1),
-            Some(3)
-        );
+        assert_eq!(ContextMenu::next_selectable(&items, Some(0), 1), Some(3));
 
         // Wraps back around to "open".
-        assert_eq!(
-            ContextMenu::<usize>::next_selectable(&items, Some(3), 1),
-            Some(0)
-        );
+        assert_eq!(ContextMenu::next_selectable(&items, Some(3), 1), Some(0));
 
         // Moving up from "open" wraps to "delete", again skipping over the
         // separator and the disabled row.
-        assert_eq!(
-            ContextMenu::<usize>::next_selectable(&items, Some(0), -1),
-            Some(3)
-        );
+        assert_eq!(ContextMenu::next_selectable(&items, Some(0), -1), Some(3));
     }
 
     #[test]
     fn keyboard_navigation_with_nothing_selectable_stays_none() {
         let items = vec![MenuItem::action("x", "X").disabled(), MenuItem::separator()];
-        assert_eq!(ContextMenu::<usize>::next_selectable(&items, None, 1), None);
+        assert_eq!(ContextMenu::next_selectable(&items, None, 1), None);
     }
 }

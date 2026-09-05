@@ -117,11 +117,7 @@ pub struct TextInput {
 }
 
 impl TextInput {
-    pub fn new(
-        placeholder: impl Into<SharedString>,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Self {
+    pub fn new(placeholder: impl Into<SharedString>, cx: &mut Context<Self>) -> Self {
         Self::ensure_keymap(cx);
         Self::start_blinking(cx);
 
@@ -173,7 +169,7 @@ impl TextInput {
     /// Opt out of this field's own background/border/radius paint. Builder
     /// style so it chains straight onto [`TextInput::new`], before the
     /// value is wrapped in an `Entity` (e.g.
-    /// `cx.new(|cx| TextInput::new(placeholder, window, cx).borderless())`).
+    /// `cx.new(|cx| TextInput::new(placeholder, cx).borderless())`).
     ///
     /// For every existing field (dialogs, the filter box, the run panel's
     /// command field) the default — a bordered inset well — is exactly

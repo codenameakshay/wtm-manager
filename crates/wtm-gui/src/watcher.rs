@@ -53,32 +53,15 @@ use notify_debouncer_full::{new_debouncer, DebounceEventResult, Debouncer, Recom
 /// would trigger its own refresh.
 const DEBOUNCE_WINDOW: Duration = Duration::from_millis(400);
 
-/// Test-only escape hatch: when `true`, `WtmApp::sync_watcher` skips
-/// starting a real [`RepoWatcher`] entirely, degrading to the same "no live
-/// watch, manual reload still works" mode a failed `watch()` call already
-/// produces (see this module's docs on why that degradation is always
-/// safe).
+/// Test-only switch: when `true`, `WtmApp::sync_watcher` starts no
+/// [`RepoWatcher`], leaving the app in the same manual-reload-only mode a
+/// failed `watch()` produces.
 ///
-/// This exists because of a real, narrow incompatibility between
-/// [`RepoWatcher::watch`]'s consumer task and gpui's `TestAppContext`:
-/// `rx.recv()` (below) is *unboundedly* blocking by design — correct and
-/// safe in the real app, where `cx.background_spawn` really does hand it to
-/// a dedicated OS thread, so a long wait for the next filesystem event
-/// never stalls anything else. Inside a `#[gpui::test]`, though,
-/// `TestAppContext`'s `TestDispatcher` is single-threaded and cooperative:
-/// "background" work is only ever a queue, and whichever task
-/// `run_until_parked` happens to pick runs in-line, on the calling thread.
-/// The first time it picks this watcher's `rx.recv()` — which nothing in a
-/// short-lived, otherwise-idle test will ever satisfy — `run_until_parked`
-/// (and therefore the whole test) hangs forever, with no panic and no
-/// timeout to report it. This is not a hazard particular to any one test:
-/// opening a repository always starts a watcher
-/// (`WtmApp::apply_rows` -> `sync_watcher`, unconditionally, on every
-/// listing), so *any* gpui test that lets an activated repository's
-/// listing land would independently hit the same hang. See
-/// `app::integration_tests`'s module doc for the fuller story and for why
-/// the watcher itself is out of scope for headless testing regardless (it
-/// is driven by real, non-deterministic OS filesystem events).
+/// The consumer task's `rx.recv()` blocks unboundedly, which is fine on a
+/// real background thread but hangs gpui's single-threaded, cooperative
+/// `TestDispatcher` forever the first time `run_until_parked` schedules it.
+/// Every test that lets a repository listing land would hit that, so
+/// integration tests set this before activating a repo.
 #[cfg(test)]
 pub(crate) static DISABLED_FOR_TESTS: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);

@@ -86,8 +86,8 @@ pub fn mono_font() -> Font {
 }
 
 /// Estimated advance width, in pixels, of one monospace character at the UI
-/// font's `TEXT_SM` size (~0.6em of the 12px UI font) — used to size columns
-/// (a diff gutter, a truncation budget) without a real shaped-text layout
+/// font's `TEXT_SM` size (~0.6em of the 12px UI font) — sizes columns (a
+/// diff gutter, a truncation budget) without a real shaped-text layout
 /// pass, which gpui has no API to measure outside of one.
 pub const CHAR_WIDTH_APPROX: f32 = 7.2;
 
@@ -995,7 +995,7 @@ pub fn scroll_edges(offset: f32, max_offset: f32) -> ScrollEdges {
 ///
 /// Renders an empty, zero-size element when [`scrollbar_thumb`] finds no
 /// overflow, so it never reserves layout room.
-pub fn scrollbar(id: impl Into<ElementId>, handle: &ScrollHandle, _axis: ScrollAxis) -> AnyElement {
+pub fn scrollbar(id: impl Into<ElementId>, handle: &ScrollHandle) -> AnyElement {
     let id = id.into();
     let bounds = handle.bounds();
     let max = handle.max_offset();
@@ -1064,14 +1064,6 @@ pub fn scrollbar(id: impl Into<ElementId>, handle: &ScrollHandle, _axis: ScrollA
         })
         .child(thumb)
         .into_any_element()
-}
-
-/// Axis a [`scrollbar`] tracks. Every scroll region in this app is vertical
-/// today; kept as a parameter (rather than dropped) so a future
-/// horizontally-scrolling region doesn't need every call site updated.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ScrollAxis {
-    Vertical,
 }
 
 /// Scrollbar thumb thickness — thin and quiet at rest, derived from

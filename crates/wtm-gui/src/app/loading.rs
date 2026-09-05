@@ -39,7 +39,7 @@ impl WtmApp {
         if let Err(e) = registry::remember(repo.path(), repo.name()) {
             // A registry that cannot be written is a papercut, not a failure:
             // the session still works, so say so and carry on.
-            self.set_status(format!("could not save the repo list: {e}"), true);
+            self.set_error(format!("could not save the repo list: {e}"), cx);
         }
         self.repos = sidebar_sorted(registry::load().entries());
         self.prefs.last_repo = Some(repo.path().to_path_buf());
@@ -86,8 +86,9 @@ impl WtmApp {
     /// it synchronously here bounded — it costs whatever `wtm list` already
     /// costs interactively, not a full status walk. The expensive
     /// with-status pass stays exactly where it was: kicked off in the
-    /// background via `reload_status_pass` below, so status pills still
-    /// fill in asynchronously once it lands.
+    /// background right after (`reload_impl(false, ..)`, skipping the fast
+    /// pass this method just ran synchronously), so status pills still fill
+    /// in asynchronously once it lands.
     ///
     /// A broken repository must never block the window on the UI thread or
     /// panic, so a failed synchronous attempt is silently discarded in favor
@@ -103,7 +104,7 @@ impl WtmApp {
                 // just performed before the first paint instead of after it.
                 let generation = self.generation;
                 self.apply_rows(generation, Ok(rows), false, cx);
-                self.reload_status_pass(cx);
+                self.reload_impl(false, cx);
             }
             Err(_) => self.reload(cx),
         }
@@ -117,15 +118,6 @@ impl WtmApp {
         // activation) satisfies any pending stale notification.
         self.repository_stale = false;
         self.reload_impl(true, cx);
-    }
-
-    /// The with-status pass only, skipping the fast pass `reload` normally
-    /// starts with. Used exactly once, right after `seed_initial_rows` has
-    /// already run the fast pass synchronously and seeded `rows` from it —
-    /// repeating it here would just be redundant work for a result the
-    /// screen already reflects.
-    fn reload_status_pass(&mut self, cx: &mut Context<Self>) {
-        self.reload_impl(false, cx);
     }
 
     fn reload_impl(&mut self, include_fast_pass: bool, cx: &mut Context<Self>) {
@@ -196,15 +188,8 @@ impl WtmApp {
                 // `self.selected` first, so `anchor_path` is `None` here
                 // and the legitimate "no previous selection → start at the
                 // top" branch below still runs.
-                let anchor_path = self
-                    .selected
-                    .and_then(|ix| self.rows.get(ix))
-                    .map(|row| row.path.clone());
-                let multi_paths: Vec<PathBuf> = self
-                    .multi_selected
-                    .iter()
-                    .filter_map(|&ix| self.rows.get(ix).map(|row| row.path.clone()))
-                    .collect();
+                let (anchor_path, multi_paths) = self.selection_paths();
+                let previous_selected = self.selected;
 
                 self.rows = rows;
                 // Every listing is shown in the currently active sort mode,
@@ -220,29 +205,22 @@ impl WtmApp {
                     .pending_select
                     .take()
                     .and_then(|branch| self.rows.iter().position(|r| r.display_name() == branch));
-                self.selected = pending.or_else(|| {
-                    anchor_path
-                        .and_then(|path| self.rows.iter().position(|r| r.path == path))
-                        .or_else(|| match self.selected {
-                            // The previously selected worktree is genuinely
-                            // gone — removed or pruned outside the app, or
-                            // by this very reload — so there is no identity
-                            // left to look up. Falling back to the clamped
-                            // index (not the top) is deliberate: it keeps
-                            // "remove the selected worktree" landing on
-                            // whichever row took its place, the same
-                            // behavior this app has always had for that
-                            // case.
-                            _ if self.rows.is_empty() => None,
-                            Some(ix) if ix < self.rows.len() => Some(ix),
-                            Some(_) => Some(self.rows.len() - 1),
-                            None => Some(0),
-                        })
-                });
-                self.multi_selected = multi_paths
-                    .iter()
-                    .filter_map(|path| self.rows.iter().position(|r| &r.path == path))
-                    .collect();
+                self.restore_selection_by_path(anchor_path.as_deref(), &multi_paths);
+                self.selected = pending
+                    .or(self.selected)
+                    .or_else(|| match previous_selected {
+                        // The worktree that was selected is genuinely gone —
+                        // removed or pruned outside the app, or by this very
+                        // reload — so there is no identity left to look up.
+                        // Falling back to the clamped index (not the top) is
+                        // deliberate: it keeps "remove the selected worktree"
+                        // landing on whichever row took its place, the same
+                        // behavior this app has always had for that case.
+                        _ if self.rows.is_empty() => None,
+                        Some(ix) if ix < self.rows.len() => Some(ix),
+                        Some(_) => Some(self.rows.len() - 1),
+                        None => Some(0),
+                    });
                 // Rows just changed wholesale (a reload) — a filter that
                 // matched some of the old set may match a different subset
                 // of the new one, and the pending-selection branch above
@@ -274,7 +252,7 @@ impl WtmApp {
             }
             Err(e) => {
                 self.loading = false;
-                self.set_status(format!("could not list worktrees: {e}"), true);
+                self.set_error(format!("could not list worktrees: {e}"), cx);
             }
         }
         // A watcher event that arrived during the full pass cannot start a
@@ -430,13 +408,16 @@ impl WtmApp {
     // Detail panel
     // -------------------------------------------------------------
 
+    /// Whichever worktree row is currently selected, if any.
+    pub(super) fn selected_row(&self) -> Option<&WorktreeInfo> {
+        self.selected.and_then(|ix| self.rows.get(ix))
+    }
+
     /// The path of whichever worktree row is currently selected, if any.
     /// Factored out so the Files/Changes tab loading below — which keys its
     /// per-worktree state off the same row — doesn't repeat the lookup.
-    fn selected_worktree_path(&self) -> Option<PathBuf> {
-        self.selected
-            .and_then(|ix| self.rows.get(ix))
-            .map(|row| row.path.clone())
+    pub(super) fn selected_worktree_path(&self) -> Option<PathBuf> {
+        self.selected_row().map(|row| row.path.clone())
     }
 
     /// Load detail data for whichever row is selected, discarding the
@@ -510,7 +491,7 @@ impl WtmApp {
 
     /// (Re)prime the Files and Changes tabs for `path`, the worktree that
     /// just became selected (or `None` when nothing is). Ensures the file
-    /// tree's root — and any directory the user had previously expanded for
+    /// tree's root — and any directory the user has already expanded for
     /// this worktree — is loaded, resumes loading whatever file was
     /// selected in that worktree's tree, and (re)loads the full
     /// `worktree_diff` for the Changes tab.
@@ -605,13 +586,13 @@ impl WtmApp {
     ) {
         self.selected_file_diff = SelectedFileDiff::Loading;
         self.selected_file_diff_key = Some((worktree.clone(), rel_path.clone()));
-        let key = (worktree.clone(), rel_path.clone());
         cx.spawn(async move |this, cx| {
             let wt = worktree.clone();
             let rel = rel_path.clone();
             let result = cx
                 .background_spawn(async move { data::file_diff(&wt, &rel) })
                 .await;
+            let key = (worktree, rel_path);
             this.update(cx, |this, cx| {
                 this.apply_file_diff(key, generation, result, cx)
             })

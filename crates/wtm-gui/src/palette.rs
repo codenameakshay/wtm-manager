@@ -465,8 +465,7 @@ impl PaletteState {
         // `ui::popover` card's own well — a borderless inset well — rather
         // than drawing a second box of its own — see
         // `TextInput::borderless`'s doc.
-        let input =
-            cx.new(|cx| TextInput::new("Search worktrees and commands…", window, cx).borderless());
+        let input = cx.new(|cx| TextInput::new("Search worktrees and commands…", cx).borderless());
         let sub = cx.subscribe_in(&input, window, {
             // Only ever calls back through `WtmApp`'s own `pub(crate)`
             // methods, never reaches into its fields directly — the same
@@ -501,8 +500,8 @@ impl PaletteState {
     }
 
     /// Scroll `self.scroll` so the currently highlighted result is inside
-    /// the results column's viewport — Bug 3's "arrow keys scroll the
-    /// selection into view" rule, extended to the palette's own list.
+    /// the results column's viewport, the same "arrow keys scroll the
+    /// selection into view" rule the worktree list applies to its own.
     /// `worktree_count`/`command_count` describe the *current* query's
     /// results (`palette_move_highlight` computed them a moment ago to
     /// clamp `highlighted` itself); `results_scroll_child_index` is the
@@ -605,11 +604,10 @@ pub fn render(
     // reasoning as `app::chrome`'s scroll regions (`ui::scrollbar`'s own
     // doc): the overlay must never be a descendant of the div it scrolls
     // with, or it scrolls away with the very results it's annotating.
-    let results_col = div().relative().child(results_list).child(ui::scrollbar(
-        "palette-results-scrollbar",
-        &state.scroll,
-        ui::ScrollAxis::Vertical,
-    ));
+    let results_col = div()
+        .relative()
+        .child(results_list)
+        .child(ui::scrollbar("palette-results-scrollbar", &state.scroll));
 
     // Search field: a borderless inset well with a leading search icon.
     // `TextInput` itself paints no background/border in `.borderless()`
@@ -924,7 +922,7 @@ mod tests {
     }
 
     // -------------------------------------------------------------
-    // `results_scroll_child_index` — Bug 3: palette highlight scrolling
+    // `results_scroll_child_index` — palette highlight scrolling
     // -------------------------------------------------------------
 
     #[test]

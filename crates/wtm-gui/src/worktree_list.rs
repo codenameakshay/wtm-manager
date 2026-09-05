@@ -165,18 +165,8 @@ pub(crate) struct PillSpec {
     pub(crate) color: Option<Hsla>,
 }
 
-/// Label for the dirty pill: the exact count, not just "dirty" — the user's
-/// own words for this were "there is no way to check how many files are
-/// edited/dirty in a worktree, show that number somewhere." `n` is always
-/// `>= 1` at every real call site (a dirty pill only renders when
-/// `status.dirty`, and `dirty_count` is `0` iff `dirty` is `false` — see
-/// `WorktreeStatus::dirty_count`'s doc), but this stays total rather than
-/// panicking or asserting on `0` so a future caller with a genuinely-unknown
-/// count can't accidentally UB this.
-///
-/// `pub(crate)` so `detail_panel::status_pills` shares this exact wording
-/// instead of a second, driftable copy — the list row and the detail panel
-/// must never disagree about what "N dirty" means.
+/// Label for the dirty pill: the exact count, not just "dirty". `pub(crate)`
+/// so `detail_panel::status_pills` shares this exact wording.
 pub(crate) fn dirty_pill_label(n: usize) -> String {
     match n {
         1 => "1 dirty".to_string(),

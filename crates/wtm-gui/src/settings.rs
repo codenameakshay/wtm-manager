@@ -22,11 +22,9 @@
 //!   read-back can never disagree with what was just toggled) and is fully
 //!   persisted — `main.rs` applies `prefs.reduce_motion` at startup the same
 //!   place it applies `prefs.appearance`.
-//! - **Terminal app** is read-only. `Prefs::terminal` exists as a field, but
-//!   `crate::data::open_in_terminal` only ever consults the `$WTM_TERMINAL`
-//!   environment variable — never `Prefs::terminal`. An editable field here
-//!   would silently do nothing when you tried to use it, which is worse than
-//!   not offering one.
+//! - **Terminal app** is read-only: the sheet shows whichever value
+//!   `crate::data::open_in_terminal` will actually use (`Prefs::terminal`,
+//!   then `$WTM_TERMINAL`, then the platform default), with no editing UI.
 //! - **Effective repository configuration** is read-only by design: it is
 //!   `wtm`'s own layered TOML config (see `wtm::config`), shared with the
 //!   CLI and potentially checked into the repository. The app must never
@@ -100,17 +98,13 @@ pub fn render(
                 .track_scroll(scroll)
                 .child(render_appearance_section(prefs.appearance, theme, cx))
                 .child(ui::divider(theme))
-                .child(render_terminal_section(theme))
+                .child(render_terminal_section(prefs.terminal.as_deref(), theme))
                 .child(ui::divider(theme))
                 .child(render_config_section(repo, theme, cx))
                 .child(ui::divider(theme))
                 .child(render_shortcuts_section(theme)),
         )
-        .child(ui::scrollbar(
-            "settings-scrollbar",
-            scroll,
-            ui::ScrollAxis::Vertical,
-        ));
+        .child(ui::scrollbar("settings-scrollbar", scroll));
 
     let body = div().flex().flex_col().child(scroll_region).child(
         ui::modal_footer(theme).child(
@@ -125,13 +119,7 @@ pub fn render(
         .child(ui::modal_header("Settings", None, theme))
         .child(body);
 
-    // Same dialog-entrance treatment as every other modal surface:
-    // `DIALOG_IN` on the card, `FADE_QUICK` on the scrim.
-    let backdrop = ui::modal_backdrop()
-        .id("settings-backdrop")
-        .on_click(cx.listener(|this, _, window, cx| this.close_dialog(window, cx)))
-        .child(motion::dialog_in("settings-dialog-in", card, cx));
-    motion::fade_quick("settings-dialog-backdrop-in", backdrop, cx).into_any_element()
+    crate::app::present_modal("settings-dialog", card, cx)
 }
 
 // ---------------------------------------------------------------------
@@ -187,8 +175,14 @@ fn render_appearance_section(
 // Terminal
 // ---------------------------------------------------------------------
 
-fn render_terminal_section(theme: &Theme) -> impl IntoElement {
-    let terminal = std::env::var("WTM_TERMINAL").unwrap_or_else(|_| "Terminal".to_string());
+fn render_terminal_section(prefs_terminal: Option<&str>, theme: &Theme) -> impl IntoElement {
+    // Same precedence `data::open_in_terminal` applies, so this always
+    // shows the app that will actually be used.
+    let terminal = prefs_terminal
+        .filter(|t| !t.is_empty())
+        .map(str::to_string)
+        .or_else(|| std::env::var("WTM_TERMINAL").ok().filter(|t| !t.is_empty()))
+        .unwrap_or_else(|| "Terminal".to_string());
 
     div()
         .flex()
@@ -207,7 +201,7 @@ fn render_terminal_section(theme: &Theme) -> impl IntoElement {
                 .child(terminal),
         )
         .child(dim_note(
-            "Set via the $WTM_TERMINAL environment variable — not editable here.",
+            "Set in prefs.json or via $WTM_TERMINAL — not editable here.",
             theme,
         ))
 }

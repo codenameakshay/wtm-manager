@@ -29,7 +29,7 @@ impl WtmApp {
         // — see `layout::detail_panel_should_show`'s doc for why this is a
         // separate bit from `detail_panel_visible` rather than folded into
         // it. Closing always clears the override: there's nothing left to
-        // override once the panel is hidden by the user's own choice, and
+        // override once the panel is hidden by an explicit user choice, and
         // leaving it set would let a *later* reopen at a wide width (which
         // needs no override at all) carry a stale one for no reason.
         self.detail_panel_narrow_override = self.detail_panel_visible
@@ -166,7 +166,7 @@ impl WtmApp {
 
     /// Report a finished fetch and, on success, reload the listing.
     ///
-    /// On failure the message stays: `set_status(.., true)` is exactly what
+    /// On failure the message stays: `set_error` is exactly what
     /// `apply_rows` promises never to clear on its own (see that method's
     /// doc comment) — a failed fetch never reloads on this path, but the
     /// same guarantee also protects the error from being wiped by anything
@@ -189,10 +189,10 @@ impl WtmApp {
                 } else {
                     format!("fetched {} · already up to date", outcome.remote)
                 };
-                self.set_status(message, false);
+                self.set_info(message, cx);
                 self.reload(cx);
             }
-            Err(e) => self.set_status(format!("fetch failed: {e}"), true),
+            Err(e) => self.set_error(format!("fetch failed: {e}"), cx),
         }
         cx.notify();
     }
@@ -269,15 +269,14 @@ impl WtmApp {
 
         let target = MenuTarget::Worktree(info.path);
         self.context_menu_target = Some(target.clone());
-        self.context_menu.open(target, position, items);
+        self.context_menu.open(position, items);
         cx.notify();
     }
 
     /// Right-clicked the list's own background rather than a row — the
-    /// standard place users look for "do something here", and (per the
-    /// user's own complaint that prompted this task) previously did nothing
-    /// at all. `New Worktree`/`Prune…`/`Reload` need an open repository;
-    /// shown but disabled (with the reason in the shortcut slot, same idiom
+    /// standard place users look for "do something here". `New Worktree`/
+    /// `Prune…`/`Reload` need an open repository; shown but disabled (with
+    /// the reason in the shortcut slot, same idiom
     /// as the worktree row menu's main-worktree `Remove…`) rather than
     /// hidden, so right-clicking an empty window never looks broken.
     pub(super) fn open_empty_space_context_menu(
@@ -321,7 +320,7 @@ impl WtmApp {
 
         let target = MenuTarget::EmptySpace;
         self.context_menu_target = Some(target.clone());
-        self.context_menu.open(target, position, items);
+        self.context_menu.open(position, items);
         cx.notify();
     }
 
@@ -352,7 +351,7 @@ impl WtmApp {
 
         let target = MenuTarget::Repo(path);
         self.context_menu_target = Some(target.clone());
-        self.context_menu.open(target, position, items);
+        self.context_menu.open(position, items);
         cx.notify();
     }
 
@@ -379,16 +378,17 @@ impl WtmApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let info = self.rows.iter().find(|row| row.path == path).cloned();
         match id {
             "open-editor" => self.open_path_in_editor(path.to_path_buf(), cx),
             "run-command" => {
-                if let Some(info) = self.rows.iter().find(|row| row.path == path).cloned() {
+                if let Some(info) = info {
                     self.open_run_command_dialog(info, window, cx);
                 }
             }
             "open-terminal" => self.open_in_terminal_path(path.to_path_buf(), cx),
             "open-remote" => {
-                if let Some(info) = self.rows.iter().find(|row| row.path == path).cloned() {
+                if let Some(info) = info {
                     self.open_remote_for(info, cx);
                 }
             }
@@ -400,7 +400,7 @@ impl WtmApp {
                 }
             }
             "remove" => {
-                if let Some(info) = self.rows.iter().find(|row| row.path == path).cloned() {
+                if let Some(info) = info {
                     self.open_remove_dialog_for(info, window, cx);
                 }
             }
@@ -447,9 +447,9 @@ impl WtmApp {
             match registry::save(&reg) {
                 Ok(()) => {
                     self.repos = sidebar_sorted(reg.entries());
-                    self.set_status("removed from sidebar", false);
+                    self.set_info("removed from sidebar", cx);
                 }
-                Err(e) => self.set_status(format!("could not save the repo list: {e}"), true),
+                Err(e) => self.set_error(format!("could not save the repo list: {e}"), cx),
             }
         }
         cx.notify();
@@ -493,28 +493,20 @@ impl WtmApp {
         }
     }
 
-    /// ⌘? (no binding today — see `open_remote_menu_item`'s doc comment)
-    /// and the "Open on Remote…" command in the palette: open the selected
-    /// worktree's branch on its remote host. A no-op with nothing selected,
-    /// matching every other single-target action's guard in this file.
-    pub(super) fn on_open_remote(
-        &mut self,
-        _: &OpenRemote,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(ix) = self.selected else {
-            return;
-        };
-        let Some(info) = self.rows.get(ix).cloned() else {
+    /// The palette's "Open on Remote…" command and the worktree row's
+    /// context menu item: open the selected worktree's branch on its remote
+    /// host. A no-op with nothing selected, matching every other
+    /// single-target action's guard in this file.
+    pub(super) fn open_remote_selected(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        let Some(info) = self.selected_row().cloned() else {
             return;
         };
         self.open_remote_for(info, cx);
     }
 
     /// Resolve `info`'s branch to a remote URL and open it in the system
-    /// browser. Shared by `on_open_remote` and the worktree row's context
-    /// menu item. Unlike `open_remote_menu_item`'s synchronous check above,
+    /// browser. Shared by `open_remote_selected` and the worktree row's
+    /// context menu item. Unlike `open_remote_menu_item`'s synchronous check above,
     /// `data::open_url` (which forks a subprocess) runs through
     /// `cx.background_spawn`, the same as `open_in_terminal_path`/
     /// `reveal_path_in_finder` already do for their own subprocess calls.
@@ -523,16 +515,14 @@ impl WtmApp {
             return;
         };
         let Some(branch) = info.branch.clone() else {
-            self.set_status(
+            self.set_error(
                 "this worktree has no branch (detached HEAD) — nothing to open",
-                true,
+                cx,
             );
-            cx.notify();
             return;
         };
         let Some(url) = data::remote_branch_url(&repo, &branch) else {
-            self.set_status(format!("no remote is configured for '{branch}'"), true);
-            cx.notify();
+            self.set_error(format!("no remote is configured for '{branch}'"), cx);
             return;
         };
         cx.spawn(async move |this, cx| {
@@ -541,9 +531,8 @@ impl WtmApp {
                 .await;
             this.update(cx, |this, cx| {
                 if let Err(e) = result {
-                    this.set_status(format!("could not open browser: {e}"), true);
+                    this.set_error(format!("could not open browser: {e}"), cx);
                 }
-                cx.notify();
             })
             .ok();
         })
@@ -573,12 +562,9 @@ impl WtmApp {
                     async move { data::open_in_editor(&repo, &path) }
                 })
                 .await;
-            this.update(cx, |this, cx| {
-                match outcome {
-                    Ok(()) => this.set_status(format!("opened {}", path.display()), false),
-                    Err(e) => this.set_status(format!("open failed: {e}"), true),
-                }
-                cx.notify();
+            this.update(cx, |this, cx| match outcome {
+                Ok(()) => this.set_info(format!("opened {}", path.display()), cx),
+                Err(e) => this.set_error(format!("open failed: {e}"), cx),
             })
             .ok();
         })
@@ -625,7 +611,7 @@ impl WtmApp {
         }
         match data::open_repo(&path) {
             Ok(repo) => self.activate_repo(repo, cx),
-            Err(e) => self.set_status(format!("could not open {}: {e}", path.display()), true),
+            Err(e) => self.set_error(format!("could not open {}: {e}", path.display()), cx),
         }
         cx.notify();
     }
@@ -675,70 +661,71 @@ impl WtmApp {
         self.reveal_path_in_finder(path, cx);
     }
 
-    /// Copy `path` to the clipboard. Shared by the ⌘C binding (which
-    /// resolves `path` from `self.selected`) and both context menus' "Copy
-    /// Path" item (which already have a path in hand).
-    fn copy_path_to_clipboard(&mut self, path: PathBuf, cx: &mut Context<Self>) {
-        let text = path.display().to_string();
+    /// Run a background filesystem/clipboard action against `path` and
+    /// report the outcome in the status line — the shape `on_copy_path`/
+    /// `on_open_in_terminal`/`on_reveal_in_finder`'s three underlying
+    /// actions all share: spawn, await, then either a success message
+    /// (`ok`, skipped when `None`) or `"{err_prefix}: {e}"`.
+    fn spawn_path_action(
+        &mut self,
+        path: PathBuf,
+        op: impl FnOnce(&Path) -> Result<(), String> + Send + 'static,
+        ok: Option<String>,
+        err_prefix: &'static str,
+        cx: &mut Context<Self>,
+    ) {
         cx.spawn(async move |this, cx| {
-            let result = cx
-                .background_spawn(async move { data::copy_to_clipboard(&text) })
-                .await;
-            this.update(cx, |this, cx| {
-                match result {
-                    Ok(()) => this.set_status("path copied", false),
-                    Err(e) => this.set_status(format!("copy failed: {e}"), true),
-                }
-                cx.notify();
-            })
-            .ok();
-        })
-        .detach();
-    }
-
-    /// Open `path` in a terminal. Shared the same way as
-    /// `copy_path_to_clipboard` above.
-    fn open_in_terminal_path(&mut self, path: PathBuf, cx: &mut Context<Self>) {
-        cx.spawn(async move |this, cx| {
-            let result = cx
-                .background_spawn({
-                    let path = path.clone();
-                    async move { data::open_in_terminal(&path) }
-                })
-                .await;
-            this.update(cx, |this, cx| {
-                match result {
-                    Ok(()) => {
-                        this.set_status(format!("opened {} in terminal", path.display()), false)
+            let result = cx.background_spawn(async move { op(&path) }).await;
+            this.update(cx, |this, cx| match result {
+                Ok(()) => {
+                    if let Some(ok) = ok {
+                        this.set_info(ok, cx);
                     }
-                    Err(e) => this.set_status(format!("could not open terminal: {e}"), true),
                 }
-                cx.notify();
+                Err(e) => this.set_error(format!("{err_prefix}: {e}"), cx),
             })
             .ok();
         })
         .detach();
     }
 
-    /// Reveal `path` in Finder. Shared the same way as
-    /// `copy_path_to_clipboard` above.
+    /// Copy `path` to the clipboard — the ⌘C binding (which resolves `path`
+    /// from `self.selected`) and both context menus' "Copy Path" item
+    /// (which already have a path in hand).
+    fn copy_path_to_clipboard(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        self.spawn_path_action(
+            path,
+            |path| data::copy_to_clipboard(&path.display().to_string()),
+            Some("path copied".to_string()),
+            "copy failed",
+            cx,
+        );
+    }
+
+    /// Open `path` in a terminal, honoring `Prefs::terminal` — see
+    /// `data::open_in_terminal`'s doc for the full precedence order.
+    fn open_in_terminal_path(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        let app = self.prefs.terminal.clone();
+        let ok = format!("opened {} in terminal", path.display());
+        self.spawn_path_action(
+            path,
+            move |path| data::open_in_terminal(path, app.as_deref()),
+            Some(ok),
+            "could not open terminal",
+            cx,
+        );
+    }
+
+    /// Reveal `path` in Finder — shared via [`Self::spawn_path_action`] the
+    /// same way as [`Self::copy_path_to_clipboard`].
     pub(crate) fn reveal_path_in_finder(&mut self, path: PathBuf, cx: &mut Context<Self>) {
-        cx.spawn(async move |this, cx| {
-            let result = cx
-                .background_spawn({
-                    let path = path.clone();
-                    async move { data::reveal_in_finder(&path) }
-                })
-                .await;
-            this.update(cx, |this, cx| {
-                if let Err(e) = result {
-                    this.set_status(format!("could not reveal in Finder: {e}"), true);
-                }
-                cx.notify();
-            })
-            .ok();
-        })
-        .detach();
+        self.spawn_path_action(
+            path,
+            data::reveal_in_finder,
+            None,
+            "could not reveal in Finder",
+            cx,
+        );
     }
 
     // -------------------------------------------------------------
@@ -800,9 +787,9 @@ impl WtmApp {
     pub(super) fn finish_add_repository(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         match data::open_repo(&path) {
             Ok(repo) => self.activate_repo(repo, cx),
-            Err(e) => self.set_status(
+            Err(e) => self.set_error(
                 format!("{} is not a git repository: {e}", path.display()),
-                true,
+                cx,
             ),
         }
         cx.notify();

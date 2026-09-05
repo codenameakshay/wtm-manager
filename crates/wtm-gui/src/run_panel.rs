@@ -26,7 +26,6 @@ use crate::app::WtmApp;
 use crate::assets::icons;
 use crate::data;
 use crate::dialogs;
-use crate::motion;
 use crate::text_input::{InputEvent, TextInput};
 use crate::theme::{Theme, RADIUS_CONTROL, SPACE_12, SPACE_16, SPACE_2, SPACE_4, SPACE_6, SPACE_8};
 use crate::ui::{self, ButtonVariant, TEXT_BASE, TEXT_SM, TEXT_XS};
@@ -138,8 +137,7 @@ impl RunCommandState {
     /// that needs `Context<WtmApp>` for state construction, the same split
     /// `dialogs::CreateState::new` uses.
     pub fn new(target: WorktreeInfo, window: &mut Window, cx: &mut Context<WtmApp>) -> Self {
-        let command_input =
-            cx.new(|cx| TextInput::new("command to run, e.g. npm test", window, cx));
+        let command_input = cx.new(|cx| TextInput::new("command to run, e.g. npm test", cx));
         let sub = cx.subscribe_in(&command_input, window, {
             move |app: &mut WtmApp, _input, event, window, cx| match event {
                 InputEvent::Submit => app.submit_run_command(window, cx),
@@ -231,15 +229,7 @@ pub fn render(
         )
         .child(body);
 
-    // Card enters with `DIALOG_IN`, the scrim behind it with the cheaper
-    // `FADE_QUICK` — the same two-layer entrance every other dialog in this
-    // app uses (see `app::dialog_forms`'s `render_*_dialog` functions).
-    let backdrop = crate::app::render_modal_backdrop(cx).child(motion::dialog_in(
-        "run-command-dialog-in",
-        card,
-        cx,
-    ));
-    motion::fade_quick("run-command-dialog-backdrop-in", backdrop, cx).into_any_element()
+    crate::app::present_modal("run-command-dialog", card, cx)
 }
 
 fn render_form(

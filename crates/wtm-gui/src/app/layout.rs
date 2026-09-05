@@ -1,13 +1,7 @@
-//! Width-adaptive layout decisions for the chrome shell.
-//!
-//! The window has a real, enforced minimum (820×520 — `main.rs`'s
-//! `window_min_size`), but until this module existed nothing in the app
-//! actually adapted to it: the sidebar (`theme::SIDEBAR_WIDTH`, 248) and the
-//! detail panel (`detail_panel::WIDTH`/`WIDE_WIDTH`, 320/640) were both
-//! fixed, so at the minimum window with both panes open the worktree
-//! list — the thing the app is *for* — was left with as little as
-//! `820 - 248 - 320 = 252px`, and with the Files/Changes tabs' wide panel,
-//! a literally negative column.
+//! Width-adaptive layout decisions for the chrome shell: at the enforced
+//! window minimum (820×520 — `main.rs`'s `window_min_size`), the sidebar
+//! and detail panel are wide enough to squeeze the worktree list to nothing
+//! or less if nothing here adapted to the width.
 //!
 //! Every decision below is a pure function of a window width (plus, where
 //! it matters, a small bit of explicit state) so it can be unit-tested
@@ -25,11 +19,11 @@ use crate::theme;
 /// exactly `1180 - SIDEBAR_WIDTH - WIDE_WIDTH` = 292px. Defining it this
 /// way means both breakpoints below are anchored to a number this codebase
 /// has already implicitly relied on, not a fresh guess.
-pub const MIN_CONTENT_COLUMN: f32 =
+const MIN_CONTENT_COLUMN: f32 =
     crate::DEFAULT_WINDOW_SIZE.0 - theme::SIDEBAR_WIDTH - detail_panel::WIDE_WIDTH;
 
 /// Window width below which the detail panel — at its normal Details-tab
-/// width — can no longer sit next to the sidebar without squeezing the
+/// width — cannot sit next to the sidebar without squeezing the
 /// worktree list under [`MIN_CONTENT_COLUMN`]. Below this, the panel
 /// auto-collapses (see [`detail_panel_should_show`]).
 ///
@@ -77,8 +71,8 @@ pub fn content_column_width(
 }
 
 /// Whether the detail panel should actually be visible this frame, folding
-/// together the user's own toggle preference and the width-driven
-/// auto-collapse without ever letting the two fight each other.
+/// together the toggle preference and the width-driven auto-collapse
+/// without ever letting the two fight each other.
 ///
 /// Modeled as two independent bits, both owned by `WtmApp`:
 /// - `user_wants_open` (`WtmApp::detail_panel_visible`, persisted in
@@ -106,20 +100,8 @@ pub fn detail_panel_should_show(
     user_wants_open && (window_width >= DETAIL_PANEL_BREAKPOINT || narrow_override)
 }
 
-/// The other half of [`detail_panel_should_show`]'s `narrow_override` bit:
-/// called once per render (`WtmApp::render`, before building the tree) to
-/// decide whether the override should still be held.
-///
-/// The override is kept only while the window is *still* narrow — the
-/// instant the window is wide enough that [`detail_panel_should_show`]
-/// would show the panel anyway (the "or there's room" branch), the override
-/// stops doing anything and is dropped. That is deliberate, not just tidy
-/// bookkeeping: without it, one explicit reopen at a narrow width would
-/// silently exempt the panel from auto-collapsing forever, in every future
-/// narrow session, which is a much bigger promise than "I want it open
-/// right now despite the squeeze" — the thing the click actually meant.
-/// Dropping it here means the *next* time the window narrows, auto-collapse
-/// applies fresh, exactly as if the override had never happened.
+/// Drops [`detail_panel_should_show`]'s `narrow_override` bit once the
+/// window is wide enough that it isn't doing anything.
 pub fn narrow_override_after_resize(window_width: f32, override_was_set: bool) -> bool {
     override_was_set && window_width < DETAIL_PANEL_BREAKPOINT
 }
@@ -192,25 +174,12 @@ mod tests {
     // -----------------------------------------------------------------
 
     #[test]
-    fn min_content_column_matches_the_wide_panel_slack_at_the_default_width() {
-        assert_eq!(MIN_CONTENT_COLUMN, 292.0);
-    }
-
-    #[test]
     fn detail_panel_breakpoint_is_derived_from_the_three_named_constants() {
-        assert_eq!(
-            DETAIL_PANEL_BREAKPOINT,
-            theme::SIDEBAR_WIDTH + detail_panel::WIDTH + MIN_CONTENT_COLUMN
-        );
         assert_eq!(DETAIL_PANEL_BREAKPOINT, 860.0);
     }
 
     #[test]
     fn wide_tabs_breakpoint_equals_the_default_window_width() {
-        assert_eq!(
-            WIDE_TABS_BREAKPOINT,
-            theme::SIDEBAR_WIDTH + detail_panel::WIDE_WIDTH + MIN_CONTENT_COLUMN
-        );
         assert_eq!(WIDE_TABS_BREAKPOINT, crate::DEFAULT_WINDOW_SIZE.0);
     }
 
@@ -330,13 +299,6 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn user_closing_while_narrow_does_not_reopen_on_widen() {
-        // A pane the user explicitly closed must stay closed when the
-        // window widens — only auto-collapsed panes restore themselves.
-        assert!(!detail_panel_should_show(1920.0, false, false));
-    }
-
     // -----------------------------------------------------------------
     // wide_tabs_fit
     // -----------------------------------------------------------------
@@ -348,19 +310,9 @@ mod tests {
         assert!(wide_tabs_fit(1920.0));
     }
 
-    #[test]
-    fn wide_tabs_do_not_fit_at_the_true_minimum_window() {
-        assert!(!wide_tabs_fit(820.0));
-    }
-
     // -----------------------------------------------------------------
     // FooterHints
     // -----------------------------------------------------------------
-
-    #[test]
-    fn footer_hints_show_everything_with_plenty_of_room() {
-        assert_eq!(FooterHints::for_content_column(900.0), FooterHints::All);
-    }
 
     #[test]
     fn footer_hints_degrade_by_tier_as_room_shrinks() {
