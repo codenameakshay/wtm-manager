@@ -169,7 +169,7 @@ impl RepoWatcher {
                 }
 
                 // Coalesce: absorb any further notifications that queued up
-                // while this task was asleep or busy running `on_change`,
+                // while this loop was asleep or busy running `on_change`,
                 // so a run of debounced batches collapses into one refresh
                 // instead of one per batch.
                 drain_pending(&rx);
@@ -223,7 +223,11 @@ fn start_watching(
     })
     .ok()?;
 
-    let mut watched_anything = watch_git_dir(&mut debouncer, git_dir);
+    // Recursively watch the whole git directory. See the module-level
+    // "central design decision" docs for why this is one recursive watch
+    // relying on `is_relevant_change` to filter noise, rather than several
+    // narrow ones.
+    let mut watched_anything = watch_path(&mut debouncer, git_dir, RecursiveMode::Recursive);
     for worktree in worktrees {
         watched_anything |= watch_worktree(&mut debouncer, git_dir, worktree);
     }
@@ -238,16 +242,6 @@ fn start_watching(
 /// `on_change` once per batch instead of once for the whole burst.
 fn drain_pending(rx: &mpsc::Receiver<()>) {
     while rx.try_recv().is_ok() {}
-}
-
-/// Recursively watch the whole git directory. See the module-level "central
-/// design decision" docs for why this is one recursive watch relying on
-/// [`is_relevant_change`] to filter noise, rather than several narrow ones.
-fn watch_git_dir(
-    debouncer: &mut Debouncer<RecommendedWatcher, RecommendedCache>,
-    git_dir: &Path,
-) -> bool {
-    watch_path(debouncer, git_dir, RecursiveMode::Recursive)
 }
 
 /// Watch one worktree's root directory non-recursively, plus its own `.git`
@@ -319,13 +313,15 @@ fn is_relevant_change(path: &Path) -> bool {
         return false;
     }
 
-    let components: Vec<&str> = path
-        .components()
-        .filter_map(|c| c.as_os_str().to_str())
-        .collect();
-    !components
-        .windows(2)
-        .any(|pair| pair == [".git", "objects"] || pair == [".git", "logs"])
+    let mut components = path.components().filter_map(|c| c.as_os_str().to_str());
+    let mut prev = components.next();
+    for curr in components {
+        if prev == Some(".git") && (curr == "objects" || curr == "logs") {
+            return false;
+        }
+        prev = Some(curr);
+    }
+    true
 }
 
 #[cfg(test)]

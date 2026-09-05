@@ -15,8 +15,7 @@
 //!   control, writing straight through `WtmApp::set_appearance` to
 //!   `prefs.json` via `on_select`, which is exactly the shape `cx.listener`
 //!   produces.
-//! - **Reduce motion** sits right below Appearance (SURFACES §9: "this is
-//!   where the reduced-motion pref lands too"). It drives
+//! - **Reduce motion** sits right below Appearance. It drives
 //!   `WtmApp::set_reduce_motion` (mirrors `set_appearance`'s shape exactly:
 //!   write `prefs.reduce_motion`, persist, then push the value to
 //!   `motion::set_reduced` so the same render pass's `motion::reduced`
@@ -24,12 +23,10 @@
 //!   persisted — `main.rs` applies `prefs.reduce_motion` at startup the same
 //!   place it applies `prefs.appearance`.
 //! - **Terminal app** is read-only. `Prefs::terminal` exists as a field, but
-//!   `crate::data::open_in_terminal` (owned elsewhere, not part of this
-//!   task) only ever consults the `$WTM_TERMINAL` environment variable —
-//!   never `Prefs::terminal`. An editable field here would silently do
-//!   nothing when you tried to use it, which is worse than not offering one;
-//!   see the module-level task notes for why this is flagged as a gap in
-//!   `data.rs` rather than worked around.
+//!   `crate::data::open_in_terminal` only ever consults the `$WTM_TERMINAL`
+//!   environment variable — never `Prefs::terminal`. An editable field here
+//!   would silently do nothing when you tried to use it, which is worse than
+//!   not offering one.
 //! - **Effective repository configuration** is read-only by design: it is
 //!   `wtm`'s own layered TOML config (see `wtm::config`), shared with the
 //!   CLI and potentially checked into the repository. The app must never
@@ -44,7 +41,7 @@
 //!   so this list cannot silently drift from what `cx.bind_keys` actually
 //!   registers.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use gpui::prelude::*;
 use gpui::{div, px, AnyElement, Context, ScrollHandle, SharedString};
@@ -57,22 +54,10 @@ use crate::prefs::{Appearance, Prefs};
 use crate::theme::{Theme, SPACE_12, SPACE_16, SPACE_2, SPACE_20, SPACE_4, SPACE_6, SPACE_8};
 use crate::ui::{self, ButtonVariant, TEXT_SM, TEXT_XS};
 
-/// One keyboard shortcut, as registered with gpui and as shown in the
-/// "Keyboard Shortcuts" section below. Built by `main.rs`'s `key_bindings!`
-/// macro from a single list, so `keystroke` here is always exactly what
-/// `cx.bind_keys` used to register the real binding.
+/// One keyboard shortcut as shown in the "Keyboard Shortcuts" section. Built
+/// by `main.rs`'s `key_bindings!` macro from the same list that registers
+/// the real bindings, so the sheet can never drift from them.
 pub struct ShortcutMeta {
-    /// gpui keystroke syntax, e.g. `"cmd-r"` — the value actually passed to
-    /// `KeyBinding::new`. Not rendered directly (see `display`); kept so a
-    /// test can assert this table's shape without duplicating the real
-    /// keystroke strings by hand.
-    #[allow(dead_code)]
-    pub keystroke: &'static str,
-    /// The key context the binding is scoped to (`None` for a window-global
-    /// binding like Quit). Kept for completeness / future filtering; not
-    /// currently rendered.
-    #[allow(dead_code)]
-    pub context: Option<&'static str>,
     /// Human-facing glyph, e.g. `"⌘R"`.
     pub display: &'static str,
     /// What the binding does, e.g. `"Reload"`.
@@ -89,15 +74,12 @@ pub fn render(
     theme: &Theme,
     cx: &mut Context<WtmApp>,
 ) -> AnyElement {
-    // SPACE_20 between sections: SURFACES §9 groups sections with space, and
-    // `better-layout` §1 wants the gap *between* groups at least 2x the gap
-    // *within* one (every section's own internal gap below tops out at
-    // SPACE_12) — SPACE_20 clears that floor. None of the four sections
-    // carry their own eyebrow anymore, so a hairline `ui::divider` sits in
-    // that SPACE_20 gap between each pair — spacing alone separated them
-    // before too, but with every group name gone at once a purely blank gap
-    // reads as one long, undifferentiated column rather than four groups;
-    // the divider makes the boundary itself visible, not just wide.
+    // SPACE_20 between sections: `better-layout`'s rule wants the gap
+    // *between* groups at least 2x the gap *within* one (every section's
+    // own internal gap below tops out at SPACE_12) — SPACE_20 clears that
+    // floor. None of the four sections carry their own eyebrow label, so a
+    // hairline `ui::divider` sits in that SPACE_20 gap between each pair to
+    // make the boundary itself visible, not just wide.
     //
     // `.relative()` wrapper, sibling of the scrolling div — same reasoning
     // as `app::chrome`'s scroll regions (`ui::scrollbar`'s own doc): the
@@ -143,9 +125,8 @@ pub fn render(
         .child(ui::modal_header("Settings", None, theme))
         .child(body);
 
-    // SURFACES §7's dialog-entrance treatment applies to every modal
-    // surface, this sheet included: `DIALOG_IN` on the card, `FADE_QUICK` on
-    // the scrim.
+    // Same dialog-entrance treatment as every other modal surface:
+    // `DIALOG_IN` on the card, `FADE_QUICK` on the scrim.
     let backdrop = ui::modal_backdrop()
         .id("settings-backdrop")
         .on_click(cx.listener(|this, _, window, cx| this.close_dialog(window, cx)))
@@ -240,12 +221,11 @@ fn render_config_section(
     theme: &Theme,
     cx: &mut Context<WtmApp>,
 ) -> impl IntoElement {
-    // No eyebrow names this group anymore, and unlike Appearance or
-    // Terminal App, a bare table of paths and values doesn't say what it is
-    // on its own — so this note (previously placed after the table) moves
-    // to the top and now does double duty: it's still the "why you can't
-    // edit this" caveat, and it's also the only thing left telling you
-    // you're looking at wtm's own repo config in the first place.
+    // No eyebrow names this group, and unlike Appearance or Terminal App, a
+    // bare table of paths and values doesn't say what it is on its own — so
+    // this note leads the section, doing double duty as both the "why you
+    // can't edit this" caveat and the label telling you you're looking at
+    // wtm's own repo config in the first place.
     let mut section = div().flex().flex_col().gap(px(SPACE_8)).child(dim_note(
         "Read-only — this is wtm's own TOML config; the app never rewrites it.",
         theme,
@@ -351,10 +331,10 @@ fn render_config_paths(
 }
 
 /// Both config files are optional; on a fresh machine neither has to exist.
-/// `reveal_in_finder`'s own missing-path fallback (walking up to the nearest
-/// existing ancestor) is owned elsewhere, so this row only has to be honest
-/// about *this* file's state: say plainly when it isn't there yet, and don't
-/// let "Reveal" imply it opens a file that doesn't exist.
+/// `reveal_in_finder` already handles a missing path by walking up to the
+/// nearest existing ancestor, so this row only has to be honest about *this*
+/// file's state: say plainly when it isn't there yet, and don't let "Reveal"
+/// imply it opens a file that doesn't exist.
 fn config_path_row(
     id: &'static str,
     label: &'static str,
@@ -395,17 +375,15 @@ fn config_path_row(
                         .child(label),
                 )
                 .child(
-                    // SPEC §6: paths take the bundled mono face. When the
-                    // file doesn't exist there's no path to show — the
-                    // caption below already says so in words — so this
-                    // renders a plain em dash rather than a real (but
-                    // nonexistent) path. `.truncate()` is deliberately
-                    // dropped for that case: gpui 0.2.2's ellipsis
-                    // truncation is unreliable (see the crate's other
-                    // hand-rolled truncation), and a single glyph has
-                    // nothing to truncate anyway — keeping `.truncate()`
-                    // on it risked the exact "…"-only rendering this row
-                    // used to show for a missing file.
+                    // Paths take the bundled mono face. When the file
+                    // doesn't exist there's no path to show — the caption
+                    // below already says so in words — so this renders a
+                    // plain em dash rather than a real (but nonexistent)
+                    // path. `.truncate()` is deliberately dropped for that
+                    // case: gpui 0.2.2's ellipsis truncation is unreliable,
+                    // and a single glyph has nothing to truncate anyway —
+                    // keeping `.truncate()` on it risks an "…"-only
+                    // rendering for a missing file.
                     div()
                         .min_w_0()
                         .when(exists, |this| this.truncate())
@@ -413,7 +391,7 @@ fn config_path_row(
                         .text_size(px(TEXT_SM))
                         .text_color(theme.text)
                         .child(if exists {
-                            home_relative(&path)
+                            crate::ui::display_path(&path)
                         } else {
                             "—".to_string()
                         }),
@@ -431,30 +409,6 @@ fn config_path_row(
                 this.reveal_path_in_finder(path.clone(), cx);
             })),
         )
-}
-
-/// Render `path` relative to `$HOME` as `~/...`, so a long config path
-/// leaves room in a narrow row for the part that's actually distinguishing.
-/// `worktree_list::display_path` does the same collapsing trick for worktree
-/// paths; duplicated here in miniature rather than imported, since that
-/// helper is private to its module.
-fn home_relative(path: &Path) -> String {
-    relativize_to_home(
-        &path.display().to_string(),
-        std::env::var("HOME").ok().as_deref(),
-    )
-}
-
-/// Pure half of [`home_relative`], split out so a test can hand it a `home`
-/// directly instead of mutating the process's `$HOME` — which every test in
-/// the binary shares and would make this flaky under parallel test runs.
-fn relativize_to_home(path: &str, home: Option<&str>) -> String {
-    match home {
-        Some(home) if !home.is_empty() && path.starts_with(home) => {
-            format!("~{}", &path[home.len()..])
-        }
-        _ => path.to_string(),
-    }
 }
 
 // ---------------------------------------------------------------------
@@ -495,9 +449,9 @@ fn dim_note(text: &'static str, theme: &Theme) -> impl IntoElement {
         .child(text)
 }
 
-/// SURFACES §4's fact-list treatment (a fixed label column, `text_muted` at
-/// `TEXT_SM`, full-strength `text` for the value) — written for the detail
-/// panel's own two-column facts, reused here since every row this renders
+/// The detail panel's fact-list treatment (a fixed label column, `text_muted`
+/// at `TEXT_SM`, full-strength `text` for the value), reused here since every
+/// row this renders
 /// (a path template, a ref name, a joined list of shell commands) is exactly
 /// that same shape. Every value is config-file content, so it takes
 /// [`ui::FONT_MONO`] across the board rather than picking case by case which
@@ -539,13 +493,12 @@ fn config_row(
 #[cfg(test)]
 mod tests {
     #[test]
-    fn every_registered_binding_has_a_keystroke_and_label() {
+    fn every_registered_binding_has_a_display_and_label() {
         assert!(
             !crate::REGISTERED_BINDINGS.is_empty(),
             "the shortcuts list should not be empty"
         );
         for entry in crate::REGISTERED_BINDINGS {
-            assert!(!entry.keystroke.is_empty());
             assert!(!entry.display.is_empty());
             assert!(!entry.label.is_empty());
         }
@@ -562,49 +515,6 @@ mod tests {
             crate::registered_key_bindings().len(),
             crate::REGISTERED_BINDINGS.len(),
             "every registered KeyBinding should have exactly one metadata entry"
-        );
-    }
-
-    // `relativize_to_home` takes `home` as a plain argument rather than
-    // reading `$HOME` itself, precisely so these can assert against fixed
-    // values instead of mutating the process environment (which every test
-    // in this binary shares and would make order-dependent).
-    #[test]
-    fn relativize_to_home_collapses_the_home_prefix() {
-        assert_eq!(
-            super::relativize_to_home(
-                "/Users/akshay/.config/wtm/config.toml",
-                Some("/Users/akshay"),
-            ),
-            "~/.config/wtm/config.toml"
-        );
-    }
-
-    #[test]
-    fn relativize_to_home_leaves_paths_outside_home_untouched() {
-        // The path isn't under `home` at all — e.g. `$WTM_CONFIG_DIR`
-        // pointed somewhere outside the user's home directory.
-        assert_eq!(
-            super::relativize_to_home("/etc/wtm/config.toml", Some("/Users/akshay")),
-            "/etc/wtm/config.toml"
-        );
-    }
-
-    #[test]
-    fn relativize_to_home_leaves_path_unchanged_without_home() {
-        assert_eq!(
-            super::relativize_to_home("/etc/wtm/config.toml", None),
-            "/etc/wtm/config.toml"
-        );
-    }
-
-    #[test]
-    fn relativize_to_home_ignores_an_empty_home() {
-        // Mirrors `worktree_list::display_path`'s own guard: an empty
-        // `$HOME` must not turn every path into `~<path>`.
-        assert_eq!(
-            super::relativize_to_home("/etc/wtm/config.toml", Some("")),
-            "/etc/wtm/config.toml"
         );
     }
 }

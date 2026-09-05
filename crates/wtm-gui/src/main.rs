@@ -79,8 +79,6 @@ macro_rules! key_bindings {
         pub(crate) const REGISTERED_BINDINGS: &[settings::ShortcutMeta] = &[
             $(
                 settings::ShortcutMeta {
-                    keystroke: $keys,
-                    context: $ctx,
                     display: $display,
                     label: $label,
                 }
@@ -124,7 +122,7 @@ key_bindings! {
 }
 
 /// The default window size and position, used when no saved frame exists or
-/// the saved one no longer lands on a connected display.
+/// the saved one fails to land on a connected display.
 ///
 /// `pub(crate)`, not private: `app::layout::MIN_CONTENT_COLUMN` derives the
 /// width-adaptation breakpoints from `DEFAULT_WINDOW_SIZE.0` directly
@@ -208,7 +206,7 @@ fn window_frame_bounds(frame: &WindowFrame) -> Bounds<Pixels> {
 
 /// Whether `frame` overlaps at least one display in `display_bounds`. A
 /// window frame saved while on a monitor that has since been unplugged (or
-/// on a display arrangement that no longer exists) would otherwise reopen
+/// on a display arrangement that doesn't exist anymore) would otherwise reopen
 /// entirely off-screen — a position no mouse or keyboard shortcut can reach
 /// back from — so a frame with zero overlap on every currently connected
 /// display is rejected in favor of the centered default.

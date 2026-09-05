@@ -2,95 +2,27 @@
 //! [`Animation`]/[`AnimationExt`].
 //!
 //! wtm is a dense, list-first utility: the worktree list and sidebar rows
-//! are touched on every scroll and refresh, so they run **no** entrance
-//! animations at all — hover/selection are instant `.hover()`/`.active()`
-//! style states (SPEC §5's restraint rules). Overlays (dialogs, popovers,
-//! the command palette, the run panel) are touched rarely and animate
-//! properly, using the catalog below.
+//! run **no** entrance animations (hover/selection are instant `.hover()`/
+//! `.active()` style states). Overlays, the sidebar/detail-panel mount, and
+//! per-row status settling are touched rarely and animate via the catalog
+//! below.
 //!
-//! # Motion thesis (`animate`/`delight` pass)
+//! `CubicBezier` is a straight port of Zeron/comet's evaluator — CSS
+//! `cubic-bezier()`, solved by Newton's method with a bisection fallback,
+//! hard-clamped to `[0, 1]` because f32 rounding can otherwise push a
+//! sample a hair past 1.0 and trip gpui's `AnimationElement` debug assert.
 //!
-//! This pass's motion serves exactly two jobs and nothing else. **Feedback**
-//! for the app's one genuinely asynchronous answer landing: a worktree row's
-//! status resolving from the fast pass's placeholder to a real pill
-//! ([`fade_quick`], called from `worktree_list::render_status_pills`), and a
-//! file-tree directory's disclosure state changing hands
-//! ([`disclosure_chevron`]). **Continuity** for two structural changes that
-//! used to happen with no transition at all: the sidebar/detail-panel mount
-//! ([`pane_in`]) and a detail-panel tab switch ([`fade_quick`], called from
-//! `app::chrome::WtmApp::render_detail_panel`) — both used to pop or cut
-//! instantly, leaving no sense of where a pane went or that a switch even
-//! happened. The list and sidebar rows still run no entrance animation at
-//! all; that restraint is unchanged and this pass adds nothing to it. Every
-//! spec used here already existed in the catalog for exactly this purpose
-//! (`RESIZE`/`COLLAPSE` were reserved but unused, `FADE_QUICK` already had
-//! other call sites), so nothing new was invented, and every call site is
-//! gated on gpui's own per-element animation-state lifecycle so idle UI
-//! never repaints (see [`pane_in`] and `render_status_pills`'s doc for the
-//! specific pruning argument each one relies on).
+//! crates.io `gpui = "0.2.2"` has no built-in reduced-motion flag.
+//! [`reduced`]/[`set_reduced`] are wtm's own global; every helper below
+//! honors it by collapsing the animation's duration to zero, which makes
+//! `AnimationElement`'s first frame land past `delta > 1.0` and snap
+//! straight to the end state — call sites never need to branch on
+//! [`reduced`] themselves.
 //!
-//! `CubicBezier` is a straight port of Zeron/comet's evaluator
-//! (`crates/ui/src/motion.rs`) — CSS `cubic-bezier()`, solved by Newton's
-//! method with a bisection fallback, hard-clamped to `[0, 1]` because f32
-//! rounding can otherwise push a sample a hair past 1.0 and trip gpui's
-//! `AnimationElement` debug assert.
-//!
-//! # gpui 0.2.2 has no `cx.reduce_motion()`
-//!
-//! Unlike the Zed fork comet depends on, crates.io `gpui = "0.2.2"` has no
-//! built-in reduced-motion flag or automatic honoring of one inside
-//! `AnimationElement` (verified by grepping the vendored source — see the
-//! redesign SPEC §0). [`reduced`]/[`set_reduced`] are wtm's own global, and
-//! every helper below honors it internally by collapsing the animation's
-//! duration to zero: [`AnimationElement`]'s `request_layout` divides
-//! elapsed time by `duration.as_secs_f32()`, so a zero duration makes the
-//! very first frame land past `delta > 1.0`, snap straight to the end
-//! state, and — being a oneshot — never call `request_animation_frame`
-//! again. Call sites never need to branch on [`reduced`] themselves.
-//!
-//! `translateY` is implemented as a relative-position `top` inset: taffy
-//! applies relative insets after layout, so — like a CSS transform —
-//! siblings never move. gpui 0.2.2 has no `div` scale transform (only
-//! `svg().with_transformation(..)`, used here for the spinner), so
-//! `menu_in`/`dialog_in` approximate zeron's `scale(0.96)` component with
-//! fade + a small translate instead.
-//!
-//! # Catalog completeness
-//!
-//! SPEC §5's catalog table lists seven specs (`FADE_IN`, `FADE_QUICK`,
-//! `MENU_IN`, `DIALOG_IN`, `RESIZE`, `COLLAPSE`, `SPINNER`) and four curves;
-//! [`catalog_timings_match_spec`](tests::catalog_timings_match_spec) checks
-//! all seven together. `FADE_QUICK`/`MENU_IN`/`DIALOG_IN`/`SPINNER`/`RESIZE`/
-//! `COLLAPSE` (via [`fade_quick`]/[`menu_in`]/[`dialog_in`]/[`spin`]/
-//! [`pane_in`]/[`disclosure_chevron`]) all have real call sites now: dialogs,
-//! the palette, context menus, the sidebar/detail-panel mount transition, the
-//! detail panel's per-row status-pill settle, and the file browser's
-//! disclosure chevron. Only `FADE_IN`/[`fade_in`] (view entrances — nothing
-//! in this app mounts/unmounts a coarse "view" yet) has no call site — kept
-//! as part of the documented catalog rather than deleted, per its own
-//! `#[allow(dead_code)]` reason below.
-//!
-//! `RESIZE` is catalogued for "sidebar/detail-panel width" but
-//! [`pane_in`] — its one call site — deliberately does not tween the
-//! `w(px(..))` itself. Both panes' widths are read elsewhere in this crate
-//! to budget the worktree list's own row layout (`app::layout::
-//! content_column_width`, `app::chrome::WtmApp::worktree_row_card_width`,
-//! `worktree_list::line1_max_chars`/`line2_layout`) as a flat, instantaneous
-//! number — never a value sampled mid-tween. Actually animating the width
-//! would desync those budgets from the real, taffy-allocated box for the
-//! whole 200ms the tween runs: a row's fixed-`px` name/path boxes would be
-//! sized for the *end* width while the pane occupying screen space is still
-//! some intermediate one, spilling or gapping every row for the duration
-//! (worse each frame, in the sidebar's case, since every row in the
-//! `uniform_list` re-lays-out against the same stale budget). SPEC §5
-//! explicitly sanctions the fallback for exactly this situation: "animate
-//! something cheaper (opacity + a fixed-offset slide) instead." [`pane_in`]
-//! is that fallback, still timed and eased per [`RESIZE`] — the pane's own
-//! `w(px(..))` snaps to its final value instantly (so every layout budget
-//! that reads it is correct from frame one), and only its opacity and a
-//! small horizontal offset animate, exactly the way [`menu_in`]/
-//! [`dialog_in`] already approximate a `scale()` component with fade +
-//! translate rather than a real transform.
+//! gpui 0.2.2 has no `div` scale transform, so `menu_in`/`dialog_in`
+//! approximate zeron's `scale(0.96)` with fade + a small `top`-inset
+//! translate instead (a relative inset so, like a CSS transform, siblings
+//! never move).
 use std::f32::consts::{FRAC_PI_2, TAU};
 use std::time::Duration;
 
@@ -198,42 +130,20 @@ impl CubicBezier {
         }
         self.sample_y(self.solve_t_for_x(x)).clamp(0.0, 1.0)
     }
-
-    /// This curve as a gpui easing closure. SPEC §5 names this method
-    /// explicitly (`impl CubicBezier { pub fn eval(..); pub fn easing(..); }`);
-    /// [`MotionSpec::animation`] builds its own inline closure instead
-    /// (`Animation::new(duration).with_easing(move |d| curve.eval(d))`), so
-    /// this has no caller yet — kept as the SPEC-mandated method for a
-    /// future call site that hands a bare curve to a gpui API expecting
-    /// `Fn(f32) -> f32` directly, without going through [`MotionSpec`].
-    #[allow(dead_code)]
-    pub fn easing(self) -> impl Fn(f32) -> f32 + 'static {
-        move |x| self.eval(x)
-    }
 }
 
-/// wtm's signature entrance curve — CSS `cubic-bezier(0.16, 1, 0.3, 1)`. Only
-/// live caller is [`FADE_IN`], which has no call site yet — see the module
-/// doc's "Catalog completeness" note.
-#[allow(dead_code)]
-pub const EASE_OUT_EXPO: CubicBezier = CubicBezier::new(0.16, 1.0, 0.3, 1.0);
 /// CSS `ease-out` — width/height transitions (sidebar/detail-panel resize),
 /// disclosure height. Live caller: [`RESIZE`] (via [`pane_in`]) and
 /// [`COLLAPSE`] (via [`disclosure_chevron`]).
 pub const EASE_OUT: CubicBezier = CubicBezier::new(0.0, 0.0, 0.58, 1.0);
 /// CSS `ease` — quick fades, menu/dialog entrances.
 pub const EASE: CubicBezier = CubicBezier::new(0.25, 0.1, 0.25, 1.0);
-/// Material's "standard" curve — reserved for a future call site that wants
-/// a snappier symmetric ease than [`EASE`]. One of SPEC §5's four named
-/// curves; no catalog spec uses it yet.
-#[allow(dead_code)]
-pub const EASE_STANDARD: CubicBezier = CubicBezier::new(0.2, 0.0, 0.0, 1.0);
 /// The identity curve (linear) — used by [`SPINNER`], where the catalog
 /// calls for a constant angular rate rather than an ease.
 pub const LINEAR: CubicBezier = CubicBezier::new(0.0, 0.0, 1.0, 1.0);
 
 // ---------------------------------------------------------------------------
-// Motion specs (the catalog — SPEC §5)
+// Motion specs (the catalog)
 // ---------------------------------------------------------------------------
 
 /// One catalog entry: duration + curve.
@@ -246,18 +156,6 @@ pub struct MotionSpec {
 impl MotionSpec {
     pub const fn new(duration_ms: u64, curve: CubicBezier) -> Self {
         Self { duration_ms, curve }
-    }
-
-    /// Eased progress (0..1) for a raw timeline delta (0..1). Pure —
-    /// unit-testable without a window. [`Self::animation`] (the mechanism
-    /// [`animate`] actually drives) recomputes the same easing inline
-    /// instead of calling this, so its only caller today is
-    /// [`tests::progress_matches_curve_eval_directly`] — kept as the pure,
-    /// testable half of the arithmetic `better-ui`/COMPONENTS.md calls for
-    /// alongside any styling helper.
-    #[allow(dead_code)]
-    pub fn progress(&self, raw_delta: f32) -> f32 {
-        self.curve.eval(raw_delta.clamp(0.0, 1.0))
     }
 
     /// A oneshot gpui [`Animation`] for this spec. When `reduced` is true
@@ -275,19 +173,14 @@ impl MotionSpec {
     }
 }
 
-/// View entrances: fade + 4px rise. See [`fade_in`] and the module doc's
-/// "Catalog completeness" note for why this has no call site yet.
-#[allow(dead_code)]
-pub const FADE_IN: MotionSpec = MotionSpec::new(300, EASE_OUT_EXPO);
 /// Cheap cross-fades.
 pub const FADE_QUICK: MotionSpec = MotionSpec::new(150, EASE);
 /// Popovers, context menu, command palette.
 pub const MENU_IN: MotionSpec = MotionSpec::new(140, EASE);
 /// Modal dialogs.
 pub const DIALOG_IN: MotionSpec = MotionSpec::new(180, EASE);
-/// Sidebar / detail-panel mount transition. See [`pane_in`] and the module
-/// doc's "Catalog completeness" note for why this times an opacity + slide
-/// rather than the width itself.
+/// Sidebar / detail-panel mount transition. See [`pane_in`] for why this
+/// times an opacity + slide rather than the width itself.
 pub const RESIZE: MotionSpec = MotionSpec::new(200, EASE_OUT);
 /// Disclosure rotation — the file browser's expand/collapse chevron, via
 /// [`disclosure_chevron`].
@@ -312,19 +205,6 @@ where
     E: Styled + IntoElement + 'static,
 {
     element.with_animation(id, spec.animation(reduced(cx)), animator)
-}
-
-/// Standard entrance: opacity 0->1 + translateY 4->0 over [`FADE_IN`]. See
-/// the module doc's "Catalog completeness" note — no view in this app
-/// mounts/unmounts coarsely enough yet to want it.
-#[allow(dead_code)]
-pub fn fade_in<E>(id: impl Into<ElementId>, element: E, cx: &App) -> gpui::AnimationElement<E>
-where
-    E: Styled + IntoElement + 'static,
-{
-    animate(id, FADE_IN, cx, element, |el, t| {
-        el.relative().opacity(t).top(px(4.0 * (1.0 - t)))
-    })
 }
 
 /// Quick opacity-only fade over [`FADE_QUICK`].
@@ -363,16 +243,17 @@ where
 /// Sidebar/detail-panel mount transition over [`RESIZE`]: opacity 0->1 plus
 /// a small horizontal slide, `start_offset_px` -> 0. The pane's own
 /// `w(px(..))` is set by the caller, outside this wrapper, and never
-/// animates — see the module doc's "Catalog completeness" note for why a
-/// real width tween would desync every row-layout budget that reads that
-/// width for the duration of the animation.
+/// animates: several row-layout budgets elsewhere in this crate read that
+/// width as a flat, instantaneous number, and a real width tween would
+/// desync them from the taffy-allocated box for the length of the
+/// animation.
 ///
 /// `start_offset_px` carries both the distance and the direction: negative
 /// for a pane whose home edge is the window's left (the sidebar enters by
 /// sliding in *from* further left), positive for one whose home edge is the
 /// right (the detail panel enters from further right). Implemented as a
-/// relative `left` inset for the same reason [`fade_in`]/[`menu_in`] use a
-/// relative `top` inset for their own rise: taffy applies it after layout,
+/// relative `left` inset for the same reason [`menu_in`] uses a relative
+/// `top` inset for its own rise: taffy applies it after layout,
 /// so — like a CSS transform — the sibling content column never shifts.
 ///
 /// Entrance-only, matching every other mount transition in this module
@@ -400,10 +281,9 @@ where
 
 /// A loading-indicator rotation over [`SPINNER`]: one full turn per period,
 /// linear, repeating. Reduced motion renders a static, unrotated icon and
-/// mounts no animation at all — a permanently-repeating spinner is exactly
-/// the "no repaint loops for idle UI" case SPEC §5 calls out, and reduced
-/// motion is the one signal that says this loader's motion is unwanted, not
-/// just quieter.
+/// mounts no animation at all — a permanently-repeating spinner would
+/// otherwise be a repaint loop for idle UI, and reduced motion is the one
+/// signal that says this loader's motion is unwanted, not just quieter.
 pub fn spin(id: impl Into<ElementId>, icon: Svg, cx: &App) -> gpui::AnyElement {
     if reduced(cx) {
         return icon.into_any_element();
@@ -423,9 +303,9 @@ fn spin_angle(t: f32) -> Radians {
     radians(t * TAU)
 }
 
-/// A disclosure chevron's expand/collapse rotation over [`COLLAPSE`]: a
-/// quarter turn between pointing right (collapsed) and down (expanded),
-/// eased rather than the static two-angle snap this used to be.
+/// A disclosure chevron's expand/collapse rotation over [`COLLAPSE`]: an
+/// eased quarter turn between pointing right (collapsed) and down
+/// (expanded).
 ///
 /// `id` must be unique *per toggle*, not just per row: an
 /// [`gpui::AnimationElement`]'s progress is `Instant`-based state gpui keeps
@@ -460,7 +340,7 @@ pub fn disclosure_chevron(
 
 /// Press feedback for buttons: gpui has no `div` scale transform, so
 /// zeron's `scale(0.96)` press is approximated as a 1px inward nudge (a
-/// relative `top` inset, the same trick [`fade_in`] uses for translateY)
+/// relative `top` inset, the same trick [`menu_in`] uses for translateY)
 /// plus a slightly stronger active wash — never an opacity drop alone, which
 /// reads as "disabled" rather than "pressed". Apply inside a `.active()`
 /// style closure:
@@ -470,9 +350,8 @@ pub fn disclosure_chevron(
 /// ```
 ///
 /// Instant (not time-based), so it does not need to honor [`reduced`] the
-/// way the entrance helpers do — SPEC §5 requires press feedback
-/// unconditionally, as one of motion's "restraint rules", not as an
-/// animation someone might want to turn off.
+/// way the entrance helpers do — press feedback is a restraint baseline,
+/// not an animation someone might want to turn off.
 pub fn press_feedback<E: Styled>(element: E, active_wash: gpui::Hsla) -> E {
     element.bg(active_wash).relative().top(px(1.0))
 }
@@ -491,9 +370,9 @@ mod tests {
     #[test]
     fn eval_never_escapes_unit_interval_dense_sweep() {
         // Regression guard: f32 rounding can produce e.g. 1.000000119 near
-        // the tail of EASE_OUT_EXPO, which would trip gpui's
-        // `AnimationElement` debug assert (`delta` must stay in `[0,1]`).
-        for curve in [EASE_OUT_EXPO, EASE_OUT, EASE, EASE_STANDARD, LINEAR] {
+        // a curve's tail, which would trip gpui's `AnimationElement` debug
+        // assert (`delta` must stay in `[0,1]`).
+        for curve in [EASE_OUT, EASE, LINEAR] {
             for i in 0..=100_000u32 {
                 let x = i as f32 / 100_000.0;
                 let y = curve.eval(x);
@@ -516,12 +395,7 @@ mod tests {
     #[test]
     fn bezier_known_values() {
         // References computed independently with 80-step bisection.
-        let cases: [(&str, CubicBezier, [f32; 5]); 3] = [
-            (
-                "expo",
-                EASE_OUT_EXPO,
-                [0.494391, 0.825622, 0.971779, 0.997677, 0.999878],
-            ),
+        let cases: [(&str, CubicBezier, [f32; 5]); 2] = [
             (
                 "ease-out",
                 EASE_OUT,
@@ -542,7 +416,7 @@ mod tests {
 
     #[test]
     fn bezier_endpoints_and_clamping() {
-        for curve in [EASE_OUT_EXPO, EASE_OUT, EASE, EASE_STANDARD] {
+        for curve in [EASE_OUT, EASE] {
             assert_eq!(curve.eval(0.0), 0.0);
             assert_eq!(curve.eval(1.0), 1.0);
             assert_eq!(curve.eval(-0.5), 0.0);
@@ -552,7 +426,7 @@ mod tests {
 
     #[test]
     fn bezier_is_monotonic_for_catalog_curves() {
-        for curve in [EASE_OUT_EXPO, EASE_OUT, EASE, EASE_STANDARD] {
+        for curve in [EASE_OUT, EASE] {
             let mut last = 0.0;
             for i in 0..=100 {
                 let y = curve.eval(i as f32 / 100.0);
@@ -560,25 +434,6 @@ mod tests {
                 last = y;
             }
         }
-    }
-
-    #[test]
-    fn catalog_timings_match_spec() {
-        assert_eq!(FADE_IN.duration_ms, 300);
-        assert_eq!(FADE_QUICK.duration_ms, 150);
-        assert_eq!(MENU_IN.duration_ms, 140);
-        assert_eq!(DIALOG_IN.duration_ms, 180);
-        assert_eq!(RESIZE.duration_ms, 200);
-        assert_eq!(COLLAPSE.duration_ms, 180);
-        assert_eq!(SPINNER.duration_ms, 900);
-        assert_eq!(EASE_OUT_EXPO, CubicBezier::new(0.16, 1.0, 0.3, 1.0));
-    }
-
-    #[test]
-    fn progress_matches_curve_eval_directly() {
-        assert_close(FADE_IN.progress(0.5), EASE_OUT_EXPO.eval(0.5), 1e-6, "");
-        assert_eq!(FADE_IN.progress(-1.0), FADE_IN.progress(0.0), "clamps low");
-        assert_eq!(FADE_IN.progress(2.0), FADE_IN.progress(1.0), "clamps high");
     }
 
     #[test]
@@ -600,21 +455,9 @@ mod tests {
         // rather than panicking — the whole point of `is_some_and`.
         // `set_reduced`/`reduced` themselves are exercised end-to-end by the
         // app-level gpui tests in `crate::app`, which do have an `App`.
-        let animation_full = FADE_IN.animation(false);
-        let animation_reduced = FADE_IN.animation(true);
-        assert_eq!(animation_full.duration, Duration::from_millis(300));
+        let animation_full = DIALOG_IN.animation(false);
+        let animation_reduced = DIALOG_IN.animation(true);
+        assert_eq!(animation_full.duration, Duration::from_millis(180));
         assert_eq!(animation_reduced.duration, Duration::ZERO);
-    }
-
-    #[test]
-    fn animation_reduced_duration_snaps_curve_to_endpoints() {
-        // The mechanism `spin`/`animate` rely on: a zero-duration animation
-        // must still resolve to valid eased values at both ends, since
-        // `AnimationElement` evaluates delta = elapsed / duration on its
-        // very first frame regardless of how short `duration` is.
-        for curve in [EASE_OUT_EXPO, EASE, EASE_OUT] {
-            assert_eq!(curve.eval(0.0), 0.0);
-            assert_eq!(curve.eval(1.0), 1.0);
-        }
     }
 }

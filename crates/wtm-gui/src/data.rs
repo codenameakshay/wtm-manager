@@ -1,14 +1,12 @@
-//! The bridge between the window and the `wtm` library.
+//! The GUI's blocking data layer: git/worktree queries via the `wtm` library
+//! and `git2`, plus the platform glue (clipboard, terminal, reveal, open URL,
+//! fetch) the app needs off the UI thread.
 //!
-//! Every function here is blocking and calls straight into the shared cores
-//! (`wtm::worktree`, `wtm::commands::*`). None of it may run on the main
-//! thread: `git2` status computation walks the working tree, and creating a
-//! worktree shells out to `git`. Views call these through
+//! Every function here is blocking, so views call them through
 //! [`gpui::AppContext::background_spawn`] and apply the result back on the
 //! foreground.
 
 use std::collections::{HashMap, HashSet};
-use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread;
@@ -149,29 +147,10 @@ pub fn open_in_editor(repo: &OpenRepo, path: &Path) -> Result<(), String> {
 }
 
 /// Reveal a path in the platform's file manager: Finder on macOS via
-/// `open -R`; on Linux, the freedesktop "FileManager1" D-Bus interface
-/// (`org.freedesktop.FileManager1.ShowItems`, which GNOME Files, Nautilus,
-/// Dolphin, and most other file managers register for exactly this
-/// "show and select" request), falling back to `xdg-open`ing the containing
-/// directory when nothing answers that D-Bus call (a minimal window manager
-/// with no file manager registered, or `dbus-send` not installed).
-/// `xdg-open` alone can't select the file within the folder it opens -- there
-/// is no cross-desktop standard for that -- so that fallback is "land in the
-/// right folder", not "land on the right file".
-///
-/// The name is kept as `reveal_in_finder` even though the Linux path no
-/// longer touches Finder: it mirrors the app's `RevealInFinder` GPUI action
-/// and its menu label, both outside this module, so renaming just this
-/// function would leave the codebase using two different names for the same
-/// concept.
-///
-/// Both config files the Settings sheet offers to reveal
-/// (`~/.config/wtm/config.toml`, `<repo>/.worktree.toml`) are optional, so
-/// `path` not existing is the common case, not an edge case: none of `open
-/// -R`, the D-Bus call, or `xdg-open` handle a missing path gracefully. When
-/// `path` doesn't exist, walk up to the nearest existing ancestor directory
-/// and reveal that instead, so the user lands in the folder where the file
-/// would go rather than hitting an opaque failure.
+/// `open -R`, or the freedesktop D-Bus "FileManager1" interface on Linux
+/// (falling back to `xdg-open` on its containing directory). The Settings
+/// sheet's config files are often not created yet, so a missing `path` walks
+/// up to the nearest existing ancestor directory instead of failing outright.
 pub fn reveal_in_finder(path: &Path) -> Result<(), String> {
     let Some(target) = existing_ancestor(path) else {
         // Only possible for a relative path with no existing prefix at all
@@ -314,7 +293,10 @@ fn existing_ancestor(path: &Path) -> Option<PathBuf> {
 pub fn open_in_terminal(path: &Path) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
-        let terminal = std::env::var("WTM_TERMINAL").unwrap_or_else(|_| "Terminal".to_string());
+        let terminal = std::env::var("WTM_TERMINAL")
+            .ok()
+            .filter(|t| !t.is_empty())
+            .unwrap_or_else(|| "Terminal".to_string());
         std::process::Command::new("open")
             .arg("-a")
             .arg(&terminal)
@@ -413,78 +395,26 @@ fn terminal_args(program: &str, path: &Path) -> Vec<std::ffi::OsString> {
     }
 }
 
-/// Copy `text` to the system clipboard: `pbcopy` on macOS; elsewhere the
-/// first available of `wl-copy`, `xclip -selection clipboard`, `xsel -ib`
-/// (same fallback chain as `wtm::tui`'s clipboard action, minus its OSC 52
-/// terminal escape-sequence fallback — there is no terminal here to write
-/// one into).
+/// Copy `text` to the system clipboard.
 pub fn copy_to_clipboard(text: &str) -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    let tools: &[(&str, &[&str])] = &[("pbcopy", &[])];
-    #[cfg(not(target_os = "macos"))]
-    let tools: &[(&str, &[&str])] = &[
-        ("wl-copy", &[]),
-        ("xclip", &["-selection", "clipboard"]),
-        ("xsel", &["-ib"]),
-    ];
-
-    for (tool, args) in tools {
-        let child = std::process::Command::new(tool)
-            .args(*args)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn();
-        let Ok(mut child) = child else {
-            continue; // Not installed; try the next tool.
-        };
-
-        let write_ok = child.stdin.as_mut().is_some_and(|stdin| {
-            use std::io::Write;
-            stdin.write_all(text.as_bytes()).is_ok()
-        });
-        // Close our end regardless of `write_ok`: EOF on stdin is exactly
-        // what tells wl-copy/xclip/xsel to stop reading and fork into the
-        // background to *stay* the clipboard's owner -- all three hold the
-        // selection in that spawned (and now detached) process itself, not
-        // in some system clipboard store, so a process that never gets past
-        // this point never actually owns the clipboard. Waiting for it below
-        // is safe and fast, not a long block: it only waits for that
-        // read-then-fork step, not for the clipboard to be pasted.
-        drop(child.stdin.take());
-
-        if !write_ok {
-            // The write failed mid-stream (e.g. the tool died), so whatever
-            // partial bytes it already read would otherwise still get
-            // forked into the background as a bogus clipboard owner once it
-            // sees our EOF. Kill it instead of leaving that orphan running.
-            let _ = child.kill();
-            let _ = child.wait();
-            continue;
-        }
-        match child.wait() {
-            Ok(status) if status.success() => return Ok(()),
-            _ => continue,
-        }
-    }
-
-    let tried: Vec<&str> = tools.iter().map(|(tool, _)| *tool).collect();
-    Err(format!(
-        "no clipboard tool available (tried: {})",
-        tried.join(", ")
-    ))
+    wtm::clipboard::copy(text)
+        .map(drop)
+        .map_err(|e| e.to_string())
 }
 
 /// One branch as shown in the create-worktree dialog's branch picker.
 #[derive(Debug, Clone)]
 pub struct BranchInfo {
     pub name: String,
+    /// `dialogs.rs` constructs `BranchInfo` values with this field but only
+    /// ever reads `name`/`is_checked_out`/`upstream_gone` back.
+    #[allow(dead_code)]
     pub is_local: bool,
     /// Already checked out in some worktree of this repository (a `wtm add`
     /// for it would fail with `BranchInUse`).
     pub is_checked_out: bool,
     /// Local branches only: has upstream configuration but the upstream ref
-    /// no longer exists (same semantics as `WorktreeStatus::upstream_gone`).
+    /// is missing (same semantics as `WorktreeStatus::upstream_gone`).
     pub upstream_gone: bool,
 }
 
@@ -519,14 +449,7 @@ pub fn list_branches(repo: &OpenRepo) -> Result<Vec<BranchInfo>, String> {
         let Some(name) = branch.name().map_err(|e| e.to_string())?.map(str::to_owned) else {
             continue; // Not a valid UTF-8 ref name; nothing sane to show.
         };
-        let upstream_gone = match branch.upstream() {
-            Ok(_) => false,
-            Err(e) if e.code() == git2::ErrorCode::NotFound => git_repo
-                .config()
-                .and_then(|cfg| cfg.get_string(&format!("branch.{name}.merge")))
-                .is_ok(),
-            Err(_) => false,
-        };
+        let upstream_gone = worktree::upstream_gone(&git_repo, &branch);
         local_names.insert(name.clone());
         locals.push(BranchInfo {
             is_checked_out: checked_out.contains(&name),
@@ -569,15 +492,6 @@ pub fn list_branches(repo: &OpenRepo) -> Result<Vec<BranchInfo>, String> {
     remotes.dedup_by(|a, b| a.name == b.name);
 
     locals.extend(remotes);
-    // The two loops above already build `locals` and `remotes` separately —
-    // each internally alphabetical — before this concatenates them, so
-    // locals already precede remotes. Re-deriving that ordering here from
-    // `is_local` (a stable sort, so it only ever reorders across the
-    // local/remote boundary, never within either group) ties it directly to
-    // the field instead of leaving it as an implicit consequence of loop
-    // order, so a future refactor that merges the two loops cannot silently
-    // interleave local and remote branches.
-    locals.sort_by_key(|b| !b.is_local);
     Ok(locals)
 }
 
@@ -604,9 +518,6 @@ pub fn delete_branch(repo: &OpenRepo, branch: &str) -> Result<(), String> {
 
 /// What a [`RefInfo`] represents, so a base-ref picker can label it instead
 /// of showing a flat list of names.
-// Consumed by the New Worktree dialog's base-ref picker, which isn't wired
-// up to this yet.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RefKind {
     /// Checked out in the worktree the user is currently looking at.
@@ -624,9 +535,6 @@ pub enum RefKind {
 }
 
 /// One ref as shown in the create-worktree dialog's base-ref picker.
-// Consumed by the New Worktree dialog's base-ref picker, which isn't wired
-// up to this yet.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RefInfo {
     /// What to pass to git as the base (e.g. `main`, `origin/feature/x`).
@@ -648,9 +556,6 @@ pub struct RefInfo {
 ///
 /// `current_worktree` is the worktree the dialog was opened from, if known;
 /// its checked-out branch (if any) becomes the `Current` entry.
-// Consumed by the New Worktree dialog's base-ref picker, which isn't wired
-// up to this yet.
-#[allow(dead_code)]
 pub fn list_refs(repo: &OpenRepo, current_worktree: Option<&Path>) -> Result<Vec<RefInfo>, String> {
     let git_repo = repo.ctx.open_main().map_err(|e| e.to_string())?;
 
@@ -665,8 +570,7 @@ pub fn list_refs(repo: &OpenRepo, current_worktree: Option<&Path>) -> Result<Vec
         },
     )
     .map_err(|e| e.to_string())?;
-    let current_canon =
-        current_worktree.map(|p| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf()));
+    let current_canon = current_worktree.map(repo::canonicalize_lossy);
     let mut current_branch: Option<String> = None;
     let mut checked_out_elsewhere: HashSet<String> = HashSet::new();
     for w in &worktrees {
@@ -835,11 +739,7 @@ fn commit_info(repo: &git2::Repository, refname: &str) -> (Option<String>, Optio
         return (None, None);
     };
     let subject = commit.summary().ok().flatten().map(str::to_owned);
-    let short_id = commit
-        .as_object()
-        .short_id()
-        .ok()
-        .and_then(|buf| buf.as_str().ok().map(str::to_owned));
+    let short_id = worktree::short_id(repo, commit.id());
     (subject, short_id)
 }
 
@@ -850,9 +750,6 @@ fn commit_info(repo: &git2::Repository, refname: &str) -> (Option<String>, Optio
 /// Git status for one path in [`list_files`]/[`worktree_diff`], collapsing
 /// git2's much larger `Status`/`Delta` bitflags down to what a file browser
 /// or diff viewer needs to badge an entry with.
-// Consumed by the worktree file browser and inline diff viewer, neither of
-// which is wired up to this yet.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileStatus {
     Modified,
@@ -864,8 +761,6 @@ pub enum FileStatus {
 }
 
 /// One entry in a [`list_files`] directory listing.
-// Consumed by the worktree file browser, which isn't wired up to this yet.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileEntry {
     pub name: String,
@@ -880,8 +775,6 @@ pub struct FileEntry {
 /// List one directory level inside `worktree` (not recursive — a file
 /// browser expands lazily; walking the whole tree up front is exactly what
 /// makes that slow on a big repo).
-// Consumed by the worktree file browser, which isn't wired up to this yet.
-#[allow(dead_code)]
 pub fn list_files(worktree: &Path, rel_dir: &Path) -> Result<Vec<FileEntry>, String> {
     if escapes_worktree(rel_dir) {
         return Err(format!("'{}' escapes the worktree", rel_dir.display()));
@@ -934,9 +827,9 @@ pub fn list_files(worktree: &Path, rel_dir: &Path) -> Result<Vec<FileEntry>, Str
         // noise would otherwise make the browser useless. libgit2 matches
         // directory-only ignore patterns (e.g. `target/`) against a path
         // that ends in a slash, so directories are probed with one added.
-        let mut ignore_probe = rel_path.to_string_lossy().into_owned();
+        let mut ignore_probe = rel_path.as_os_str().to_os_string();
         if is_dir {
-            ignore_probe.push('/');
+            ignore_probe.push("/");
         }
         if repo
             .status_should_ignore(Path::new(&ignore_probe))
@@ -946,7 +839,7 @@ pub fn list_files(worktree: &Path, rel_dir: &Path) -> Result<Vec<FileEntry>, Str
         }
 
         let status = status_by_path
-            .get(&rel_path.to_string_lossy().into_owned())
+            .get(rel_path.to_string_lossy().as_ref())
             .copied();
 
         entries.push(FileEntry {
@@ -1020,8 +913,6 @@ fn file_status_from_git(status: git2::Status) -> Option<FileStatus> {
 
 /// What kind of line one [`DiffLine`] is, mirroring `git diff`'s ` `/`+`/`-`
 /// origin markers.
-// Consumed by the inline diff viewer, which isn't wired up to this yet.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiffLineKind {
     Context,
@@ -1030,8 +921,6 @@ pub enum DiffLineKind {
 }
 
 /// One line of a [`DiffHunk`].
-// Consumed by the inline diff viewer, which isn't wired up to this yet.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiffLine {
     pub kind: DiffLineKind,
@@ -1041,8 +930,6 @@ pub struct DiffLine {
 }
 
 /// One `@@ ... @@` hunk of a [`FileDiff`].
-// Consumed by the inline diff viewer, which isn't wired up to this yet.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiffHunk {
     pub header: String,
@@ -1050,8 +937,6 @@ pub struct DiffHunk {
 }
 
 /// All hunks for one file's uncommitted changes.
-// Consumed by the inline diff viewer, which isn't wired up to this yet.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileDiff {
     pub path: String,
@@ -1073,8 +958,6 @@ const MAX_DIFF_LINES_PER_FILE: usize = 2000;
 /// Uncommitted changes in `worktree`: working tree + index vs. HEAD (an
 /// unborn HEAD — no commits yet — diffs against an empty tree, so
 /// everything shows as added, matching `git diff`'s own behavior there).
-// Consumed by the inline diff viewer, which isn't wired up to this yet.
-#[allow(dead_code)]
 pub fn worktree_diff(worktree: &Path) -> Result<Vec<FileDiff>, String> {
     let repo = git2::Repository::open(worktree).map_err(|e| e.to_string())?;
     build_diffs(&repo, None)
@@ -1082,8 +965,6 @@ pub fn worktree_diff(worktree: &Path) -> Result<Vec<FileDiff>, String> {
 
 /// The same as [`worktree_diff`], restricted to one file. `None` when
 /// `rel_path` has no uncommitted changes.
-// Consumed by the inline diff viewer, which isn't wired up to this yet.
-#[allow(dead_code)]
 pub fn file_diff(worktree: &Path, rel_path: &Path) -> Result<Option<FileDiff>, String> {
     if escapes_worktree(rel_path) {
         return Err(format!("'{}' escapes the worktree", rel_path.display()));
@@ -1253,15 +1134,11 @@ fn delta_status(status: git2::Delta) -> FileStatus {
 // Fetch
 // ---------------------------------------------------------------------
 
-/// Result of a [`fetch`] run: which remote it hit, how many refs it moved,
-/// and the raw text to show in the UI.
-// Consumed by a "Fetch" toolbar action, not wired up yet.
-#[allow(dead_code)]
+/// Result of a [`fetch`] run: which remote it hit and how many refs it moved.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FetchOutcome {
     pub remote: String,
     pub updated_refs: usize,
-    pub output: String,
 }
 
 /// Run `git fetch --prune` against `remote` (or the default remote when
@@ -1282,20 +1159,14 @@ pub struct FetchOutcome {
 /// `--prune` so branches deleted on the remote actually disappear from
 /// remote-tracking refs here too — that's what makes `wtm prune`'s "upstream
 /// gone" detection trustworthy instead of stale.
-// Consumed by a "Fetch" toolbar action, not wired up yet.
-#[allow(dead_code)]
 pub fn fetch(repo: &OpenRepo, remote: Option<&str>) -> Result<FetchOutcome, String> {
     let remote_name = match remote {
         Some(r) => r.to_string(),
         None => default_remote_name(&repo.ctx)?,
     };
 
-    let output = std::process::Command::new("git")
-        .args(["fetch", "--prune", &remote_name])
-        .current_dir(&repo.ctx.main_root)
-        .stdin(std::process::Stdio::null())
-        .output()
-        .map_err(|e| format!("could not start `git fetch`: {e}"))?;
+    let output = gitcmd::run_capture(&repo.ctx.main_root, &["fetch", "--prune", &remote_name])
+        .map_err(|e| e.to_string())?;
 
     // git's own progress/ref-update reporting all goes to stderr; stdout is
     // normally empty. Combine both so nothing is silently dropped regardless
@@ -1315,7 +1186,6 @@ pub fn fetch(repo: &OpenRepo, remote: Option<&str>) -> Result<FetchOutcome, Stri
     Ok(FetchOutcome {
         updated_refs: count_updated_refs(&combined),
         remote: remote_name,
-        output: combined,
     })
 }
 
@@ -1374,9 +1244,6 @@ fn count_updated_refs(output: &str) -> usize {
 /// no history walk and no status computation (that's `worktree::list`'s
 /// `with_status`, a much more expensive pass). Same order of cost as
 /// `stat`-ing a file, repeated once per worktree rather than per commit.
-// Consumed by the worktree list's staleness column and sort-by-activity,
-// not wired up yet.
-#[allow(dead_code)]
 pub fn worktree_activity(paths: &[PathBuf]) -> HashMap<PathBuf, i64> {
     let mut activity = HashMap::with_capacity(paths.len());
     for path in paths {
@@ -1405,8 +1272,6 @@ pub fn worktree_activity(paths: &[PathBuf]) -> HashMap<PathBuf, i64> {
 /// out negative, which is less than every threshold below, so it falls into
 /// the same "just now" bucket as a genuinely recent commit rather than
 /// printing a negative duration or panicking.
-// Consumed by the worktree list's staleness column, not wired up yet.
-#[allow(dead_code)]
 pub fn relative_age(unix_secs: i64, now: i64) -> String {
     let delta = now.saturating_sub(unix_secs);
     if delta < 60 {
@@ -1440,9 +1305,6 @@ pub fn relative_age(unix_secs: i64, now: i64) -> String {
 // ---------------------------------------------------------------------
 
 /// One step of a [`run_command_streaming`] run, reported as it happens.
-// Consumed by a "run command in worktree" dialog mirroring the TUI's
-// `RunCommand` effect, not wired up yet.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommandEvent {
     Started {
@@ -1476,9 +1338,6 @@ pub enum CommandEvent {
 /// error, a `grep` that found nothing — look identical to the app itself
 /// being broken, to both callers matching on `Result` and to any
 /// error-toast UI built on top of this.
-// Consumed by a "run command in worktree" dialog mirroring the TUI's
-// `RunCommand` effect, not wired up yet.
-#[allow(dead_code)]
 pub fn run_command_streaming(
     worktree: &Path,
     command: &str,
@@ -1502,8 +1361,8 @@ pub fn run_command_streaming(
     let stderr = child.stderr.take().expect("stderr was piped at spawn");
     let (tx, rx) = mpsc::channel::<String>();
     let tx_stderr = tx.clone();
-    let stdout_reader = thread::spawn(move || forward_command_lines(stdout, tx));
-    let stderr_reader = thread::spawn(move || forward_command_lines(stderr, tx_stderr));
+    let stdout_reader = thread::spawn(move || wtm::setup::forward_lines(stdout, tx));
+    let stderr_reader = thread::spawn(move || wtm::setup::forward_lines(stderr, tx_stderr));
 
     for line in rx {
         sink(CommandEvent::Output { line });
@@ -1524,35 +1383,6 @@ pub fn run_command_streaming(
     Ok(())
 }
 
-/// Read `reader` line by line (splitting on `\n`, trimming a trailing `\r`),
-/// sending each line to `tx`. Invalid UTF-8 is replaced rather than failing
-/// the read: command output is diagnostic text for a human, not a payload
-/// that must round-trip exactly. Mirrors `wtm::setup`'s private
-/// `forward_lines` helper, duplicated here since that one isn't visible
-/// outside its module.
-fn forward_command_lines(reader: impl Read, tx: mpsc::Sender<String>) {
-    let mut reader = BufReader::new(reader);
-    let mut buf = Vec::new();
-    loop {
-        buf.clear();
-        match reader.read_until(b'\n', &mut buf) {
-            Ok(0) => break,
-            Ok(_) => {
-                if buf.last() == Some(&b'\n') {
-                    buf.pop();
-                    if buf.last() == Some(&b'\r') {
-                        buf.pop();
-                    }
-                }
-                if tx.send(String::from_utf8_lossy(&buf).into_owned()).is_err() {
-                    break; // Receiver went away; nothing left to do.
-                }
-            }
-            Err(_) => break,
-        }
-    }
-}
-
 // ---------------------------------------------------------------------
 // Open the branch on its remote host
 // ---------------------------------------------------------------------
@@ -1566,8 +1396,6 @@ fn forward_command_lines(reader: impl Read, tx: mpsc::Sender<String>) {
 /// Thin git-facing wrapper: [`resolve_remote_url`] reads the raw remote URL
 /// via git2, [`build_remote_branch_url`] (pure, unit tested directly) does
 /// the actual conversion.
-// Consumed by an "Open on GitHub/GitLab/Bitbucket" action, not wired up yet.
-#[allow(dead_code)]
 pub fn remote_branch_url(repo: &OpenRepo, branch: &str) -> Option<String> {
     let git_repo = repo.ctx.open_main().ok()?;
     let raw_url = resolve_remote_url(&git_repo, branch);
@@ -1684,13 +1512,14 @@ fn encode_branch_path(branch: &str) -> String {
 }
 
 fn encode_path_segment(segment: &str) -> String {
+    use std::fmt::Write;
     let mut out = String::with_capacity(segment.len());
     for byte in segment.bytes() {
         match byte {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
                 out.push(byte as char);
             }
-            _ => out.push_str(&format!("%{byte:02X}")),
+            _ => write!(out, "%{byte:02X}").unwrap(),
         }
     }
     out
@@ -1700,8 +1529,6 @@ fn encode_path_segment(segment: &str) -> String {
 /// `xdg-open <url>` elsewhere. Does not decide *when* to open anything —
 /// launching a browser is a UI decision made on user action, not something
 /// the data layer initiates on its own.
-// Consumed by an "Open on GitHub/GitLab/Bitbucket" action, not wired up yet.
-#[allow(dead_code)]
 pub fn open_url(url: &str) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     let tool = "open";

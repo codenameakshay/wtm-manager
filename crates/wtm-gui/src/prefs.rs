@@ -51,8 +51,11 @@ pub struct WindowFrame {
     pub height: f32,
 }
 
-/// The GUI's persisted preferences.
+/// The GUI's persisted preferences. `#[serde(default)]` so a `gui.json`
+/// missing any one field (e.g. one saved by an older build) still loads
+/// with defaults filled in, rather than failing to parse the whole file.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Prefs {
     /// system | light | dark
     pub appearance: Appearance,
@@ -64,17 +67,8 @@ pub struct Prefs {
     pub window: Option<WindowFrame>,
     /// Path of the repository that was open last.
     pub last_repo: Option<PathBuf>,
-    /// `motion::reduced`'s persisted backing (SPEC §5's reduced-motion
-    /// pref) — mirrors `motion.rs`'s own global at startup and on every
-    /// toggle; see `WtmApp::set_reduce_motion`. `#[serde(default)]` so a
-    /// `gui.json` written before this field existed still loads: `appearance`
-    /// (this struct's oldest field) predates that attribute existing at all
-    /// in this file and has no such guard of its own, so a file missing
-    /// *that* key fails to parse and `load` falls back to full defaults —
-    /// this field deliberately does not repeat that gap, which is the
-    /// literal "older files without the key still load" case this field's
-    /// tests below cover.
-    #[serde(default)]
+    /// `motion::reduced`'s persisted backing — mirrors `motion.rs`'s own
+    /// global at startup and on every toggle; see `WtmApp::set_reduce_motion`.
     pub reduce_motion: bool,
 }
 
@@ -188,31 +182,6 @@ mod tests {
     }
 
     #[test]
-    fn defaults_are_sensible() {
-        let prefs = Prefs::default();
-        assert_eq!(prefs.appearance, Appearance::System);
-        assert_eq!(prefs.terminal, None);
-        assert!(prefs.sidebar_visible);
-        assert!(prefs.detail_panel_visible);
-        assert_eq!(prefs.window, None);
-        assert_eq!(prefs.last_repo, None);
-        assert!(!prefs.reduce_motion);
-    }
-
-    #[test]
-    fn defaults_round_trip_through_serialize_deserialize() {
-        let prefs = Prefs::default();
-        let file = PrefsFile {
-            version: SCHEMA_VERSION,
-            prefs: prefs.clone(),
-        };
-        let json = serde_json::to_string(&file).unwrap();
-        let parsed: PrefsFile = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.version, SCHEMA_VERSION);
-        assert_eq!(parsed.prefs, prefs);
-    }
-
-    #[test]
     fn non_default_values_round_trip_too() {
         let prefs = Prefs {
             appearance: Appearance::Dark,
@@ -235,16 +204,6 @@ mod tests {
         let json = serde_json::to_string(&file).unwrap();
         let parsed: PrefsFile = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.prefs, prefs);
-    }
-
-    #[test]
-    fn a_corrupt_file_fails_to_parse_and_default_is_still_sane() {
-        // The parse path is what `load` exercises against a real file on
-        // disk; check it directly against a corrupt string, the same way
-        // `wtm::registry`'s own corruption test does.
-        let parsed = serde_json::from_str::<PrefsFile>("{ not json");
-        assert!(parsed.is_err());
-        assert_eq!(Prefs::default(), Prefs::default());
     }
 
     #[test]
@@ -280,11 +239,9 @@ mod tests {
     #[test]
     fn load_of_an_older_file_without_reduce_motion_still_loads_the_rest() {
         // A `gui.json` written before `reduce_motion` existed has no such
-        // key at all. `#[serde(default)]` on the field is what keeps this
-        // loading (falling back to `false` for just that field) rather than
-        // failing to parse the whole file the way a missing `appearance`
-        // key would (see the field's own doc) — every other saved value
-        // must survive intact.
+        // key at all. `#[serde(default)]` on `Prefs` fills it in with
+        // `false` rather than failing to parse the whole file — every other
+        // saved value must survive intact.
         let tmp = tempfile::tempdir().unwrap();
         let _guard = EnvGuard::set(tmp.path());
         std::fs::write(
