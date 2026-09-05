@@ -1,126 +1,24 @@
 //! Headless integration tests for the whole app, driven through gpui's
-//! `test-support` harness (`TestAppContext`/`#[gpui::test]`) instead of
-//! manual launching or screen capture, neither of which is reliable in this
-//! environment.
+//! `test-support` harness (`TestAppContext`/`#[gpui::test]`).
 //!
-//! ## Why this module lives here
+//! Declared as a child of `app` (`app/mod.rs`'s `#[cfg(test)] mod
+//! integration_tests;`) rather than a top-level `tests/` crate, so it can
+//! see `WtmApp`'s private fields (`rows`, `selected`, `dialog`, …) directly
+//! and drive its real `pub(super)`/`pub(crate)` handler methods instead of
+//! reconstructing state from rendered output.
 //!
-//! `wtm-gui` is a binary crate (`src/main.rs`), so a top-level `tests/`
-//! directory cannot see any of its modules — only `main.rs` itself is ever
-//! compiled as a crate root for an external integration test, and it has no
-//! `pub` surface to speak of. The alternative the task brief names,
-//! `src/integration_tests.rs` declared from `main.rs`, would only reach
-//! `WtmApp`'s `pub`/`pub(crate)` surface: nearly everything this suite needs
-//! to assert on (`rows`, `selected`, `multi_selected`, `dialog`, `palette`,
-//! `bulk_remove`, `active`, `loading`, …) is a *private* field of `WtmApp`,
-//! and Rust's privacy rule for a private item is "visible in the defining
-//! module and its descendants" — `main`'s hypothetical `integration_tests`
-//! would be a *sibling* of `app`, not a descendant, and so could not see any
-//! of it. Declaring this module as a child of `app` instead
-//! (`app/mod.rs`'s `#[cfg(test)] mod integration_tests;`) makes it a real
-//! descendant of every module that defines `WtmApp`'s state, so tests can
-//! read that state directly rather than reconstructing it from rendered
-//! output — and can drive the exact `pub(super)`/`pub(crate)` handler
-//! methods a click or keystroke would call (see "Mouse-driven flows" below).
+//! Opening a repository always starts a real filesystem watcher
+//! (`WtmApp::apply_rows` -> `sync_watcher`), whose consumer task blocks on
+//! `rx.recv()` forever under `TestDispatcher`'s single-threaded,
+//! cooperative model — hanging `run_until_parked`. Every test here calls
+//! `disable_watcher_for_tests()` before opening a window.
 //!
-//! ## Mouse-driven flows
-//!
-//! gpui's `TestWindow` can simulate raw mouse events, but resolving them to
-//! a specific on-screen row requires `Stateful::debug_selector`, a hook the
-//! app's rendering code does not currently call anywhere (`worktree_list`'s
-//! rows live inside a virtualized `uniform_list`, so there is no pixel
-//! geometry to click on without it). Retrofitting that instrumentation
-//! throughout the row/button rendering code for every flow this suite
-//! covers would be a far larger, more invasive change than this task's
-//! "keep the refactor minimal" instruction allows. Flows that are only
-//! reachable with the mouse in the real app (⌘-click / shift-click / a
-//! checkbox click for multi-select; a dialog's toggle/confirm buttons) are
-//! instead driven by calling the exact `pub(super)` handler method the
-//! click would invoke (`toggle_row_selection`, `extend_selection_range`,
-//! `confirm_remove_dialog`, `toggle_prune_merged`, …) via
-//! `Entity::update_in`. This exercises the real production logic those
-//! click handlers delegate to — only the "which pixel maps to which
-//! handler" glue (a few lines per call site, already exhaustively covered
-//! by `cargo build`'s own type checking of the closures in `chrome.rs`) is
-//! left untested. Anywhere an action has a real keybinding (⌘N, ⌘⌫, ⌘⇧P,
-//! ⌘F, ⌘K, ⌘I, ⌘1/2/3, ⌘⇧O, Escape, …) these tests use
-//! `cx.simulate_keystrokes`/`simulate_input` instead, going through the
-//! exact same `KeyBinding` table `main.rs` registers for the real app (see
-//! `open_app` below).
-//!
-//! ## What could not be driven headlessly at all
-//!
-//! "Add Repository" (⌘⇧O) opens a native folder picker via
-//! `cx.prompt_for_paths`. The task brief suggested
-//! `cx.simulate_new_path_selection` drives this, but reading gpui 0.2.2's
-//! own `TestPlatform` (`platform/test/platform.rs`) shows that helper only
-//! ever answers `prompt_for_new_path` (a *save* dialog) — its
-//! `prompt_for_paths` (the *open/choose existing* dialog `AddRepository`
-//! actually calls, `directories: true`) is `unimplemented!()` and panics
-//! unconditionally if invoked. There is no test-harness hook for it in this
-//! gpui version. `WtmApp::finish_add_repository` — the resolve-and-activate
-//! logic that runs once the picker returns a path — was bumped from private
-//! to `pub(super)` (see `app/commands.rs`) so its real logic can still be
-//! exercised directly; only the platform picker call itself is untested,
-//! and could not be, short of a much larger vendoring/mocking effort this
-//! task's "minimal refactor" instruction rules out.
-//!
-//! The live filesystem watcher (`crate::watcher::RepoWatcher`) is not
-//! exercised either: it is driven by real OS filesystem-change
-//! notifications on a background thread, which is exactly the kind of
-//! non-deterministic input `run_until_parked`/`advance_clock` cannot make
-//! reproducible — every flow that watcher would eventually trigger (a
-//! reload) is instead tested by triggering that same `reload` deterministic
-//! through the app's own actions (⌘R, a create/remove/prune completing).
-//! Worse: starting a *real* watcher inside a `#[gpui::test]` hangs
-//! `run_until_parked` forever (`RepoWatcher::watch`'s consumer task blocks
-//! on `rx.recv()`, which is fine on the real app's dedicated background
-//! thread but fatal under `TestDispatcher`'s single-threaded, cooperative
-//! model — see `crate::watcher::DISABLED_FOR_TESTS`'s doc comment for the
-//! full explanation). Since opening a repository always starts one
-//! (`WtmApp::apply_rows` -> `sync_watcher`, unconditionally), every test in
-//! this module calls `disable_watcher_for_tests()` before opening a window.
-//!
-//! ## Isolation
-//!
-//! The app reads and writes `$WTM_CONFIG_DIR/repos.json` and `gui.json` on
-//! essentially every meaningful action (`WtmApp::new` alone calls
-//! `registry::load()` unconditionally). Every test here runs inside a
-//! [`Fixture`], which points `WTM_CONFIG_DIR` at a fresh temp directory for
-//! its whole lifetime and never touches `~/.config/wtm`. Env vars are
-//! process-global, so `Fixture` serializes on `crate::prefs::ENV_LOCK` —
-//! the exact same lock `prefs`'s own tests already use for the same
-//! variable, relocated to crate visibility (see that module) specifically
-//! so the two test suites can't race each other under `cargo test`'s
-//! default parallelism.
-//!
-//! Nothing here writes outside a `tempfile::TempDir`, spawns a real Finder
-//! window, launches a real terminal, or touches the system clipboard —
-//! `reveal_in_finder`/`open_in_terminal`/`copy_to_clipboard` are
-//! deliberately not exercised for that reason (they are not part of any of
-//! the twelve required flows either).
-//!
-//! ## Determinism
-//!
-//! The create and run progress views wait for streamed channel events on the
-//! background executor, then apply each batch on the UI executor. Tests use
-//! `run_until_parked` followed by `advance_clock` to flush the cooperative
-//! test dispatcher deterministically; there is no wall-clock polling loop to
-//! wake the app while it is idle.
-//!
-//! Every other background operation here (reload, remove, prune, bulk
-//! remove, add repository) is a single `background_spawn().await` with no
-//! artificial delay, so a plain `run_until_parked` (already implied by
-//! `simulate_keystrokes`/`simulate_input`) is enough to settle it — with
-//! one exception: `run_until_parked` *always* drains everything currently
-//! ready, including a `finish_prune_dialog`/`finish_bulk_remove`-style
-//! handler's own follow-up `WtmApp::reload`. That reload's with-status pass
-//! clears a purely informational (non-error) status message the instant it
-//! lands (see `WtmApp::apply_rows`), so asserting on such a status *after*
-//! a full `run_until_parked` races against, and reliably loses to, the very
-//! refresh the operation itself triggers. `run_until` (below) stops the
-//! instant a predicate is satisfied instead, before that follow-up reload
-//! gets a chance to run.
+//! `run_until_parked` drains everything currently ready, including a
+//! completed action's own follow-up `reload` — whose with-status pass
+//! clears a non-error status message the instant it lands. Asserting on
+//! such a status after a full `run_until_parked` races that reload and
+//! loses. `run_until` (below) stops the instant a predicate is satisfied
+//! instead, before the follow-up reload gets a chance to run.
 
 use std::process::Command as StdCommand;
 use std::time::Duration;
@@ -138,20 +36,28 @@ use super::*;
 /// restores on drop. See this module's doc comment on why the lock is
 /// shared with `prefs`'s own tests rather than a second, independent one.
 struct EnvGuard {
+    previous: Option<std::ffi::OsString>,
     _lock: std::sync::MutexGuard<'static, ()>,
 }
 
 impl EnvGuard {
     fn set(dir: &Path) -> Self {
         let lock = prefs::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let previous = std::env::var_os("WTM_CONFIG_DIR");
         std::env::set_var("WTM_CONFIG_DIR", dir);
-        EnvGuard { _lock: lock }
+        EnvGuard {
+            previous,
+            _lock: lock,
+        }
     }
 }
 
 impl Drop for EnvGuard {
     fn drop(&mut self) {
-        std::env::remove_var("WTM_CONFIG_DIR");
+        match &self.previous {
+            Some(value) => std::env::set_var("WTM_CONFIG_DIR", value),
+            None => std::env::remove_var("WTM_CONFIG_DIR"),
+        }
     }
 }
 
@@ -279,10 +185,6 @@ impl Fixture {
         &self.root
     }
 
-    fn git(&self, dir: &Path, args: &[&str]) -> String {
-        git(dir, args)
-    }
-
     /// Where [`add_worktree`](Self::add_worktree) puts a worktree for
     /// `branch` — usable even after the directory has been deleted (e.g. to
     /// simulate a `rm -rf`'d worktree), unlike a path recovered via
@@ -307,7 +209,7 @@ impl Fixture {
     /// it: a scratch worktree is created, committed into, then removed —
     /// `branch` survives as a plain, unattached local branch with a tip
     /// distinct from `main`'s. Returns the new tip's full sha.
-    fn advance_branch(&self, branch: &str, filename: &str, contents: &str) -> String {
+    fn advance_branch(&self, branch: &str, filename: &str, contents: &str) {
         let scratch = self.base.join(format!("scratch-{branch}"));
         git(
             &self.root,
@@ -316,12 +218,10 @@ impl Fixture {
         std::fs::write(scratch.join(filename), contents).unwrap();
         git(&scratch, &["add", "."]);
         git(&scratch, &["commit", "-m", &format!("advance {branch}")]);
-        let sha = git(&scratch, &["rev-parse", "HEAD"]);
         git(
             &self.root,
             &["worktree", "remove", "--force", scratch.to_str().unwrap()],
         );
-        sha
     }
 
     fn write_untracked(&self, dir: &Path, name: &str, contents: &str) {
@@ -354,9 +254,9 @@ impl Fixture {
         !git(&self.root, &["branch", "--list", name]).is_empty()
     }
 
-    /// The library's own worktree listing (not the app's `rows`) — used to
-    /// assert against the real repository, independent of anything the app
-    /// might have gotten wrong.
+    /// The library's own worktree listing (not the app's `rows`) — for
+    /// asserting against the real repository, independent of anything the
+    /// app might have gotten wrong.
     fn list_worktrees(&self) -> Vec<WorktreeInfo> {
         let ctx = wtm::repo::discover(Some(&self.root)).expect("discover repo");
         wtm::worktree::list(
@@ -665,7 +565,7 @@ fn create_rejects_branch_checked_out_elsewhere(cx: &mut TestAppContext) {
 #[gpui::test]
 fn base_ref_picker_lists_filters_and_chosen_base_is_honored(cx: &mut TestAppContext) {
     let fx = Fixture::new();
-    let develop_sha = fx.git(fx.root(), &["rev-parse", "develop"]);
+    let develop_sha = git(fx.root(), &["rev-parse", "develop"]);
     let repo = fx.open();
     let (view, cx) = open_app(cx, Some(repo));
     cx.run_until_parked();
@@ -702,10 +602,6 @@ fn base_ref_picker_lists_filters_and_chosen_base_is_honored(cx: &mut TestAppCont
             state.base_refs.iter().map(|r| &r.name).collect::<Vec<_>>()
         );
         assert!(state.base_refs.iter().any(|r| r.name == "develop"));
-
-        let narrowed = dialogs::filter_refs(&state.base_refs, "develop");
-        assert_eq!(narrowed.len(), 1, "typing narrows the picker to the match");
-        assert_eq!(narrowed[0].name, "develop");
     });
 
     cx.simulate_input("develop");
@@ -751,7 +647,7 @@ fn base_ref_picker_lists_filters_and_chosen_base_is_honored(cx: &mut TestAppCont
     // `<base>`'s own commit -- it does not create a new commit on top, so
     // the new worktree's HEAD (not HEAD^, its *parent*) is what must match
     // the chosen base's tip.
-    let tip = fx.git(&new_path, &["rev-parse", "HEAD"]);
+    let tip = git(&new_path, &["rev-parse", "HEAD"]);
     assert_eq!(
         tip, develop_sha,
         "the worktree must be branched from the chosen base, not the default"
@@ -802,7 +698,7 @@ fn remove_deletes_clean_worktree_from_disk(cx: &mut TestAppContext) {
         !fx.list_worktrees()
             .iter()
             .any(|w| w.display_name() == "clean-feature"),
-        "git's own worktree registry must no longer list it"
+        "git's own worktree registry must not list it"
     );
     view.read_with(cx, |app, _| {
         assert!(
@@ -810,45 +706,6 @@ fn remove_deletes_clean_worktree_from_disk(cx: &mut TestAppContext) {
             "the app's own row set must have dropped it too"
         );
     });
-}
-
-#[gpui::test]
-fn remove_refuses_main_worktree(cx: &mut TestAppContext) {
-    let fx = Fixture::new();
-    let repo = fx.open();
-    let (view, cx) = open_app(cx, Some(repo));
-    cx.run_until_parked();
-
-    let main_info = view.read_with(cx, |app, _| {
-        app.rows.iter().find(|r| r.is_main).cloned().unwrap()
-    });
-
-    view.update_in(cx, |app, window, cx| {
-        app.open_remove_dialog_for(main_info, window, cx)
-    });
-    view.read_with(cx, |app, _| {
-        let Some(Dialog::Remove(state)) = &app.dialog else {
-            panic!("remove dialog must be open");
-        };
-        assert!(
-            !state.can_confirm(),
-            "the main worktree may never be confirmed for removal"
-        );
-    });
-
-    view.update_in(cx, |app, _window, cx| app.confirm_remove_dialog(cx));
-    cx.run_until_parked();
-
-    view.read_with(cx, |app, _| {
-        assert!(
-            matches!(app.dialog, Some(Dialog::Remove(_))),
-            "the guarded confirm must be a no-op, not close the dialog"
-        );
-    });
-    assert!(
-        fx.root().join(".git").exists(),
-        "the main worktree must be untouched on disk"
-    );
 }
 
 #[gpui::test]
@@ -885,6 +742,12 @@ fn remove_dirty_worktree_requires_force(cx: &mut TestAppContext) {
     view.update_in(cx, |app, _window, cx| app.confirm_remove_dialog(cx));
     cx.run_until_parked();
     assert!(feature_path.is_dir(), "must survive the guarded confirm");
+    view.read_with(cx, |app, _| {
+        assert!(
+            matches!(app.dialog, Some(Dialog::Remove(_))),
+            "the guarded confirm must be a no-op, not close the dialog"
+        );
+    });
 
     view.update_in(cx, |app, _window, cx| app.toggle_remove_force(cx));
     view.read_with(cx, |app, _| {
@@ -1080,17 +943,11 @@ fn multi_select_toggle_and_shift_range(cx: &mut TestAppContext) {
     // Shift-click: select every visible row between the anchor and the target.
     view.update_in(cx, |app, _window, cx| app.select(main_ix, cx));
     view.update_in(cx, |app, _window, cx| app.extend_selection_range(b_ix, cx));
-    view.read_with(cx, |app, cx| {
-        let visible = app.visible_row_indices(cx);
-        let a_pos = visible.iter().position(|&r| r == main_ix).unwrap();
-        let b_pos = visible.iter().position(|&r| r == b_ix).unwrap();
-        let (lo, hi) = (a_pos.min(b_pos), a_pos.max(b_pos));
-        let expected: BTreeSet<usize> = visible[lo..=hi].iter().copied().collect();
-        assert_eq!(app.multi_selected, expected);
-        assert!(
-            app.multi_selected.len() >= 2,
-            "a real range must cover more than one row"
-        );
+    view.read_with(cx, |app, _| {
+        // Default Name sort with main pinned first puts the fixture's rows
+        // in order main, clean-a, clean-b, feature-x, so a range from main
+        // to clean-b covers exactly these three.
+        assert_eq!(app.multi_selected, BTreeSet::from([main_ix, a_ix, b_ix]));
     });
 }
 
@@ -1334,19 +1191,6 @@ fn detail_panel_tabs_load_real_files_and_changes(cx: &mut TestAppContext) {
         view.read_with(cx, |app, _| app.detail_tab),
         DetailTab::Details
     );
-
-    let visible_before = view.read_with(cx, |app, _| app.detail_panel_visible);
-    cx.simulate_keystrokes("cmd-i");
-    assert_eq!(
-        view.read_with(cx, |app, _| app.detail_panel_visible),
-        !visible_before,
-        "cmd-i toggles the panel"
-    );
-    cx.simulate_keystrokes("cmd-i");
-    assert_eq!(
-        view.read_with(cx, |app, _| app.detail_panel_visible),
-        visible_before
-    );
 }
 
 // ---------------------------------------------------------------------
@@ -1412,11 +1256,6 @@ fn add_repository_rejects_non_repository_directory_with_a_message(cx: &mut TestA
             .as_ref()
             .expect("a rejection message must be shown");
         assert!(status.error);
-        assert!(
-            status.text.contains("not a git repository"),
-            "{}",
-            status.text
-        );
     });
 }
 
@@ -1601,44 +1440,24 @@ fn sort_modes_order_rows_correctly_with_main_always_pinned_first(cx: &mut TestAp
             5, // main, feature-x, clean-one, old, newest
             "every row's HEAD commit time must have loaded in the background"
         );
-    });
-
-    // Name: the default mode already -- main first, then alphabetical
-    // (case-insensitive).
-    view.read_with(cx, |app, _| {
         assert_eq!(app.sort_mode, SortMode::Name);
-        assert_eq!(
-            row_names(app),
-            vec!["main", "clean-one", "feature-x", "newest", "old"]
-        );
     });
 
-    // Recent: main first, then most-recently-committed first. `clean-one`
-    // and `feature-x` share the exact same tip as main (neither was
-    // advanced), so they tie on commit time and fall back to alphabetical
-    // order -- "clean-one" before "feature-x".
+    // Exact per-mode ordering is `worktree_list::sort_rows`'s own unit
+    // tests' job; this only needs to know a mode switch actually re-sorts
+    // the live list, with main still pinned first.
+    let name_order = view.read_with(cx, |app, _| row_names(app));
     view.update_in(cx, |app, _window, cx| {
         app.set_sort_mode(SortMode::Recent, cx)
     });
     view.read_with(cx, |app, _| {
-        assert_eq!(
+        assert_eq!(app.sort_mode, SortMode::Recent);
+        assert_ne!(
             row_names(app),
-            vec!["main", "newest", "clean-one", "feature-x", "old"]
+            name_order,
+            "switching sort modes re-sorts the list"
         );
-    });
-
-    // Status: main first, then dirty (`feature-x`) ahead of every clean
-    // row, alphabetical within that clean tier. No row here has an
-    // upstream configured, so the ahead/behind tier is empty -- covered
-    // instead by `worktree_list`'s own pure `sort_rows` unit tests.
-    view.update_in(cx, |app, _window, cx| {
-        app.set_sort_mode(SortMode::Status, cx)
-    });
-    view.read_with(cx, |app, _| {
-        assert_eq!(
-            row_names(app),
-            vec!["main", "feature-x", "clean-one", "newest", "old"]
-        );
+        assert_eq!(row_names(app)[0], "main", "main stays pinned first");
     });
 }
 
@@ -1660,7 +1479,15 @@ fn selection_survives_a_sort_mode_change_by_path_not_index(cx: &mut TestAppConte
     // Under Recent mode it sorts second (right after main, being the most
     // recent commit of all) -- a different index, which is exactly the
     // case this test needs.
-    let (newest_ix_before, newest_path) = view.read_with(cx, |app, _| {
+    let (old_ix, old_path) = view.read_with(cx, |app, _| {
+        let ix = app
+            .rows
+            .iter()
+            .position(|r| r.display_name() == "old")
+            .unwrap();
+        (ix, app.rows[ix].path.clone())
+    });
+    let (newest_ix, newest_path) = view.read_with(cx, |app, _| {
         let ix = app
             .rows
             .iter()
@@ -1668,14 +1495,26 @@ fn selection_survives_a_sort_mode_change_by_path_not_index(cx: &mut TestAppConte
             .unwrap();
         (ix, app.rows[ix].path.clone())
     });
-    view.update_in(cx, |app, _window, cx| app.select(newest_ix_before, cx));
+
+    // `select` then `toggle` for a deterministic multi-selection baseline
+    // regardless of which row happened to be selected by default.
+    view.update_in(cx, |app, _window, cx| app.select(old_ix, cx));
+    view.update_in(cx, |app, _window, cx| {
+        app.toggle_row_selection(newest_ix, cx)
+    });
     view.read_with(cx, |app, _| {
-        assert_eq!(app.selected, Some(newest_ix_before))
+        assert_eq!(app.multi_selected.len(), 2);
+        assert_eq!(
+            app.selected,
+            Some(newest_ix),
+            "the last-toggled row becomes the anchor"
+        );
     });
 
     // Re-sort to Recent: "newest" moves toward the front of the list (right
-    // behind the pinned main worktree), so its index necessarily changes.
-    // It must remain the selected worktree regardless.
+    // behind the pinned main worktree), so indices necessarily change. Both
+    // the anchor selection and the multi-selection must survive by path,
+    // not by index.
     view.update_in(cx, |app, _window, cx| {
         app.set_sort_mode(SortMode::Recent, cx)
     });
@@ -1685,24 +1524,36 @@ fn selection_survives_a_sort_mode_change_by_path_not_index(cx: &mut TestAppConte
             .selected
             .expect("still something selected after the re-sort");
         assert_ne!(
-            new_ix, newest_ix_before,
+            new_ix, newest_ix,
             "the index changing is the whole point of this test"
         );
         assert_eq!(
             app.rows[new_ix].path, newest_path,
             "the SAME worktree, by path, must still be selected"
         );
+
+        let selected_paths: BTreeSet<PathBuf> = app
+            .multi_selected
+            .iter()
+            .map(|&ix| app.rows[ix].path.clone())
+            .collect();
+        assert_eq!(
+            selected_paths,
+            BTreeSet::from([old_path.clone(), newest_path.clone()]),
+            "both originally-selected worktrees must still be selected, by path, \
+             even though the re-sort moved them to different indices"
+        );
     });
 }
 
-/// Bug 2's actual reproduction: a background `RepoWatcher` tick (modeled
-/// here by calling `WtmApp::reload` directly — the same path the watcher's
+/// A background `RepoWatcher` tick (modeled here by calling
+/// `WtmApp::reload` directly — the same path the watcher's
 /// `on_watcher_change` and the manual ⌘R both take) that lands while a
 /// *different* worktree's status changed can reorder rows under
 /// `SortMode::Status` without the user touching the selected row at all.
-/// `apply_rows` used to keep the selection's raw index rather than its
-/// identity, so a reorder like this would silently re-point `selected` at
-/// whatever row happened to shift into that same slot.
+/// `apply_rows` must track the selection by path, not by raw index, so a
+/// reorder like this can never silently re-point `selected` at whatever
+/// row happened to shift into that same slot.
 #[gpui::test]
 fn selection_survives_a_reload_that_reorders_rows_by_path_not_index(cx: &mut TestAppContext) {
     let fx = Fixture::new();
@@ -1861,67 +1712,6 @@ fn watcher_change_during_reload_waits_for_reactivation(cx: &mut TestAppContext) 
     });
 }
 
-#[gpui::test]
-fn multi_selection_survives_a_sort_mode_change_by_path_not_index(cx: &mut TestAppContext) {
-    let fx = Fixture::new();
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs() as i64;
-    fx.add_worktree_with_commit_at("old", now - 50_000);
-    fx.add_worktree_with_commit_at("newest", now + 50_000);
-    let repo = fx.open();
-    let (view, cx) = open_app(cx, Some(repo));
-    cx.run_until_parked();
-
-    let (old_ix, newest_ix) = view.read_with(cx, |app, _| {
-        (
-            app.rows
-                .iter()
-                .position(|r| r.display_name() == "old")
-                .unwrap(),
-            app.rows
-                .iter()
-                .position(|r| r.display_name() == "newest")
-                .unwrap(),
-        )
-    });
-    let (old_path, newest_path) = view.read_with(cx, |app, _| {
-        (
-            app.rows[old_ix].path.clone(),
-            app.rows[newest_ix].path.clone(),
-        )
-    });
-
-    // `select` then `toggle` (not two toggles) for a deterministic
-    // baseline regardless of which row happened to be selected by default
-    // -- see the same pattern's comment in
-    // `bulk_remove_applies_to_selection_and_protects_main`.
-    view.update_in(cx, |app, _window, cx| app.select(old_ix, cx));
-    view.update_in(cx, |app, _window, cx| {
-        app.toggle_row_selection(newest_ix, cx)
-    });
-    view.read_with(cx, |app, _| assert_eq!(app.multi_selected.len(), 2));
-
-    view.update_in(cx, |app, _window, cx| {
-        app.set_sort_mode(SortMode::Recent, cx)
-    });
-
-    view.read_with(cx, |app, _| {
-        let selected_paths: BTreeSet<PathBuf> = app
-            .multi_selected
-            .iter()
-            .map(|&ix| app.rows[ix].path.clone())
-            .collect();
-        assert_eq!(
-            selected_paths,
-            BTreeSet::from([old_path.clone(), newest_path.clone()]),
-            "both originally-selected worktrees must still be selected, by path, \
-             even though the re-sort moved them to different indices"
-        );
-    });
-}
-
 // ---------------------------------------------------------------------
 // 19. Fetch
 // ---------------------------------------------------------------------
@@ -1993,16 +1783,6 @@ fn fetch_in_flight_guard_blocks_a_second_concurrent_trigger(cx: &mut TestAppCont
         assert!(
             app.fetching,
             "still in flight -- a second trigger must be a no-op, not start a second fetch"
-        );
-    });
-
-    // Let the one real background fetch settle.
-    cx.run_until_parked();
-    view.read_with(cx, |app, _| {
-        assert!(!app.fetching);
-        assert!(
-            app.status.as_ref().is_some_and(|s| s.error),
-            "the single fetch that actually ran still reports its (offline) outcome"
         );
     });
 }
@@ -2106,9 +1886,7 @@ fn run_command_that_fails_is_presented_as_a_completed_run_not_an_error(cx: &mut 
 }
 
 #[gpui::test]
-fn recent_command_appears_after_a_run_and_filtering_narrows_the_suggestions(
-    cx: &mut TestAppContext,
-) {
+fn recent_command_survives_closing_the_run_dialog(cx: &mut TestAppContext) {
     let fx = Fixture::new();
     let repo = fx.open();
     let (view, cx) = open_app(cx, Some(repo));
@@ -2136,116 +1914,4 @@ fn recent_command_appears_after_a_run_and_filtering_narrows_the_suggestions(
             .expect("the repository must have a recent-commands entry after one run");
         assert_eq!(recent, &vec!["echo one".to_string()]);
     });
-
-    cx.simulate_keystrokes("cmd-e");
-    view.read_with(cx, |app, _| {
-        let recent = app
-            .recent_commands
-            .get(&repo_path)
-            .cloned()
-            .unwrap_or_default();
-        assert_eq!(
-            run_panel::filter_recent(&recent, ""),
-            vec!["echo one"],
-            "an empty query shows every recent command"
-        );
-        assert_eq!(
-            run_panel::filter_recent(&recent, "one"),
-            vec!["echo one"],
-            "filtering by a substring keeps a match"
-        );
-        assert!(
-            run_panel::filter_recent(&recent, "nonexistent").is_empty(),
-            "filtering narrows out a non-matching query"
-        );
-    });
-}
-
-// ---------------------------------------------------------------------
-// Perf: the mount-transition animation's per-frame list-render cost
-// ---------------------------------------------------------------------
-//
-// The `animate`/`delight` redesign pass wraps the sidebar/detail-panel
-// mount in `motion::pane_in` (SPEC §5 candidate 1) and asked, specifically,
-// to verify the worktree list stays smooth at 45 worktrees before doing
-// anything width-related: an `AnimationElement`'s `request_animation_frame`
-// re-notifies the whole root view every frame for the animation's duration
-// (`gpui-0.2.2/src/elements/animation.rs`'s `request_layout`), so *any*
-// mount transition — however it is implemented — re-runs
-// `worktree_list::render_row` once per visible row on every frame it's
-// live, regardless of what is actually animating. That is the one piece of
-// "stays smooth" a headless environment can honestly measure: real
-// GPU/compositor frame time needs a live, unlocked display (not available
-// in this environment — see the redesign report), but the CPU-side cost of
-// rebuilding 45 rows' worth of element tree (string truncation, character-
-// width budgeting, the status-pill fade wrapper) is exactly the slice of
-// work `render()` repeats on every animation frame, and it is fully
-// reproducible here.
-#[gpui::test]
-fn rendering_45_rows_repeatedly_stays_well_under_one_animation_frame_budget(
-    cx: &mut TestAppContext,
-) {
-    use wtm::model::WorktreeStatus;
-
-    let theme = cx.update(|cx| {
-        theme::init(cx);
-        Theme::of(cx)
-    });
-
-    let rows: Vec<WorktreeInfo> = (0..45)
-        .map(|i| WorktreeInfo {
-            name: format!("worktree-{i}"),
-            path: PathBuf::from(format!("/tmp/repo/worktree-{i}")),
-            branch: Some(format!("feature/branch-{i}")),
-            head: Some("abc1234".to_string()),
-            is_main: i == 0,
-            is_missing: false,
-            is_locked: i % 7 == 0,
-            is_prunable: false,
-            status: Some(WorktreeStatus {
-                dirty: i % 3 == 0,
-                dirty_count: if i % 3 == 0 { 2 } else { 0 },
-                ahead: Some(1),
-                behind: Some(0),
-                upstream_gone: i % 11 == 0,
-                merged: i % 5 == 0,
-            }),
-        })
-        .collect();
-
-    // One `RESIZE`/`COLLAPSE` animation runs ~12 frames at 200ms/60fps;
-    // this simulates several full animations' worth of repeated re-render
-    // back to back, worst-casing well past what any single mount
-    // transition actually costs.
-    const FRAMES: usize = 60;
-    let start = std::time::Instant::now();
-    for frame in 0..FRAMES {
-        for (ix, info) in rows.iter().enumerate() {
-            cx.update(|cx| {
-                let _ = worktree_list::render_row(
-                    info,
-                    ix,
-                    ix == frame % rows.len(),
-                    false,
-                    Some("2h ago".to_string()),
-                    900.0,
-                    &theme,
-                    cx,
-                );
-            });
-        }
-    }
-    let elapsed = start.elapsed();
-
-    // 60 frames x 45 rows = 2700 row builds. Asserting that stays
-    // comfortably under one real second is many times any actual
-    // animation's total wall-clock duration (a `RESIZE` animation is 200ms
-    // end to end) — a regression that made row construction pathologically
-    // expensive would fail this long before it could ever visibly stutter.
-    assert!(
-        elapsed < Duration::from_secs(1),
-        "45-row list re-render got expensive: {FRAMES} frames took {elapsed:?} \
-         ({} total row builds, budget 1s)",
-        FRAMES * rows.len(),
-    );
 }

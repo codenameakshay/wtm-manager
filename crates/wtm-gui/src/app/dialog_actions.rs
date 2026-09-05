@@ -39,7 +39,7 @@ impl WtmApp {
             return;
         }
         let Some(repo) = self.active.clone() else {
-            self.set_status("open a repository first", true);
+            self.set_error("open a repository first", cx);
             cx.notify();
             return;
         };
@@ -82,10 +82,10 @@ impl WtmApp {
     /// binding (which resolves `info` from `self.selected`) and a worktree
     /// row's context menu (which resolves it from the right-clicked path).
     ///
-    /// This dialog has no text field, so per COMPONENTS.md's modal-focus-
-    /// management requirement, focus lands on `self.dialog_safe_focus`
-    /// (tracked by the Cancel button in `dialog_forms::render_remove_dialog`)
-    /// — the safe action, never the destructive `Remove` button.
+    /// This dialog has no text field, so focus lands on
+    /// `self.dialog_safe_focus` (tracked by the Cancel button in
+    /// `dialog_forms::render_remove_dialog`) — the safe action, never the
+    /// destructive `Remove` button.
     pub(super) fn open_remove_dialog_for(
         &mut self,
         info: WorktreeInfo,
@@ -117,7 +117,7 @@ impl WtmApp {
             return;
         }
         let Some(repo) = self.active.clone() else {
-            self.set_status("open a repository first", true);
+            self.set_error("open a repository first", cx);
             cx.notify();
             return;
         };
@@ -167,7 +167,8 @@ impl WtmApp {
     /// is not one.
     pub(crate) fn close_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let closed_dialog = self.dialog.take().is_some();
-        let closed_settings = std::mem::take(&mut self.settings_open);
+        let closed_settings = self.settings_open;
+        self.settings_open = false;
         let closed_palette = self.palette.take().is_some();
         let closed_bulk_remove = self.bulk_remove.take().is_some();
         // Taking `run_command` here does not stop whatever command is still
@@ -213,7 +214,7 @@ impl WtmApp {
                     }
                 }
                 if let Some(e) = error {
-                    this.set_status(format!("could not list branches: {e}"), true);
+                    this.set_error(format!("could not list branches: {e}"), cx);
                 }
                 cx.notify();
             })
@@ -247,10 +248,7 @@ impl WtmApp {
         let Some(repo) = self.active.clone() else {
             return;
         };
-        let current_worktree = self
-            .selected
-            .and_then(|ix| self.rows.get(ix))
-            .map(|w| w.path.clone());
+        let current_worktree = self.selected_worktree_path();
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_spawn(
@@ -266,7 +264,7 @@ impl WtmApp {
                     }
                 }
                 if let Some(e) = error {
-                    this.set_status(format!("could not list refs: {e}"), true);
+                    this.set_error(format!("could not list refs: {e}"), cx);
                 }
                 cx.notify();
             })
@@ -296,8 +294,8 @@ impl WtmApp {
     }
 
     /// Show the Base field's ref picker — `CreateState::new`'s reaction to
-    /// `base_input` gaining focus. A no-op once the dialog is no longer in
-    /// its form phase (or gone entirely), which a late-firing focus event
+    /// `base_input` gaining focus. A no-op once the dialog has moved past
+    /// its form phase (or closed entirely), which a late-firing focus event
     /// can still deliver after the user has already submitted or cancelled.
     pub(crate) fn open_base_picker(&mut self, cx: &mut Context<Self>) {
         if let Some(Dialog::Create(state)) = &mut self.dialog {
@@ -464,7 +462,7 @@ impl WtmApp {
         // friends), so handing focus back to it here is safe even though
         // the dialog is still open — it just means Escape (bound at the
         // root) keeps closing the dialog while the create streams in,
-        // instead of focus dangling on an element that no longer exists.
+        // instead of focus dangling on an unmounted element.
         window.focus(&self.focus_handle);
         cx.notify();
 
@@ -494,20 +492,37 @@ impl WtmApp {
         })
         .detach();
 
+        Self::drain_stream(
+            cx,
+            rx,
+            |msg| matches!(msg, StreamMsg::Done(_)),
+            |this, batch, cx| this.apply_create_stream(batch, cx),
+        );
+    }
+
+    /// Drain an mpsc stream of background-thread messages onto the
+    /// foreground entity, batching whatever has already queued up before
+    /// each apply. Shared by the create dialog's progress stream and the
+    /// run-command dialog's output stream — both need the same
+    /// TestDispatcher-safe polling (a blocking std receiver would stall the
+    /// cooperative test executor) and the same "batch until Done, apply,
+    /// stop once the entity or the stream is gone" shape.
+    fn drain_stream<M: Send + 'static>(
+        cx: &mut Context<Self>,
+        rx: mpsc::Receiver<M>,
+        is_done: fn(&M) -> bool,
+        apply: impl Fn(&mut WtmApp, Vec<M>, &mut Context<WtmApp>) + Send + 'static,
+    ) {
         cx.spawn(async move |this, cx| {
             #[cfg(not(test))]
             let mut rx = rx;
             #[cfg(test)]
             let rx = rx;
             loop {
-                // TestDispatcher runs background tasks cooperatively, so a
-                // blocking std receiver would stall the test thread. Keep
-                // this test-only path deterministic; production waits on
-                // the background executor without polling or timers.
                 #[cfg(test)]
                 let first = loop {
                     match rx.try_recv() {
-                        Ok(msg) => break Result::<StreamMsg, mpsc::RecvError>::Ok(msg),
+                        Ok(msg) => break Result::<M, mpsc::RecvError>::Ok(msg),
                         Err(mpsc::TryRecvError::Disconnected) => return,
                         Err(mpsc::TryRecvError::Empty) => {}
                     }
@@ -531,16 +546,14 @@ impl WtmApp {
                 };
                 let mut batch = vec![first];
                 while let Ok(msg) = rx.try_recv() {
-                    let is_done = matches!(msg, StreamMsg::Done(_));
+                    let done = is_done(&msg);
                     batch.push(msg);
-                    if is_done {
+                    if done {
                         break;
                     }
                 }
-                let finished = batch.iter().any(|msg| matches!(msg, StreamMsg::Done(_)));
-                let alive = this
-                    .update(cx, |this, cx| this.apply_create_stream(batch, cx))
-                    .is_ok();
+                let finished = batch.iter().any(is_done);
+                let alive = this.update(cx, |this, cx| apply(this, batch, cx)).is_ok();
                 if !alive {
                     return;
                 }
@@ -688,7 +701,11 @@ impl WtmApp {
                         true,
                     ),
                 };
-                self.set_status(message, is_error);
+                if is_error {
+                    self.set_error(message, cx);
+                } else {
+                    self.set_info(message, cx);
+                }
                 self.reload(cx);
             }
             Err(e) => {
@@ -709,10 +726,9 @@ impl WtmApp {
         let Some(repo) = self.active.clone() else {
             return;
         };
-        let rows = self.rows.clone();
         if let Some(Dialog::Prune(state)) = &mut self.dialog {
             state.merged = !state.merged;
-            state.recompute(&repo, &rows);
+            state.recompute(&repo, &self.rows);
         }
         cx.notify();
     }
@@ -721,10 +737,9 @@ impl WtmApp {
         let Some(repo) = self.active.clone() else {
             return;
         };
-        let rows = self.rows.clone();
         if let Some(Dialog::Prune(state)) = &mut self.dialog {
             state.gone = !state.gone;
-            state.recompute(&repo, &rows);
+            state.recompute(&repo, &self.rows);
         }
         cx.notify();
     }
@@ -761,12 +776,17 @@ impl WtmApp {
         .detach();
     }
 
-    /// Report the full `PruneReport` honestly: never claim success when
-    /// `failures` is non-empty, and name what was skipped for being dirty.
     fn finish_prune_dialog(&mut self, report: PruneReport, cx: &mut Context<Self>) {
         self.dialog = None;
+        self.report_prune("pruned", report, cx);
+    }
+
+    /// Report a `PruneReport` honestly: never claim success when `failures`
+    /// is non-empty, and name what was skipped for being dirty. Shared by
+    /// the Prune dialog and bulk remove, which differ only in the verb.
+    fn report_prune(&mut self, verb: &str, report: PruneReport, cx: &mut Context<Self>) {
         let mut parts = vec![format!(
-            "pruned {} worktree{}",
+            "{verb} {} worktree{}",
             report.removed,
             if report.removed == 1 { "" } else { "s" }
         )];
@@ -777,7 +797,12 @@ impl WtmApp {
         if has_failures {
             parts.push(format!("failed: {}", report.failures.join("; ")));
         }
-        self.set_status(parts.join(" · "), has_failures);
+        let message = parts.join(" · ");
+        if has_failures {
+            self.set_error(message, cx);
+        } else {
+            self.set_info(message, cx);
+        }
         self.reload(cx);
         cx.notify();
     }
@@ -847,8 +872,7 @@ impl WtmApp {
         let Some(state) = &mut self.palette else {
             return;
         };
-        let next = (state.highlighted as i32 + delta).rem_euclid(results.len() as i32) as usize;
-        state.highlighted = next;
+        state.highlighted = dialogs::move_highlight(state.highlighted, delta, results.len());
         state.scroll_highlighted_into_view(worktree_count, command_count);
         cx.notify();
     }
@@ -950,7 +974,7 @@ impl WtmApp {
                 self.on_show_changes_tab(&ShowChangesTab, window, cx)
             }
             palette::CommandId::RunCommand => self.on_run_command(&RunCommand, window, cx),
-            palette::CommandId::OpenRemote => self.on_open_remote(&OpenRemote, window, cx),
+            palette::CommandId::OpenRemote => self.open_remote_selected(window, cx),
         }
     }
 
@@ -1020,9 +1044,9 @@ impl WtmApp {
             .collect();
         let candidates = data::selection_candidates(&repo, rows);
         if candidates.is_empty() {
-            self.set_status(
+            self.set_error(
                 "nothing to remove — the selection is only the main worktree and/or protected branches",
-                true,
+                cx,
             );
             cx.notify();
             return;
@@ -1065,32 +1089,13 @@ impl WtmApp {
         .detach();
     }
 
-    /// Report the full `PruneReport` honestly, the same way
-    /// `finish_prune_dialog` already does for the single-target Prune
-    /// dialog: "some removed, some skipped (dirty), some failed" is a real
-    /// outcome for a batch operation, not something to collapse into a
-    /// single success/failure. Always closes the confirmation — a partial
-    /// result is reported via the status line, not by leaving a modal open
-    /// the way the single-target Remove dialog does for its one-item
-    /// `Result`.
+    /// Always closes the confirmation — a partial result is reported via
+    /// the status line, not by leaving a modal open the way the
+    /// single-target Remove dialog does for its one-item `Result`.
     fn finish_bulk_remove(&mut self, report: PruneReport, cx: &mut Context<Self>) {
         self.bulk_remove = None;
         self.multi_selected.clear();
-        let mut parts = vec![format!(
-            "removed {} worktree{}",
-            report.removed,
-            if report.removed == 1 { "" } else { "s" }
-        )];
-        if !report.skipped.is_empty() {
-            parts.push(format!("skipped (dirty): {}", report.skipped.join(", ")));
-        }
-        let has_failures = !report.failures.is_empty();
-        if has_failures {
-            parts.push(format!("failed: {}", report.failures.join("; ")));
-        }
-        self.set_status(parts.join(" · "), has_failures);
-        self.reload(cx);
-        cx.notify();
+        self.report_prune("removed", report, cx);
     }
 
     // -------------------------------------------------------------
@@ -1106,10 +1111,7 @@ impl WtmApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(ix) = self.selected else {
-            return;
-        };
-        let Some(info) = self.rows.get(ix).cloned() else {
+        let Some(info) = self.selected_row().cloned() else {
             return;
         };
         self.open_run_command_dialog(info, window, cx);
@@ -1208,62 +1210,12 @@ impl WtmApp {
         })
         .detach();
 
-        cx.spawn(async move |this, cx| {
-            #[cfg(not(test))]
-            let mut rx = rx;
-            #[cfg(test)]
-            let rx = rx;
-            loop {
-                #[cfg(test)]
-                let first = loop {
-                    match rx.try_recv() {
-                        Ok(msg) => {
-                            break Result::<run_panel::RunStreamMsg, mpsc::RecvError>::Ok(msg)
-                        }
-                        Err(mpsc::TryRecvError::Disconnected) => return,
-                        Err(mpsc::TryRecvError::Empty) => {}
-                    }
-                    cx.background_executor()
-                        .timer(std::time::Duration::from_millis(16))
-                        .await;
-                };
-                #[cfg(not(test))]
-                let first = {
-                    let (first, returned_rx) = cx
-                        .background_spawn(async move {
-                            let first = rx.recv();
-                            (first, rx)
-                        })
-                        .await;
-                    rx = returned_rx;
-                    first
-                };
-                let Ok(first) = first else {
-                    return;
-                };
-                let mut batch = vec![first];
-                while let Ok(msg) = rx.try_recv() {
-                    let is_done = matches!(msg, run_panel::RunStreamMsg::Done(_));
-                    batch.push(msg);
-                    if is_done {
-                        break;
-                    }
-                }
-                let finished = batch
-                    .iter()
-                    .any(|msg| matches!(msg, run_panel::RunStreamMsg::Done(_)));
-                let alive = this
-                    .update(cx, |this, cx| this.apply_run_command_stream(batch, cx))
-                    .is_ok();
-                if !alive {
-                    return;
-                }
-                if finished {
-                    break;
-                }
-            }
-        })
-        .detach();
+        Self::drain_stream(
+            cx,
+            rx,
+            |msg| matches!(msg, run_panel::RunStreamMsg::Done(_)),
+            |this, batch, cx| this.apply_run_command_stream(batch, cx),
+        );
     }
 
     /// Apply a batch of streamed events to the running view. A no-op if the
