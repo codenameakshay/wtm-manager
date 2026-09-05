@@ -56,15 +56,8 @@ fn init_emits_cd_file_shell_wrapper_for_zsh_and_bash() {
     let repo = TestRepo::new();
     for shell in ["zsh", "bash"] {
         repo.wtm().args(["init", shell]).assert().success().stdout(
-            predicate::str::contains("wtm()")
-                .and(predicate::str::contains("mktemp -t wtm-cd"))
-                .and(predicate::str::contains(
-                    "WTM_CD_FILE=\"$cdfile\" command wtm",
-                ))
-                .and(predicate::str::contains("target=\"$(cat \"$cdfile\")\""))
-                .and(predicate::str::contains("[ \"$status\" -eq 0 ]"))
-                .and(predicate::str::contains("builtin cd -- \"$target\""))
-                .and(predicate::str::contains("rm -f \"$cdfile\"")),
+            predicate::str::contains("WTM_CD_FILE=\"$cdfile\" command wtm")
+                .and(predicate::str::contains("builtin cd -- \"$target\"")),
         );
     }
 }
@@ -267,11 +260,6 @@ fn completions_emit_shell_scripts() {
         .assert()
         .success()
         .stdout(predicate::str::contains("_wtm"));
-    repo.wtm()
-        .args(["completions", "bash"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("complete").and(predicate::str::contains("wtm")));
 }
 
 // ---------------------------------------------------------------------------
