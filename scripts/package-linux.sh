@@ -118,26 +118,10 @@ esac
 # Build
 # ---------------------------------------------------------------------------
 
-# cargo writes build artifacts under $CARGO_TARGET_DIR when it's set, not
-# under <repo>/target — and container/CI builds routinely set it (see the
-# -e CARGO_TARGET_DIR=/target example in the usage text above). Hardcoding
-# "$repo_root/target" here would make the script look in the wrong place
-# whenever a build ran that way: cargo would succeed, and this script would
-# then either fail to find the binary or, worse, pick up a stale one left
-# over from an unrelated build, despite the real binary sitting right there
-# under $CARGO_TARGET_DIR. So resolve the target directory the same way
-# cargo does — do not "simplify" this back to a hardcoded path.
-#
-# Per Cargo's docs, a relative CARGO_TARGET_DIR is resolved against the
-# current working directory cargo runs in, not the repo root. When this
-# script performs the build itself it always invokes cargo from
-# "$repo_root" (see the `cd "$repo_root" &&` below), so a relative value
-# resolves against $repo_root here too. With --skip-build, though, cargo
-# never runs in this script at all — the binary was produced by some other
-# invocation whose working directory we have no way to know, so a relative
-# CARGO_TARGET_DIR can't be resolved correctly here. Rather than guess (and
-# risk silently assembling a tarball around the wrong binary), fail loudly
-# and ask for an absolute path in that case.
+# Resolve the target dir the way cargo does, since CI/container builds
+# routinely set CARGO_TARGET_DIR. A relative value is only resolvable when
+# this script itself invokes cargo from $repo_root; with --skip-build it
+# can't be, so that combination is rejected below rather than guessed at.
 if [ -n "${CARGO_TARGET_DIR:-}" ]; then
 	case "$CARGO_TARGET_DIR" in
 	/*) target_dir="$CARGO_TARGET_DIR" ;; # already absolute

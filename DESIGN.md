@@ -6,8 +6,9 @@ here must stay aligned with the implementation; update this contract whenever
 they change.
 
 Conventions:
-- Library code returns `crate::error::Result<T>` (`crate::Error`), never `anyhow`.
-- `anyhow` is used only in `src/main.rs`.
+- Library code returns `crate::error::Result<T>` (`crate::error::Error`).
+  `main.rs` formats an error as `error: {err}` (via `owo_colors`, not `anyhow`
+  — the crate has no `anyhow` dependency).
 - No panics on user error. `unwrap()` only where infallibility is locally provable.
 - All reads via `git2`; process spawn of `git` ONLY in `src/gitcmd.rs`.
 - Edition 2021, MSRV 1.88, `cargo fmt` default style, `clippy -D warnings`,
@@ -45,7 +46,10 @@ pub fn discover(start: Option<&Path>) -> Result<RepoContext>;
 Implementation notes: `git2::Repository::discover`; if `repo.is_worktree()`,
 the main `.git` dir is `repo.commondir()` and `main_root` is its parent.
 Otherwise `main_root = repo.workdir()` (error `BareRepo` if `None`).
-Canonicalize paths (macOS `/private/tmp` vs `/tmp` must compare equal).
+Canonicalize paths (macOS `/private/tmp` vs `/tmp` must compare equal) via
+`pub fn canonicalize_lossy(path: &Path) -> PathBuf`, which falls back to the
+original path when canonicalization fails; every "canonicalize or fall back"
+site in the crate shares it.
 
 ## src/worktree.rs — registry enumeration + status (perf-critical)
 
@@ -85,6 +89,13 @@ pub fn find(ctx: &RepoContext, name: &str) -> Result<WorktreeInfo>;
 pub fn containing(ctx: &RepoContext, path: &std::path::Path) -> Result<Option<WorktreeInfo>>;
 ```
 
+`pub fn dirty_status_options() -> git2::StatusOptions` builds the shared
+`include_untracked(true)`/`include_ignored(false)`/`exclude_submodules(true)`
+triple; every dirty check in the crate (and `commands::remove::is_dirty`)
+uses it so "dirty" means the same thing everywhere. `pub fn upstream_gone(repo,
+branch) -> bool` holds the upstream-gone rule below, shared with the GUI's
+branch listing.
+
 Status semantics (document + unit-test these in-module):
 - dirty: `repo.statuses` with `include_untracked(true)`, ignored excluded,
   `exclude_submodules(true)` → any entry ⇒ dirty.
@@ -113,6 +124,11 @@ use crate::error::Result;
 /// Error::GitCommand with captured stderr.
 pub fn run(cwd: &Path, args: &[&str]) -> Result<()>;
 
+/// Run `git <args>`, returning the captured output regardless of exit
+/// status. Errors only if the process cannot be spawned. Used by the GUI
+/// (`data::fetch`) so it never spawns `git` directly.
+pub fn run_capture(cwd: &Path, args: &[&str]) -> Result<std::process::Output>;
+
 /// Add an existing branch. Quiet captures Git output; otherwise it streams.
 pub fn worktree_add(main_root: &Path, path: &Path, branch: &str, quiet: bool) -> Result<()>;
 /// Create and add a branch. Quiet captures Git output; otherwise it streams.
@@ -124,6 +140,43 @@ pub fn worktree_prune(main_root: &Path) -> Result<()>;
 /// `git branch -D <name>` (only ever called after explicit user opt-in).
 pub fn branch_delete(main_root: &Path, name: &str) -> Result<()>;
 ```
+
+## src/registry.rs — known-repository registry (GUI sidebar)
+
+`pub struct Registry { .. }` holds `Vec<RepoEntry>` (path/name/last_opened),
+loaded from and saved to `$WTM_CONFIG_DIR/repos.json` (atomic temp-file +
+rename). `pub fn load() -> Registry` degrades to an empty registry on any
+read/parse failure — a broken cache must never stop the app starting.
+`pub fn remember(path: &Path, name: &str) -> Result<()>` records a repo and
+persists immediately; `Registry::forget` drops an entry in memory only. The
+CLI never touches this file; it always discovers a repo from the cwd.
+
+## src/cdfile.rs — `--cd` / shell wrapper handoff
+
+`pub fn request(path: &Path) -> Result<bool>` writes `path` to the file named
+by `$WTM_CD_FILE` (set by the `wtm init` shell wrapper) so the parent shell
+can `cd` into it; returns `false` when the env var is unset, so callers fall
+back to printing the path. Refuses to write to anything but a private,
+regular, non-symlink file inside the system temp directory with a `wtm-cd.`
+prefix.
+
+## src/model.rs — `WorktreeInfo` / `WorktreeStatus`
+
+Plain, serde-`Serialize` data: `WorktreeInfo` is everything `wtm list --json`
+emits for one worktree (name/path/branch/head/flags plus an optional
+`status`); `WorktreeStatus` is the expensive per-worktree fields
+(dirty/dirty_count/ahead/behind/upstream_gone/merged) computed by
+`worktree::list` when status is requested. Field names are the stable JSON
+contract — do not rename without a version bump plan.
+
+## src/clipboard.rs — system clipboard
+
+`pub fn copy(text: &str) -> Result<&'static str>` copies to the system
+clipboard via the first available platform tool (`pbcopy` on macOS;
+`wl-copy`/`xclip -selection clipboard`/`xsel -ib` elsewhere), returning that
+tool's name, or `Error::Other` naming every tool tried. Shared by the TUI
+(which falls back to an OSC 52 terminal escape sequence on failure) and the
+GUI (which has no terminal to fall back into).
 
 ## src/config.rs — layered configuration
 
@@ -182,9 +235,6 @@ impl Default for Config { /* built-in defaults above */ }
 /// the file path.
 pub fn load(repo_root: &Path) -> Result<Config>;
 
-/// Merge a parsed file over a config (exposed for unit tests).
-pub fn merge(base: Config, layer: ConfigFile) -> Config;
-
 /// Path of the global config file (honoring $WTM_CONFIG_DIR override).
 pub fn global_config_path() -> Option<PathBuf>;
 
@@ -216,10 +266,9 @@ pub struct TemplateContext<'a> {
 /// and "."). Absolute results are normalized too.
 pub fn render(template: &str, ctx: &TemplateContext) -> Result<PathBuf>;
 
-/// Filesystem-safe branch slug: '/' and any char outside [A-Za-z0-9._-]
-/// become '-', runs collapse, leading/trailing '-' trimmed, never empty
-/// (fallback "branch"). Case preserved.
-pub fn slugify(branch: &str) -> String;
+// `{slug}` (private `slugify`): '/' and any char outside [A-Za-z0-9._-]
+// become '-', runs collapse, leading/trailing '-' trimmed, never empty
+// (fallback "branch"). Case preserved.
 
 /// Lexical normalization helper (pub for reuse/tests).
 pub fn normalize(path: &Path) -> PathBuf;
@@ -245,6 +294,14 @@ use crate::error::Result;
 pub fn run(config: &Config, main_root: &Path, worktree: &Path, quiet: bool) -> Result<()>;
 ```
 
+`run_streaming(config, main_root, worktree, sink: &mut dyn FnMut(SetupEvent)) ->
+Result<()>` runs the same steps in the same order with the same error
+semantics as `run`, but for callers with no stdio to inherit into (the GUI):
+copy entries and each command's combined stdout/stderr are captured and
+reported through `sink` as `SetupEvent::{CopyStarted, CopyFinished,
+CommandStarted, CommandOutput, CommandFinished}` instead of being printed or
+inherited.
+
 ## src/output.rs — rendering
 
 ```rust
@@ -256,6 +313,15 @@ pub enum ColorMode { Auto, Always, Never }
 /// True when color should be used on stdout: mode Always ⇒ true; Never ⇒
 /// false; Auto ⇒ stdout is a TTY AND env NO_COLOR is unset/empty.
 pub fn use_color(mode: ColorMode) -> bool;
+
+/// Shared Always/Never/Auto + NO_COLOR decision for any stream, given
+/// whether that stream is a TTY. `use_color` and `main.rs`'s stderr color
+/// check both call this.
+pub fn color_enabled(mode: ColorMode, is_tty: bool) -> bool;
+
+/// Replace a leading `$HOME` prefix with `~` (used by `render_table` and the
+/// GUI's path display).
+pub fn abbreviate_path(path: &std::path::Path, home: Option<&std::path::Path>) -> String;
 
 /// Human table for `wtm list`. Columns: NAME (branch or registry name, main
 /// marked), PATH (with ~ abbreviation), HEAD, AHEAD/BEHIND ("↑2 ↓1", "-"
@@ -275,7 +341,9 @@ pub fn render_json(items: &[WorktreeInfo]) -> String;
 #[derive(clap::Parser)]
 #[command(name = "wtm", version, about, propagate_version = true)]
 pub struct Cli {
-    #[command(subcommand)] pub command: Command,
+    // `None` ⇒ bare `wtm`: open the desktop app on a terminal (falling back
+    // to the TUI when the app is not installed), print help otherwise.
+    #[command(subcommand)] pub command: Option<Command>,
     #[command(flatten)] pub global: GlobalArgs,
 }
 
@@ -298,6 +366,8 @@ pub enum Command {
     Prune(PruneArgs),    // alias: clean; --merged --gone --dry-run --force
     Open(OpenArgs),      // --with <cmd>
     Path(PathArgs),
+    App,                 // alias: gui; open the desktop app
+    Tui,                 // alias: ui; the full-screen interactive TUI
     Init(InitArgs),      // shell: zsh|bash (ValueEnum Shell)
     Completions(CompletionsArgs),
     Config(ConfigArgs),  // subcommands: path, init
@@ -396,10 +466,10 @@ completions bash)"`.
 
 ## src/main.rs — thin entrypoint
 
-Parse Cli, dispatch to commands::run(cli), map Err to stderr message
-(`error: {err:#}` styled red when stderr color allowed) and exit code 1
-(clap handles usage errors with exit 2 itself). Interactive picker
-cancellation is a silent success. No other logic.
+Parse Cli, dispatch to `commands::dispatch(&cli)`, map Err to a stderr message
+(`error: {err}`, styled red via `owo_colors` when `output::color_enabled`
+allows it) and exit code 1 (clap handles usage errors with exit 2 itself).
+Interactive picker cancellation is a silent success. No other logic.
 
 ## Performance rules
 - Never spawn `git` on a read path.
@@ -415,11 +485,10 @@ cancellation is a silent success. No other logic.
 
 A separate crate from everything above (`crates/wtm-gui/`, the desktop app;
 depends on `gpui = "0.2.2"` from crates.io, not a Zed git fork). The `src/`
-conventions at the top of this file (`crate::error::Result`, no `anyhow`
-outside `main.rs`) do not apply here — `wtm-gui` is a `gpui::App` with its
-own error handling. This section is the contract for its token/motion
-system, the thing most likely to be "simplified" back into a defect by a
-future edit.
+convention at the top of this file (`crate::error::Result`) does not apply
+here — `wtm-gui` is a `gpui::App` with its own error handling. This section
+is the contract for its token/motion system, the thing most likely to be
+"simplified" back into a defect by a future edit.
 
 ### Token layers
 

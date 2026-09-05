@@ -9,20 +9,6 @@
 //! there is no click handler for a caller to attach; `render_diff`/
 //! `render_changes` are ready to drop straight into an element tree.
 //!
-//! ## Font
-//!
-//! The diff body uses [`ui::FONT_MONO`] (Geist Mono, bundled — SPEC §6: diff
-//! content is one of the things that gets the app's own mono face, the same
-//! one paths/shas/branch names use in meta position). Pre-redesign this used
-//! the platform's own "SF Mono", falling through "Menlo"/"Monaco"/"Courier
-//! New" — those four now sit *after* the bundled face in the fallback list
-//! (see [`MONOSPACE_FALLBACKS`]) rather than being the primary, so a
-//! diff still renders in something reasonably monospace on the rare path
-//! where font registration fails (SPEC §6: that failure is non-fatal).
-//! `gpui`'s font resolution falls through this list if an earlier name
-//! doesn't resolve in the current font context, rather than silently
-//! substituting the UI's proportional face for code.
-//!
 //! ## Long lines
 //!
 //! A diff line is rendered `whitespace_nowrap()` with no `min_w_0()`/
@@ -37,34 +23,15 @@
 //! diff, not just one.
 
 use gpui::prelude::*;
-use gpui::{div, font, px, AnyElement, Font, FontFallbacks, Hsla, SharedString};
+use gpui::{div, px, AnyElement, Hsla, SharedString};
 
 use crate::data::{DiffHunk, DiffLine, DiffLineKind, FileDiff};
 use crate::file_browser::{status_color, status_label};
 use crate::theme::{Theme, RADIUS_CONTROL, SPACE_16, SPACE_24, SPACE_4, SPACE_8};
 use crate::ui;
 
-/// Platform monospace fallbacks, tried in order after [`ui::FONT_MONO`] (see
-/// the module doc's "Font" section) if the bundled face fails to register.
-const MONOSPACE_FALLBACKS: &[&str] = &["SF Mono", "Menlo", "Monaco", "Courier New"];
-
-/// Estimated advance width, in pixels, of one monospace character at the
-/// diff body's `TEXT_SM` text size — used only to size the line-number
-/// gutter (see [`gutter_width`]); gpui has no API to measure real shaped
-/// text outside of an actual layout pass, so this is a deliberate
-/// approximation (roughly 0.6em, typical for a monospace face — including
-/// Geist Mono) rather than an exact value.
-const GUTTER_CHAR_WIDTH: f32 = 7.2;
 /// Horizontal padding inside a gutter column, both sides combined.
 const GUTTER_PADDING: f32 = 10.0;
-
-fn diff_font() -> Font {
-    let mut f = font(ui::FONT_MONO);
-    f.fallbacks = Some(FontFallbacks::from_fonts(
-        MONOSPACE_FALLBACKS.iter().map(|s| s.to_string()).collect(),
-    ));
-    f
-}
 
 /// Opts an `.overflow_x_scroll()` element out of gpui 0.2.2's default "either
 /// axis" wheel routing.
@@ -76,13 +43,13 @@ fn diff_font() -> Font {
 /// vertical delta that reaches this element also gets reinterpreted as
 /// horizontal input here, because its `overflow.x == Scroll` while its
 /// `overflow.y != Scroll`. So every wheel tick that lands on a diff body
-/// (SPEC's "Long lines" doc above — these fill most of the panel) also yanks
-/// that diff sideways, and with a whole tab of stacked diff bodies, that
-/// turns an intended vertical scroll into a distracting horizontal jitter
-/// that reads as "scrolling doesn't work" even though the ancestor's offset
-/// is quietly moving too. `restrict_scroll_to_axis` stops this element from
-/// repurposing vertical input as horizontal, so a vertical wheel gesture
-/// over a diff body only ever moves the ancestor.
+/// (see the module doc's "Long lines" section — these fill most of the
+/// panel) also yanks that diff sideways, and with a whole tab of stacked
+/// diff bodies, that turns an intended vertical scroll into a distracting
+/// horizontal jitter that reads as "scrolling doesn't work" even though the
+/// ancestor's offset is quietly moving too. `restrict_scroll_to_axis` stops
+/// this element from repurposing vertical input as horizontal, so a
+/// vertical wheel gesture over a diff body only ever moves the ancestor.
 ///
 /// `restrict_scroll_to_axis` is gpui's own documented opt-in fix
 /// (`gpui::Style::restrict_scroll_to_axis`), but there is no `Styled`
@@ -102,7 +69,7 @@ fn restrict_scroll_to_horizontal_axis<E: Styled>(mut element: E) -> E {
 /// 12,000-line file's, and a 12,000-line file's numbers don't get clipped by
 /// a gutter sized for 3 digits. `1` for a diff with no line numbers at all
 /// (e.g. no hunks), so [`gutter_width`] never computes a zero-width column.
-pub fn gutter_digits(diff: &FileDiff) -> usize {
+fn gutter_digits(diff: &FileDiff) -> usize {
     let max = diff
         .hunks
         .iter()
@@ -115,17 +82,17 @@ pub fn gutter_digits(diff: &FileDiff) -> usize {
 }
 
 /// Pixel width of one gutter column sized for `digits` characters — see
-/// [`GUTTER_CHAR_WIDTH`]'s doc for why this is an estimate, not a
+/// [`ui::CHAR_WIDTH_APPROX`]'s doc for why this is an estimate, not a
 /// measurement.
-pub fn gutter_width(digits: usize) -> f32 {
-    GUTTER_PADDING + digits as f32 * GUTTER_CHAR_WIDTH
+fn gutter_width(digits: usize) -> f32 {
+    GUTTER_PADDING + digits as f32 * ui::CHAR_WIDTH_APPROX
 }
 
 /// The `+`/`-`/` ` origin marker `git diff` prints before each line. Kept in
 /// its own fixed column in the gutter rather than prefixed onto the line's
 /// own text, so a line that itself starts with `+` or `-` (a shell script, a
 /// diff-of-a-diff) can never be confused with the marker.
-pub fn line_marker(kind: DiffLineKind) -> &'static str {
+fn line_marker(kind: DiffLineKind) -> &'static str {
     match kind {
         DiffLineKind::Added => "+",
         DiffLineKind::Removed => "-",
@@ -136,17 +103,16 @@ pub fn line_marker(kind: DiffLineKind) -> &'static str {
 /// Text for one gutter cell: the line number, or blank when this side of the
 /// diff has none (an added line has no old number; a removed line has no
 /// new one).
-pub fn lineno_cell(n: Option<u32>) -> String {
+fn lineno_cell(n: Option<u32>) -> String {
     n.map(|n| n.to_string()).unwrap_or_default()
 }
 
 /// Background wash for a line's kind — `theme.diff_add_wash`/
-/// `diff_del_wash` (SPEC §3's tuned per-appearance alphas), not an ad-hoc
-/// tint: washing the *background* and tinting only the `+`/`-` marker
-/// ([`marker_color`]) is what keeps a long diff's body text readable
-/// (SURFACES §4 — "do not color the whole line's text"). `None` for context
-/// lines — they get no tint at all, not even a neutral one, so the eye
-/// lands on what changed.
+/// `diff_del_wash`, not an ad-hoc tint: washing the *background* and
+/// tinting only the `+`/`-` marker ([`marker_color`]) is what keeps a long
+/// diff's body text readable, rather than coloring the whole line's text.
+/// `None` for context lines — they get no tint at all, not even a neutral
+/// one, so the eye lands on what changed.
 fn line_tint(kind: DiffLineKind, theme: &Theme) -> Option<Hsla> {
     match kind {
         DiffLineKind::Added => Some(theme.diff_add_wash),
@@ -255,9 +221,7 @@ fn truncated_banner(theme: &Theme) -> impl IntoElement {
         .rounded(px(RADIUS_CONTROL))
         // No general-purpose "warning wash" token exists in `theme.rs` yet
         // (only the diff-specific `diff_add_wash`/`diff_del_wash`) — this
-        // keeps the same 0.10 alpha those use, for consistency, rather than
-        // the previous ad-hoc 0.14. Worth promoting to a real
-        // `warning_wash`-style token in a later phase.
+        // keeps the same 0.10 alpha those use, for consistency.
         .bg(Hsla {
             a: 0.10,
             ..theme.warning
@@ -289,10 +253,8 @@ fn render_hunks(diff: &FileDiff, theme: &Theme) -> AnyElement {
     restrict_scroll_to_horizontal_axis(
         div()
             .id(id)
-            // Radius arithmetic (SPEC §4/COMPONENTS.md): the diff body is a
-            // self-contained bordered block at `RADIUS_CONTROL` (6) — the
-            // nearest token to the pre-redesign literal `6.0`, so this was
-            // already on-scale.
+            // The diff body is a self-contained bordered block at
+            // `RADIUS_CONTROL`.
             .rounded(px(RADIUS_CONTROL))
             .flex()
             .flex_col()
@@ -300,7 +262,7 @@ fn render_hunks(diff: &FileDiff, theme: &Theme) -> AnyElement {
             .border_1()
             .border_color(theme.border)
             .overflow_x_scroll()
-            .font(diff_font()),
+            .font(ui::mono_font()),
     )
     .children(
         diff.hunks
@@ -315,9 +277,8 @@ fn render_hunk(hunk: &DiffHunk, gutter_px: f32, theme: &Theme) -> impl IntoEleme
         .flex()
         .flex_col()
         .child(
-            // Hunk headers get `diff_hunk_bg` (SPEC §3/SURFACES §4) — a
-            // dedicated token, not the generic hover wash (`item_wash`) this
-            // used before.
+            // Hunk headers get `diff_hunk_bg`, a dedicated token, not a
+            // generic hover wash.
             div()
                 .w_full()
                 .px(px(SPACE_8))
@@ -336,8 +297,8 @@ fn render_hunk(hunk: &DiffHunk, gutter_px: f32, theme: &Theme) -> impl IntoEleme
 }
 
 /// Fixed width of the `+`/`-`/` ` marker column — sized for one monospace
-/// glyph at the diff body's `TEXT_SM` text size, the same "named because it
-/// doesn't fit the `SPACE_*` scale" precedent as [`GUTTER_CHAR_WIDTH`].
+/// glyph at the diff body's `TEXT_SM` text size; named because it doesn't
+/// fit the `SPACE_*` scale.
 const MARKER_COLUMN_WIDTH: f32 = 14.0;
 
 fn render_line(line: &DiffLine, gutter_px: f32, theme: &Theme) -> impl IntoElement {
@@ -346,9 +307,8 @@ fn render_line(line: &DiffLine, gutter_px: f32, theme: &Theme) -> impl IntoEleme
         .items_start()
         .w_full()
         // Wash the line's *background*; the marker color below is the only
-        // thing that carries the added/removed tint into the text itself
-        // (SURFACES §4 — coloring the whole line's text makes a long diff
-        // unreadable).
+        // thing that carries the added/removed tint into the text itself —
+        // coloring the whole line's text would make a long diff unreadable.
         .when_some(line_tint(line.kind, theme), |d, c| d.bg(c))
         .child(lineno_col(line.old_lineno, gutter_px, theme))
         .child(lineno_col(line.new_lineno, gutter_px, theme))
@@ -373,11 +333,7 @@ fn render_line(line: &DiffLine, gutter_px: f32, theme: &Theme) -> impl IntoEleme
                 .pr(px(SPACE_16))
                 .text_size(px(ui::TEXT_SM))
                 .text_color(theme.text)
-                .child(if line.text.is_empty() {
-                    " ".to_string()
-                } else {
-                    line.text.clone()
-                }),
+                .child(ui::non_empty_or_space(&line.text).to_string()),
         )
 }
 
@@ -387,8 +343,8 @@ fn lineno_col(n: Option<u32>, width: f32, theme: &Theme) -> impl IntoElement {
         .w(px(width))
         .px(px(SPACE_4))
         // Right-aligned so a run of different-width line numbers still
-        // lines up on their trailing digit (SURFACES §4: "digits aligned"),
-        // rather than only sharing a left edge.
+        // lines up on their trailing digit, rather than only sharing a
+        // left edge.
         .text_right()
         .text_size(px(ui::TEXT_XS))
         .text_color(theme.text_ghost)
@@ -446,30 +402,11 @@ mod tests {
     }
 
     #[test]
-    fn gutter_width_grows_linearly_with_digits() {
-        let one = gutter_width(1);
-        let two = gutter_width(2);
-        let five = gutter_width(5);
-        assert!(one < two);
-        assert!(two < five);
-        // `f32` arithmetic, not exact — compare within a tolerance rather
-        // than bit-for-bit equality.
-        assert!((five - two - 3.0 * (two - one)).abs() < 0.001);
-    }
-
-    // ---------------- line_marker / lineno_cell ----------------
-
-    #[test]
-    fn line_marker_matches_git_diff_origin_characters() {
-        assert_eq!(line_marker(DiffLineKind::Added), "+");
-        assert_eq!(line_marker(DiffLineKind::Removed), "-");
-        assert_eq!(line_marker(DiffLineKind::Context), " ");
-    }
-
-    #[test]
-    fn lineno_cell_formats_present_and_absent_numbers() {
-        assert_eq!(lineno_cell(Some(42)), "42");
-        assert_eq!(lineno_cell(None), "");
+    fn gutter_width_matches_padding_plus_digits_times_char_width() {
+        assert_eq!(
+            gutter_width(3),
+            GUTTER_PADDING + 3.0 * ui::CHAR_WIDTH_APPROX
+        );
     }
 
     // ---------------- restrict_scroll_to_horizontal_axis ----------------

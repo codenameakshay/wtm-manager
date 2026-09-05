@@ -25,8 +25,8 @@ fn print_paths(global: &GlobalArgs) -> Result<()> {
     // Repo-level paths only when we are actually inside a repository.
     match repo::discover(global.repo.as_deref()) {
         Ok(ctx) => {
-            let repo_cfg = ctx.main_root.join(".worktree.toml");
-            let local_cfg = ctx.main_root.join(".worktree.local.toml");
+            let repo_cfg = ctx.main_root.join(config::REPO_CONFIG_FILENAME);
+            let local_cfg = ctx.main_root.join(config::LOCAL_CONFIG_FILENAME);
             println!("repo:   {} {}", repo_cfg.display(), marker(&repo_cfg));
             println!("local:  {} {}", local_cfg.display(), marker(&local_cfg));
         }

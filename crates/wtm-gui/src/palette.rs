@@ -32,8 +32,6 @@
 //! reaches `TextInput`'s "enter" binding at all (gpui keybindings match
 //! modifiers exactly), so this is the only place that can see it.
 
-use std::collections::HashSet;
-
 use gpui::prelude::*;
 use gpui::{
     div, px, AnyElement, Context, Entity, ScrollHandle, SharedString, Subscription, Window,
@@ -230,11 +228,10 @@ pub struct CommandSpec {
 }
 
 /// Every command the palette offers, in the order shown for an empty
-/// query. "Open in Terminal" has no dedicated icon in `assets.rs` (not
-/// owned by this task, not extended for it — same tradeoff `app.rs`'s
-/// title bar already makes for the detail-panel toggle), so it reuses
-/// [`icons::OPEN_EXTERNAL`], the closest available fit for "launches
-/// something outside the window."
+/// query. "Open in Terminal" has no dedicated icon in `assets.rs` — same
+/// tradeoff `app.rs`'s title bar already makes for the detail-panel
+/// toggle — so it reuses [`icons::OPEN_EXTERNAL`], the closest available
+/// fit for "launches something outside the window."
 pub const COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         id: CommandId::NewWorktree,
@@ -416,9 +413,8 @@ pub fn compute_results(query: &str, rows: &[WorktreeInfo]) -> Vec<PaletteEntry> 
 
 /// Position of the flat result index `highlighted` (as `compute_results`
 /// numbers it: worktrees then commands, see that function's own doc) within
-/// the `results_list` div `render` actually paints. `render` no longer opens
-/// each group with a `section_header` row (the eyebrow labels are gone —
-/// see the redesign report); the only extra DOM child is a single
+/// the `results_list` div `render` actually paints. `render` opens each
+/// group with no eyebrow label; the only extra DOM child is a single
 /// `ui::divider` between the two groups, and only when both are non-empty.
 /// So the DOM child index matches the flat result index exactly until
 /// `highlighted` reaches the commands section, where it is offset by one
@@ -428,7 +424,7 @@ pub fn compute_results(query: &str, rows: &[WorktreeInfo]) -> Vec<PaletteEntry> 
 /// without `render`'s own borrow of `self.palette`. Returns `None` for an
 /// out-of-range `highlighted` (an empty results list, or a stale highlight
 /// left over from a shorter query).
-pub fn results_scroll_child_index(
+fn results_scroll_child_index(
     worktree_count: usize,
     command_count: usize,
     highlighted: usize,
@@ -459,19 +455,17 @@ pub struct PaletteState {
     /// keystrokes.
     pub highlighted: usize,
     /// The results column's own scroll position — `ui::scrollbar` needs a
-    /// handle that survives across renders (Task 2: "wire it to every
-    /// scroll region that can overflow ... the palette results").
+    /// handle that survives across renders.
     scroll: ScrollHandle,
 }
 
 impl PaletteState {
     pub fn new(window: &mut Window, cx: &mut Context<WtmApp>) -> Self {
         // `.borderless()`: the palette's search field sits inside the
-        // `ui::popover` card's own well (SURFACES §6: "a borderless inset
-        // well") rather than drawing a second box of its own — see
+        // `ui::popover` card's own well — a borderless inset well — rather
+        // than drawing a second box of its own — see
         // `TextInput::borderless`'s doc.
-        let input =
-            cx.new(|cx| TextInput::new("Search worktrees and commands…", window, cx).borderless());
+        let input = cx.new(|cx| TextInput::new("Search worktrees and commands…", cx).borderless());
         let sub = cx.subscribe_in(&input, window, {
             // Only ever calls back through `WtmApp`'s own `pub(crate)`
             // methods, never reaches into its fields directly — the same
@@ -506,8 +500,8 @@ impl PaletteState {
     }
 
     /// Scroll `self.scroll` so the currently highlighted result is inside
-    /// the results column's viewport — Bug 3's "arrow keys scroll the
-    /// selection into view" rule, extended to the palette's own list.
+    /// the results column's viewport, the same "arrow keys scroll the
+    /// selection into view" rule the worktree list applies to its own.
     /// `worktree_count`/`command_count` describe the *current* query's
     /// results (`palette_move_highlight` computed them a moment ago to
     /// clamp `highlighted` itself); `results_scroll_child_index` is the
@@ -542,9 +536,9 @@ pub fn render(
     let results = compute_results(&query, rows);
     let highlighted = state.highlighted.min(results.len().saturating_sub(1));
 
-    let indexed: Vec<(usize, &PaletteEntry)> = results.iter().enumerate().collect();
-    let (worktree_entries, command_entries): (Vec<_>, Vec<_>) = indexed
-        .into_iter()
+    let (worktree_entries, command_entries): (Vec<(usize, &PaletteEntry)>, Vec<_>) = results
+        .iter()
+        .enumerate()
         .partition(|(_, e)| matches!(e, PaletteEntry::Worktree { .. }));
 
     let results_list = div()
@@ -564,11 +558,10 @@ pub fn render(
                     .map(|(ix, e)| render_entry(*ix, e, *ix == highlighted, theme, cx)),
             )
         })
-        // The only thing that used to separate the two kinds of result —
-        // the "Worktrees" / "Commands" eyebrows — is gone; a hairline
-        // divider between the groups (only when both are present) carries
-        // the grouping instead, alongside the per-row icon that already
-        // differs (branch glyph vs. command glyph, see `render_entry`).
+        // No "Worktrees" / "Commands" eyebrow labels: a hairline divider
+        // between the groups (only when both are present) carries the
+        // grouping instead, alongside the per-row icon that already differs
+        // (branch glyph vs. command glyph, see `render_entry`).
         .when(
             !worktree_entries.is_empty() && !command_entries.is_empty(),
             |this| {
@@ -588,12 +581,11 @@ pub fn render(
             )
         })
         .when(results.is_empty(), |this| {
-            // A one-line empty state (SURFACES §6), not the full
-            // icon+headline `ui::empty_state` — that component is sized for
-            // a panel filling its own space (COMPONENTS.md), which would
-            // dwarf a "no matches" hint inside an already-open search
-            // overlay. Same primitives (`ui::icon`, muted text), composed
-            // at a scale that fits here.
+            // A one-line empty state, not the full icon+headline
+            // `ui::empty_state` — that component is sized for a panel
+            // filling its own space, which would dwarf a "no matches" hint
+            // inside an already-open search overlay. Same primitives
+            // (`ui::icon`, muted text), composed at a scale that fits here.
             this.child(
                 div()
                     .flex()
@@ -612,19 +604,17 @@ pub fn render(
     // reasoning as `app::chrome`'s scroll regions (`ui::scrollbar`'s own
     // doc): the overlay must never be a descendant of the div it scrolls
     // with, or it scrolls away with the very results it's annotating.
-    let results_col = div().relative().child(results_list).child(ui::scrollbar(
-        "palette-results-scrollbar",
-        &state.scroll,
-        ui::ScrollAxis::Vertical,
-    ));
+    let results_col = div()
+        .relative()
+        .child(results_list)
+        .child(ui::scrollbar("palette-results-scrollbar", &state.scroll));
 
-    // Search field: a borderless inset well with a leading search icon
-    // (SURFACES §6). `TextInput` itself paints no background/border in
-    // `.borderless()` mode (see `PaletteState::new`), so this wrapper is
-    // the well: `surface_inset` at `RADIUS_CONTROL`, concentric with the
-    // card's own `RADIUS_PANEL` (10) at `SPACE_4` (4) padding —
-    // `10 - 4 == 6 == RADIUS_CONTROL` (`ui::concentric_inner_radius`'s own
-    // worked example).
+    // Search field: a borderless inset well with a leading search icon.
+    // `TextInput` itself paints no background/border in `.borderless()`
+    // mode (see `PaletteState::new`), so this wrapper is the well:
+    // `surface_inset` at `RADIUS_CONTROL`, concentric with the card's own
+    // `RADIUS_PANEL` (10) at `SPACE_4` (4) padding: `10 - 4 == 6 ==
+    // RADIUS_CONTROL`.
     let search = div().p(px(SPACE_4)).child(
         div()
             .id("palette-search")
@@ -640,9 +630,9 @@ pub fn render(
     );
 
     // `ui::popover`: `RADIUS_PANEL` + `shadow_popover`, the same overlay
-    // surface the context menu uses (SURFACES §6) — replaces the former
-    // `ui::modal_card` (`RADIUS_DIALOG`/`shadow_dialog`), which is the
-    // dialog ladder's step, not the popover ladder's.
+    // surface the context menu uses — not `ui::modal_card`
+    // (`RADIUS_DIALOG`/`shadow_dialog`), which is the dialog ladder's step,
+    // not the popover ladder's.
     let card = ui::popover(theme)
         .id("palette-card")
         .w(px(WIDTH))
@@ -652,7 +642,7 @@ pub fn render(
         .child(ui::divider(theme))
         .child(results_col);
 
-    // SPEC §5: the results list beneath never animates (touched on every
+    // The results list beneath never animates (touched on every
     // keystroke); the palette itself is touched rarely and enters with
     // `MENU_IN` so the motion tells the eye where it came from.
     let card = motion::menu_in("palette-card-motion", card, cx);
@@ -744,12 +734,13 @@ fn highlighted_spans(label: &str, indices: &[usize], theme: &Theme) -> Vec<AnyEl
     if indices.is_empty() {
         return vec![span(label, false, theme)];
     }
-    let matched: HashSet<usize> = indices.iter().copied().collect();
     let mut spans = Vec::new();
     let mut run = String::new();
     let mut run_matched = false;
     for (i, ch) in label.chars().enumerate() {
-        let is_matched = matched.contains(&i);
+        // `indices` is already sorted (`FuzzyMatch`'s own doc), so a binary
+        // search finds a match in O(log n) with no set to build.
+        let is_matched = indices.binary_search(&i).is_ok();
         if !run.is_empty() && is_matched != run_matched {
             spans.push(span(&run, run_matched, theme));
             run.clear();
@@ -931,7 +922,7 @@ mod tests {
     }
 
     // -------------------------------------------------------------
-    // `results_scroll_child_index` — Bug 3: palette highlight scrolling
+    // `results_scroll_child_index` — palette highlight scrolling
     // -------------------------------------------------------------
 
     #[test]

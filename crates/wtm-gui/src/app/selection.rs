@@ -21,14 +21,15 @@ impl WtmApp {
     /// "main first" ordering is part of what makes it scannable. An empty
     /// (or all-whitespace) query is every row, cheaply, without scoring.
     pub(super) fn visible_row_indices(&self, cx: &App) -> Vec<usize> {
-        let query = self.filter_input.read(cx).value().trim().to_string();
+        let value = self.filter_input.read(cx).value();
+        let query = value.trim();
         if query.is_empty() {
             return (0..self.rows.len()).collect();
         }
         self.rows
             .iter()
             .enumerate()
-            .filter(|(_, row)| palette::fuzzy_match(&query, row.display_name()).is_some())
+            .filter(|(_, row)| palette::fuzzy_match(query, row.display_name()).is_some())
             .map(|(ix, _)| ix)
             .collect()
     }
@@ -263,12 +264,12 @@ impl WtmApp {
     /// Whether the row at `display_ix` — its 0-based position in the
     /// *visible* (filtered) list the `uniform_list` is currently painting,
     /// not an index into `self.rows` — is already fully inside the list's
-    /// last-painted viewport. Pure so Bug 3's "don't scroll a row that's
-    /// already on screen" rule has one tested home instead of being
-    /// re-derived at each keyboard-selection call site; `viewport_height`
-    /// of `0.0` (nothing painted yet) always reports "not visible", so the
-    /// very first keyboard move after launch still establishes a sane
-    /// scroll position rather than silently no-op-ing.
+    /// last-painted viewport. Pure so "don't scroll a row that's already
+    /// on screen" has one tested home instead of being re-derived at each
+    /// keyboard-selection call site; `viewport_height` of `0.0` (nothing
+    /// painted yet) always reports "not visible", so the very first
+    /// keyboard move after launch still establishes a sane scroll position
+    /// rather than silently no-op-ing.
     pub(super) fn row_needs_scroll(
         display_ix: usize,
         scroll_offset_y: f32,
@@ -277,7 +278,7 @@ impl WtmApp {
         if viewport_height <= 0.0 {
             return true;
         }
-        let item_top = theme::LIST_ROW_HEIGHT * display_ix as f32;
+        let item_top = theme::LIST_ROW_PITCH * display_ix as f32;
         let item_bottom = item_top + theme::LIST_ROW_HEIGHT;
         let scroll_top = -scroll_offset_y;
         item_top < scroll_top || item_bottom > scroll_top + viewport_height
@@ -365,46 +366,47 @@ impl WtmApp {
     /// Re-sort `self.rows` per the current `sort_mode`, translating the
     /// selection across the reorder by worktree *path* rather than index.
     ///
-    /// Selection is stored as indices into `rows` (`selected`,
-    /// `multi_selected`) purely as a compact way to reference "one of the
-    /// currently-listed rows" — those indices were never a stable identity,
-    /// and nothing before this method needed them to be, because the only
-    /// thing that used to reorder `rows` wholesale was a fresh listing
-    /// (`apply_rows`), which already treats the row set as having possibly
-    /// changed underneath the old indices entirely (a worktree removed,
-    /// another added) and falls back to "keep the same index if still in
-    /// range, else clamp" rather than trying to track identity.
-    ///
-    /// A sort-mode change (or a `Recent`-mode re-sort once activity data
-    /// lands — see `loading::apply_activity`) is different: it reorders the
-    /// *exact same* rows the user was already looking at, so "the worktree
-    /// I had selected is still selected" is a real, checkable promise here
-    /// in a way it isn't for an arbitrary reload. That is why this looks
-    /// the selection back up by `path` (a worktree's actual identity) after
-    /// sorting, instead of leaving the old indices to now point at whatever
-    /// row happens to have landed there. If a looked-up path is no longer
-    /// present (only possible if `rows` itself changed between capturing
-    /// and restoring, which no caller of this method does), that entry is
-    /// simply dropped rather than guessed at.
+    /// Unlike a fresh listing (`apply_rows`, which reorders a row set that
+    /// may genuinely have changed and so falls back to a clamped index), a
+    /// sort-mode change reorders the *exact same* rows the user was already
+    /// looking at — "the worktree I had selected is still selected" is a
+    /// real, checkable promise here. So this looks the selection back up by
+    /// `path` (a worktree's actual identity) after sorting, dropping an
+    /// entry whose path isn't found rather than guessing at one.
     pub(super) fn resort_preserving_selection(&mut self, cx: &mut Context<Self>) {
-        let anchor_path = self
+        let (anchor_path, multi_paths) = self.selection_paths();
+        worktree_list::sort_rows(&mut self.rows, self.sort_mode, &self.activity);
+        self.restore_selection_by_path(anchor_path.as_deref(), &multi_paths);
+        cx.notify();
+    }
+
+    /// Capture the current selection as worktree *paths* rather than
+    /// indices — the identity that survives a reorder or a wholesale
+    /// row-set replacement (see `restore_selection_by_path`). Shared by
+    /// `resort_preserving_selection` above and `loading::apply_rows`.
+    pub(super) fn selection_paths(&self) -> (Option<PathBuf>, Vec<PathBuf>) {
+        let anchor = self
             .selected
             .and_then(|ix| self.rows.get(ix))
             .map(|row| row.path.clone());
-        let multi_paths: Vec<PathBuf> = self
+        let multi = self
             .multi_selected
             .iter()
             .filter_map(|&ix| self.rows.get(ix).map(|row| row.path.clone()))
             .collect();
+        (anchor, multi)
+    }
 
-        worktree_list::sort_rows(&mut self.rows, self.sort_mode, &self.activity);
-
-        self.selected = anchor_path.and_then(|path| self.rows.iter().position(|r| r.path == path));
-        self.multi_selected = multi_paths
+    /// Look `anchor`/`multi` back up in the current (already reordered or
+    /// replaced) `rows` by path, restoring `selected`/`multi_selected` to
+    /// whichever indices those paths now occupy — clearing either one
+    /// whose path isn't found rather than guessing at a replacement.
+    pub(super) fn restore_selection_by_path(&mut self, anchor: Option<&Path>, multi: &[PathBuf]) {
+        self.selected = anchor.and_then(|path| self.rows.iter().position(|r| r.path == path));
+        self.multi_selected = multi
             .iter()
             .filter_map(|path| self.rows.iter().position(|r| &r.path == path))
             .collect();
-        cx.notify();
     }
 }
 
@@ -413,37 +415,51 @@ mod tests {
     use super::*;
 
     // -------------------------------------------------------------
-    // `row_needs_scroll` — Bug 3: arrow-key selection scrolling
+    // `row_needs_scroll` — arrow-key selection scrolling
     // -------------------------------------------------------------
+
+    /// A viewport that exactly fits rows 0, 1, and 2 at the real on-screen
+    /// pitch (row height plus its bottom padding) — row 3 starts here.
+    const THREE_ROW_VIEWPORT: f32 = theme::LIST_ROW_PITCH * 2.0 + theme::LIST_ROW_HEIGHT;
+    /// Scroll offset that puts that same three-row window at rows 3, 4, 5
+    /// instead of 0, 1, 2.
+    const SCROLLED_THREE_ROWS: f32 = -(theme::LIST_ROW_PITCH * 3.0);
 
     #[test]
     fn row_needs_scroll_is_false_for_a_row_already_fully_in_view() {
-        // Viewport shows exactly 3 rows (3 * 56.0 = 168.0), scrolled to
-        // the very top: rows 0, 1, 2 are all fully visible.
-        assert!(!WtmApp::row_needs_scroll(0, 0.0, 168.0));
-        assert!(!WtmApp::row_needs_scroll(2, 0.0, 168.0));
+        // Scrolled to the very top: rows 0, 1, 2 are all fully visible.
+        assert!(!WtmApp::row_needs_scroll(0, 0.0, THREE_ROW_VIEWPORT));
+        assert!(!WtmApp::row_needs_scroll(2, 0.0, THREE_ROW_VIEWPORT));
     }
 
     #[test]
     fn row_needs_scroll_is_true_when_the_row_is_below_the_viewport() {
-        // Row 3 starts at y=168.0, exactly at the bottom edge of a 168.0
-        // viewport scrolled to the top — its bottom edge (224.0) is off
-        // screen, so it needs a scroll.
-        assert!(WtmApp::row_needs_scroll(3, 0.0, 168.0));
+        // Row 3 starts exactly at the bottom edge of the three-row
+        // viewport scrolled to the top — its bottom edge is off screen, so
+        // it needs a scroll.
+        assert!(WtmApp::row_needs_scroll(3, 0.0, THREE_ROW_VIEWPORT));
     }
 
     #[test]
     fn row_needs_scroll_is_true_when_the_row_is_above_the_viewport() {
-        // Scrolled down by 3 rows (offset -168.0): row 2 (y=112.0..168.0)
-        // sits entirely above the now-visible window.
-        assert!(WtmApp::row_needs_scroll(2, -168.0, 168.0));
+        // Scrolled down by three rows: row 2 sits entirely above the
+        // now-visible window.
+        assert!(WtmApp::row_needs_scroll(
+            2,
+            SCROLLED_THREE_ROWS,
+            THREE_ROW_VIEWPORT
+        ));
     }
 
     #[test]
     fn row_needs_scroll_is_false_once_scrolled_to_show_it() {
-        // Same scroll position as above, but row 3 (y=168.0..224.0) is now
-        // exactly the top row of the viewport.
-        assert!(!WtmApp::row_needs_scroll(3, -168.0, 168.0));
+        // Same scroll position as above, but row 3 is now exactly the top
+        // row of the viewport.
+        assert!(!WtmApp::row_needs_scroll(
+            3,
+            SCROLLED_THREE_ROWS,
+            THREE_ROW_VIEWPORT
+        ));
     }
 
     #[test]
@@ -455,31 +471,30 @@ mod tests {
     }
 
     #[test]
-    fn toggled_selection_adds_an_unselected_row() {
+    fn row_needs_scroll_steps_by_the_row_pitch_not_the_row_height() {
+        // A viewport that fits exactly 3 rows at `LIST_ROW_HEIGHT` alone
+        // (168.0) is one row short of fitting 3 rows at the real on-screen
+        // pitch (row height plus its bottom padding). Row 2 therefore
+        // needs a scroll here; stepping by `LIST_ROW_HEIGHT` instead of
+        // `LIST_ROW_PITCH` would place its bottom edge exactly on the
+        // viewport boundary and wrongly call it already visible.
+        let viewport_height = theme::LIST_ROW_HEIGHT * 3.0;
+        assert!(WtmApp::row_needs_scroll(2, 0.0, viewport_height));
+    }
+
+    #[test]
+    fn toggled_selection_adds_an_unselected_row_without_disturbing_others() {
         let set = WtmApp::toggled_selection(&[1, 2], 3);
         assert_eq!(set, BTreeSet::from([1, 2, 3]));
-    }
-
-    #[test]
-    fn toggled_selection_removes_an_already_selected_row() {
-        let set = WtmApp::toggled_selection(&[1, 2, 3], 2);
-        assert_eq!(set, BTreeSet::from([1, 3]));
-    }
-
-    #[test]
-    fn toggled_selection_from_empty_selects_just_that_row() {
         let set = WtmApp::toggled_selection(&[], 5);
         assert_eq!(set, BTreeSet::from([5]));
     }
 
     #[test]
-    fn toggled_selection_leaves_other_rows_untouched() {
-        // The checkbox's whole promise is "toggle just this row" — make
-        // sure the pure toggle never drops an unrelated member as a side
-        // effect of adding or removing another one.
+    fn toggled_selection_removes_an_already_selected_row_without_disturbing_others() {
+        let set = WtmApp::toggled_selection(&[1, 2, 3], 2);
+        assert_eq!(set, BTreeSet::from([1, 3]));
         let set = WtmApp::toggled_selection(&[0, 4, 7], 4);
         assert_eq!(set, BTreeSet::from([0, 7]));
-        let set = WtmApp::toggled_selection(&[0, 7], 4);
-        assert_eq!(set, BTreeSet::from([0, 4, 7]));
     }
 }

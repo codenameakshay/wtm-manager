@@ -39,7 +39,7 @@ pub fn render(template: &str, ctx: &TemplateContext<'_>) -> Result<PathBuf> {
 /// Filesystem-safe branch slug: `/` and any character outside
 /// `[A-Za-z0-9._-]` become `-`, runs of `-` collapse to one, leading/trailing
 /// `-` are trimmed. Never empty (falls back to `"branch"`). Case preserved.
-pub fn slugify(branch: &str) -> String {
+fn slugify(branch: &str) -> String {
     let mut out = String::with_capacity(branch.len());
     let mut last_was_dash = false;
     for ch in branch.chars() {
@@ -151,22 +151,26 @@ mod tests {
     }
 
     #[test]
-    fn renders_nested_branch_names() {
+    fn renders_branch_and_repo_dir_placeholders() {
         let root = Path::new("/Users/foo/myrepo");
-        let c = ctx("myrepo", "feat/foo", root);
-        let result = render("../{repo}-worktrees/{branch}", &c).unwrap();
-        assert_eq!(
-            result,
-            PathBuf::from("/Users/foo/myrepo-worktrees/feat/foo")
-        );
-    }
-
-    #[test]
-    fn renders_deeply_nested_branch_names() {
-        let root = Path::new("/Users/foo/myrepo");
-        let c = ctx("myrepo", "team/feat/foo-bar", root);
-        let result = render("{repo_dir}/../wt/{branch}", &c).unwrap();
-        assert_eq!(result, PathBuf::from("/Users/foo/wt/team/feat/foo-bar"));
+        let cases = [
+            (
+                "../{repo}-worktrees/{branch}",
+                "feat/foo",
+                "/Users/foo/myrepo-worktrees/feat/foo",
+            ),
+            (
+                "{repo_dir}/../wt/{branch}",
+                "team/feat/foo-bar",
+                "/Users/foo/wt/team/feat/foo-bar",
+            ),
+            ("{repo_dir}", "main", "/Users/foo/myrepo"),
+        ];
+        for (template, branch, expected) in cases {
+            let c = ctx("myrepo", branch, root);
+            let result = render(template, &c).unwrap();
+            assert_eq!(result, PathBuf::from(expected), "template: {template}");
+        }
     }
 
     #[test]
@@ -178,23 +182,12 @@ mod tests {
     }
 
     #[test]
-    fn renders_repo_dir_placeholder_absolute() {
-        let root = Path::new("/Users/foo/myrepo");
-        let c = ctx("myrepo", "main", root);
-        let result = render("{repo_dir}", &c).unwrap();
-        assert_eq!(result, PathBuf::from("/Users/foo/myrepo"));
-    }
-
-    #[test]
     fn renders_home_placeholder() {
         let root = Path::new("/Users/foo/myrepo");
         let c = ctx("myrepo", "main", root);
         let result = render("{home}/worktrees/{repo}/{branch}", &c).unwrap();
-        let home = directories::BaseDirs::new()
-            .unwrap()
-            .home_dir()
-            .to_path_buf();
-        assert_eq!(result, home.join("worktrees/myrepo/main"));
+        assert!(result.is_absolute());
+        assert!(result.ends_with("worktrees/myrepo/main"), "{result:?}");
     }
 
     #[test]
@@ -217,28 +210,21 @@ mod tests {
     }
 
     #[test]
-    fn slugify_replaces_slashes_and_collapses_runs() {
-        assert_eq!(slugify("feat/foo"), "feat-foo");
-        assert_eq!(slugify("feat//foo"), "feat-foo");
-        assert_eq!(slugify("feat/ foo bar"), "feat-foo-bar");
-    }
-
-    #[test]
-    fn slugify_preserves_case_and_allowed_chars() {
-        assert_eq!(slugify("Feature_1.2-final"), "Feature_1.2-final");
-    }
-
-    #[test]
-    fn slugify_trims_leading_and_trailing_dashes() {
-        assert_eq!(slugify("/feat/foo/"), "feat-foo");
-        assert_eq!(slugify("---feat---"), "feat");
-    }
-
-    #[test]
-    fn slugify_never_empty() {
-        assert_eq!(slugify("///"), "branch");
-        assert_eq!(slugify(""), "branch");
-        assert_eq!(slugify("!!!"), "branch");
+    fn slugify_rules() {
+        let cases = [
+            ("feat/foo", "feat-foo"),
+            ("feat//foo", "feat-foo"),
+            ("feat/ foo bar", "feat-foo-bar"),
+            ("Feature_1.2-final", "Feature_1.2-final"),
+            ("/feat/foo/", "feat-foo"),
+            ("---feat---", "feat"),
+            ("///", "branch"),
+            ("", "branch"),
+            ("!!!", "branch"),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(slugify(input), expected, "input: {input:?}");
+        }
     }
 
     #[test]

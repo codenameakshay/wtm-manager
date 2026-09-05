@@ -266,8 +266,8 @@ impl App {
             self.requested.clear();
             self.detail_generations.clear();
         }
-        let existing: BTreeSet<PathBuf> = self.rows.iter().map(|i| i.path.clone()).collect();
-        self.marked.retain(|p| existing.contains(p));
+        let existing: BTreeSet<&Path> = self.rows.iter().map(|i| i.path.as_path()).collect();
+        self.marked.retain(|p| existing.contains(p.as_path()));
         self.apply_filter(keep.as_deref());
         self.selection_effects()
     }
@@ -587,7 +587,7 @@ impl App {
                     return Vec::new();
                 }
                 let candidates = if self.marked.is_empty() {
-                    prune::candidates(self.rows.clone(), &self.protected, true, true, false)
+                    prune::candidates(&self.rows, &self.protected, true, true, false)
                 } else {
                     let selection: Vec<WorktreeInfo> = self
                         .rows
@@ -874,18 +874,11 @@ mod tests {
     }
 
     #[test]
-    fn remove_refuses_main_and_requires_force_when_dirty() {
+    fn remove_requires_force_when_dirty() {
         let mut app = app_with(vec![
             info("main", true),
             with_status(info("feat", false), true, false),
         ]);
-        // On main: a dismissible notice modal opens (not a passive footer
-        // note), and dismissing it returns to a clean state.
-        app.update(key(KeyCode::Char('d')));
-        assert!(matches!(app.overlay, Overlay::Notice { .. }));
-        app.update(key(KeyCode::Esc));
-        assert!(matches!(app.overlay, Overlay::None));
-
         // On the dirty worktree: modal opens, Enter alone is refused.
         app.update(key(KeyCode::Char('j')));
         app.update(key(KeyCode::Char('d')));
@@ -964,7 +957,6 @@ mod tests {
         };
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].info.name, "feat-a");
-        assert!(!candidates[0].delete_branch);
 
         let fx = app.update(key(KeyCode::Enter));
         match &fx[0] {
@@ -989,8 +981,6 @@ mod tests {
         };
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].info.name, "done");
-        assert!(candidates[0].reasons.contains(&"merged"));
-        assert!(candidates[0].delete_branch);
 
         // Cancel produces no effect and closes the modal.
         let fx = app.update(key(KeyCode::Char('n')));

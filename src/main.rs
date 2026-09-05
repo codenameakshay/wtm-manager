@@ -9,7 +9,7 @@ use clap::Parser;
 use owo_colors::OwoColorize;
 
 use wtm::cli::Cli;
-use wtm::output::ColorMode;
+use wtm::output;
 
 fn main() {
     let cli = Cli::parse();
@@ -18,24 +18,12 @@ fn main() {
             return;
         }
         let message = format!("error: {err}");
-        if stderr_color(cli.global.color) {
+        let stderr_color = output::color_enabled(cli.global.color, std::io::stderr().is_terminal());
+        if stderr_color {
             eprintln!("{}", message.red());
         } else {
             eprintln!("{message}");
         }
         std::process::exit(1);
-    }
-}
-
-/// Color on stderr: `--color` wins; on auto, require a stderr TTY and an
-/// unset/empty `NO_COLOR`.
-fn stderr_color(mode: ColorMode) -> bool {
-    match mode {
-        ColorMode::Always => true,
-        ColorMode::Never => false,
-        ColorMode::Auto => {
-            std::io::stderr().is_terminal()
-                && std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty())
-        }
     }
 }

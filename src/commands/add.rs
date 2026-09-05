@@ -110,13 +110,7 @@ fn create_core(ctx: &RepoContext, config: &Config, req: &CreateRequest) -> Resul
     // out (git would refuse too, but with a rougher message and after we
     // may already have created directories).
     if branch_exists {
-        let items = worktree::list(
-            ctx,
-            &ListOptions {
-                with_status: false,
-                base: None,
-            },
-        )?;
+        let items = worktree::list(ctx, &ListOptions::default())?;
         if let Some(existing) = items.iter().find(|i| i.branch.as_deref() == Some(branch)) {
             return Err(Error::BranchInUse {
                 branch: branch.to_string(),
@@ -136,7 +130,7 @@ fn create_core(ctx: &RepoContext, config: &Config, req: &CreateRequest) -> Resul
     if branch_exists {
         gitcmd::worktree_add(&ctx.main_root, &dest, branch, req.quiet)?;
     } else {
-        let base = resolve_base(ctx, config, req.base_override, req.quiet)?;
+        let base = resolve_base(ctx, config, req.base_override)?;
         if req.verbose {
             eprintln!("creating branch '{branch}' from '{base}'");
         }
@@ -169,12 +163,13 @@ fn finish_cd(dest: &Path, req: &CreateRequest) -> Result<()> {
 /// Does a local branch with this exact name exist?
 fn local_branch_exists(ctx: &RepoContext, branch: &str) -> Result<bool> {
     let repo = ctx.open_main()?;
-    let found = match repo.find_branch(branch, git2::BranchType::Local) {
-        Ok(_) => Ok(true),
+    // `.map(drop)` releases the `Branch` borrow of `repo` before the match
+    // becomes the tail expression.
+    match repo.find_branch(branch, git2::BranchType::Local).map(drop) {
+        Ok(()) => Ok(true),
         Err(e) if e.code() == git2::ErrorCode::NotFound => Ok(false),
         Err(e) => Err(e.into()),
-    };
-    found
+    }
 }
 
 /// Destination directory: an explicit override (made absolute against the
@@ -209,12 +204,7 @@ fn destination(
 /// Base ref for a new branch: override > configured `default_base`
 /// (revparsed strictly in the main repo) > HEAD. An explicit base that does
 /// not resolve is an error.
-fn resolve_base(
-    ctx: &RepoContext,
-    config: &Config,
-    base_override: Option<&str>,
-    _quiet: bool,
-) -> Result<String> {
+fn resolve_base(ctx: &RepoContext, config: &Config, base_override: Option<&str>) -> Result<String> {
     let requested = match base_override {
         Some(base) => Some(base),
         None => config.default_base.as_deref(),
@@ -223,13 +213,7 @@ fn resolve_base(
         None => Ok("HEAD".to_string()),
         Some(base) => {
             let repo = ctx.open_main()?;
-            repo.revparse_single(base)
-                .and_then(|object| object.peel_to_commit())
-                .map_err(|_| {
-                    Error::Other(format!(
-                        "configured base '{base}' does not resolve to a commit"
-                    ))
-                })?;
+            worktree::resolve_base_commit(&repo, base)?;
             Ok(base.to_string())
         }
     }

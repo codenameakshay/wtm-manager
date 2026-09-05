@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
-/// Library-level error type. The binary boundary maps these to user-facing
-/// messages and exit codes via `anyhow`.
+/// Library-level error type. `main` formats these as `error: {err}` and
+/// exits 1.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("operation cancelled")]

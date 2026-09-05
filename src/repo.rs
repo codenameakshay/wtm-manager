@@ -69,50 +69,20 @@ pub fn discover(start: Option<&Path>) -> Result<RepoContext> {
 /// Canonicalize when possible (resolves macOS `/tmp` vs `/private/tmp`,
 /// symlinks, and `..` segments); returns the path unchanged when the file
 /// does not exist or canonicalization fails.
-fn canonicalize_lossy(path: &Path) -> PathBuf {
+pub fn canonicalize_lossy(path: &Path) -> PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testgit::{git, init_repo};
     use std::fs;
-    use std::process::Command;
-
-    fn git(dir: &Path, args: &[&str]) {
-        let out = Command::new("git")
-            .args(["-c", "commit.gpgsign=false"])
-            .args(args)
-            .current_dir(dir)
-            .env("GIT_AUTHOR_NAME", "wtm test")
-            .env("GIT_AUTHOR_EMAIL", "wtm@example.invalid")
-            .env("GIT_COMMITTER_NAME", "wtm test")
-            .env("GIT_COMMITTER_EMAIL", "wtm@example.invalid")
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .env("GIT_CONFIG_SYSTEM", "/dev/null")
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .output()
-            .expect("failed to run git");
-        assert!(
-            out.status.success(),
-            "git {:?} failed:\n{}",
-            args,
-            String::from_utf8_lossy(&out.stderr)
-        );
-    }
-
-    fn init_repo(dir: &Path) {
-        git(dir, &["init", "-b", "main"]);
-        fs::write(dir.join("README.md"), "readme\n").unwrap();
-        git(dir, &["add", "."]);
-        git(dir, &["commit", "-m", "initial"]);
-    }
 
     #[test]
     fn discovers_from_main_root() {
         let tmp = tempfile::TempDir::new().unwrap();
         let main = tmp.path().join("main");
-        fs::create_dir(&main).unwrap();
         init_repo(&main);
 
         let ctx = discover(Some(&main)).unwrap();
@@ -127,7 +97,6 @@ mod tests {
     fn discovers_from_subdirectory() {
         let tmp = tempfile::TempDir::new().unwrap();
         let main = tmp.path().join("main");
-        fs::create_dir(&main).unwrap();
         init_repo(&main);
         let sub = main.join("a").join("b");
         fs::create_dir_all(&sub).unwrap();
@@ -140,7 +109,6 @@ mod tests {
     fn discovers_main_from_linked_worktree() {
         let tmp = tempfile::TempDir::new().unwrap();
         let main = tmp.path().join("main");
-        fs::create_dir(&main).unwrap();
         init_repo(&main);
         let wt = tmp.path().join("wts").join("feat");
         git(

@@ -6,7 +6,7 @@
 //! same height, radius, and hover wash because they are literally built from
 //! the same functions.
 //!
-//! # Rules every component here follows (redesign COMPONENTS.md)
+//! # Rules every component here follows
 //!
 //! 1. **A component owns its look and its feedback; the caller owns
 //!    behaviour.** Components return `Stateful<Div>` (or `impl IntoElement`)
@@ -14,44 +14,22 @@
 //!    click handler as a parameter. The one function that bends this rule is
 //!    [`segmented`]; see its doc for why.
 //! 2. **No component reads `cx` for colors.** Every component takes `&Theme`
-//!    explicitly. ([`spinner`] takes `&App` too, but only to honor
-//!    `motion::reduced` — never for color.)
-//! 3. **Radii are concentric.** [`concentric_inner_radius`] is the tested
-//!    arithmetic helper; nested containers use it (or its documented
-//!    reasoning) rather than eyeballing a radius.
+//!    explicitly.
+//! 3. **Radii are concentric.** Nested containers hardcode the nearest
+//!    `RADIUS_*` constant rather than eyeballing a radius.
 //! 4. **Every interactive component has rest/hover/active/focused-or-selected
 //!    states**, and none of them is signalled by motion alone.
 //! 5. **Icon stroke matches text weight** — the set is Lucide 24×24
 //!    stroke-2 throughout; nothing here introduces a second stroke weight.
-//!
-//! # Back-compat during the migration
-//!
-//! Roughly 600 call sites across every render module use the pre-redesign
-//! names and signatures below (`icon`, `icon_button`,
-//! `row`, `action_row`, `meta`, `pill`, `button`, `ButtonVariant`, `kbd`,
-//! `modal_backdrop`, `modal_card`, `modal_header`, `modal_footer`,
-//! `empty_hint`, and the `ROW_HEIGHT`/`TITLEBAR_HEIGHT`/
-//! `TRAFFIC_LIGHT_CLEARANCE` consts). Every one of them is reimplemented
-//! against the new tokens below but kept **signature-compatible**, so this
-//! rewrite does not require touching any of those call sites. `section_header`
-//! and `section_header_with_action` used to live here too, for every screen's
-//! muted group label ("Repositories", "Worktrees"/"Commands", the four
-//! settings groups); every one of those eyebrows has since been removed in
-//! favor of spacing and hairline dividers, so both functions lost their last
-//! call site and were deleted rather than kept as unused vocabulary.
-//!
-//! A handful of components below are named as required vocabulary by
-//! COMPONENTS.md but have no render call site yet; each carries its own
-//! `#[allow(dead_code)]` with a specific reason at its definition rather
-//! than a blanket module-level allow, now that most of this file's
-//! vocabulary does have real call sites.
 
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::OnceLock;
 
 use gpui::prelude::*;
 use gpui::{
     div, linear_color_stop, linear_gradient, point, px, svg, AnyElement, AnyView, App, Context,
-    Div, ElementId, FontWeight, Hsla, Render, ScrollHandle, SharedString, Stateful, Window,
+    Div, ElementId, Font, FontWeight, Hsla, Render, ScrollHandle, SharedString, Stateful, Window,
 };
 
 use crate::motion;
@@ -65,23 +43,19 @@ use crate::theme::{
 // Layout constants
 // ---------------------------------------------------------------------------
 
-/// Height of a single-line action row (New Worktree, Search). Same value as
-/// [`crate::theme::ROW_HEIGHT`] — re-exported under its pre-redesign name
-/// because `ui.rs`'s existing call sites read `ui::ROW_HEIGHT` directly.
+/// Height of a single-line action row (New Worktree, Search). Re-exports
+/// [`crate::theme::ROW_HEIGHT`] so every `ui::ROW_HEIGHT` call site keeps
+/// reading from one source of truth.
 pub const ROW_HEIGHT: f32 = crate::theme::ROW_HEIGHT;
-/// Height of the window's title bar strip. Tightened from 48 to 44 per SPEC
-/// §4; re-exports [`crate::theme::TITLEBAR_HEIGHT`] so the number has one
-/// source of truth.
+/// Height of the window's title bar strip. Re-exports
+/// [`crate::theme::TITLEBAR_HEIGHT`].
 pub const TITLEBAR_HEIGHT: f32 = crate::theme::TITLEBAR_HEIGHT;
 /// Horizontal room the macOS traffic lights need before content may start.
-/// Unchanged; re-exports [`crate::theme::TRAFFIC_LIGHT_CLEARANCE`].
+/// Re-exports [`crate::theme::TRAFFIC_LIGHT_CLEARANCE`].
 pub const TRAFFIC_LIGHT_CLEARANCE: f32 = crate::theme::TRAFFIC_LIGHT_CLEARANCE;
 
-/// Text scale (SPEC §6). Now defined in `theme.rs` alongside the other
-/// density constants, per SPEC §8's module-layout doc — these are re-exports
-/// under the same names (same convention as [`ROW_HEIGHT`]/
-/// [`TITLEBAR_HEIGHT`] above) so every existing `ui::TEXT_*` call site keeps
-/// compiling unchanged.
+/// Text scale, re-exported from `theme.rs` under the same names so every
+/// `ui::TEXT_*` call site reads from one source of truth.
 pub const TEXT_XS: f32 = crate::theme::TEXT_XS;
 pub const TEXT_SM: f32 = crate::theme::TEXT_SM;
 pub const TEXT_BASE: f32 = crate::theme::TEXT_BASE;
@@ -89,17 +63,46 @@ pub const TEXT_MD: f32 = crate::theme::TEXT_MD;
 pub const TEXT_LG: f32 = crate::theme::TEXT_LG;
 pub const TEXT_XL: f32 = crate::theme::TEXT_XL;
 
-/// The bundled monospace family (SPEC §6: paths, SHAs, branch names, diff
-/// content). `Theme` now carries a real `font_mono` token
-/// ([`crate::theme::Theme::font_mono`]) — this re-exports
-/// [`crate::theme::FONT_MONO_DEFAULT`], the same constant that token is
-/// built from, instead of repeating the family name as an independent
-/// literal, so the two can't drift. Kept as a bare `&str` for the call sites
-/// in this file and elsewhere that reach for `ui::FONT_MONO` without a
-/// `&Theme` in scope (e.g. `diff_view.rs`'s module-level `font()` builder);
-/// [`meta`]/[`kbd`]/[`count_chip`] below prefer `theme.font_mono` directly
-/// now that they have a `&Theme` in scope anyway.
+/// The bundled monospace family (paths, SHAs, branch names, diff content).
+/// Re-exports [`crate::theme::FONT_MONO_DEFAULT`] as a bare `&str` for call
+/// sites that reach for it without a `&Theme` in scope (e.g. [`mono_font`]
+/// below); [`meta`]/[`kbd`] prefer `theme.font_mono` directly since they
+/// already have a `&Theme`.
 pub const FONT_MONO: &str = crate::theme::FONT_MONO_DEFAULT;
+
+/// Platform monospace fallbacks, tried in order after [`FONT_MONO`] if the
+/// bundled face fails to register.
+const MONOSPACE_FALLBACKS: &[&str] = &["SF Mono", "Menlo", "Monaco", "Courier New"];
+
+/// The app's one monospace font, for every surface that renders code, diffs,
+/// or command output (paths/SHAs/branch names use `theme.font_mono`
+/// directly instead, since they already have a `&Theme` in scope).
+pub fn mono_font() -> Font {
+    let mut f = gpui::font(FONT_MONO);
+    f.fallbacks = Some(gpui::FontFallbacks::from_fonts(
+        MONOSPACE_FALLBACKS.iter().map(|s| s.to_string()).collect(),
+    ));
+    f
+}
+
+/// Estimated advance width, in pixels, of one monospace character at the UI
+/// font's `TEXT_SM` size (~0.6em of the 12px UI font) — sizes columns (a
+/// diff gutter, a truncation budget) without a real shaped-text layout
+/// pass, which gpui has no API to measure outside of one.
+pub const CHAR_WIDTH_APPROX: f32 = 7.2;
+
+/// The user's home directory, read once and cached for [`display_path`].
+static HOME: OnceLock<Option<PathBuf>> = OnceLock::new();
+
+fn home_dir() -> Option<&'static Path> {
+    HOME.get_or_init(|| std::env::var_os("HOME").map(PathBuf::from))
+        .as_deref()
+}
+
+/// Home-relative display form of `path`, e.g. `~/code/project`.
+pub fn display_path(path: &Path) -> String {
+    wtm::output::abbreviate_path(path, home_dir())
+}
 
 // ---------------------------------------------------------------------------
 // Primitives
@@ -125,14 +128,15 @@ pub fn divider(theme: &Theme) -> Div {
     div().w_full().h(px(1.0)).flex_none().bg(theme.border)
 }
 
-/// A fixed-size flex gap, for the rare layout that wants an explicit spacer
-/// element instead of `.gap(..)` on the parent flex container.
-/// COMPONENTS.md's Primitives section names this required vocabulary; every
-/// render call site built so far has had a plain `.gap(..)` do the job
-/// instead, so it has no caller yet.
-#[allow(dead_code)]
-pub fn spacer(size: f32) -> Div {
-    div().flex_none().w(px(size)).h(px(size))
+/// `text`, or a single space if `text` is empty — an empty line in a log or
+/// diff body still needs to occupy its line height, which a genuinely empty
+/// text child does not reliably do.
+pub fn non_empty_or_space(text: &str) -> &str {
+    if text.is_empty() {
+        " "
+    } else {
+        text
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -146,9 +150,9 @@ pub fn spacer(size: f32) -> Div {
 /// inner offset" feel the ring wants without a genuine negative-offset
 /// primitive.
 ///
-/// Generic over [`Styled`] rather than the `Fn(Div) -> Div` COMPONENTS.md
-/// sketches, so the same implementation composes both with `.when(selected,
-/// focus_ring(theme))` for a statically-known selection flag (`Div`/
+/// Generic over [`Styled`] so the same implementation composes both with
+/// `.when(selected, focus_ring(theme))` for a statically-known selection
+/// flag (`Div`/
 /// `Stateful<Div>` both implement `Styled`) and with gpui's own live
 /// `.focus(focus_ring(theme))` / `.in_focus(..)` pseudo-classes, which
 /// operate on `StyleRefinement` — verified against gpui-0.2.2's
@@ -165,8 +169,8 @@ pub fn focus_ring<E: Styled>(theme: &Theme) -> impl Fn(E) -> E {
 /// doc for why this stands in for `scale(0.96)` in a framework with no div
 /// scale transform.
 ///
-/// **Not** correct for an opaque colored plate: SPEC §3 requires an opaque
-/// plate (`surface_raised` and friends) to *brighten*, never swap to a
+/// **Not** correct for an opaque colored plate: an opaque plate
+/// (`surface_raised` and friends) should *brighten*, never swap to a
 /// translucent wash. [`button`]'s `Primary`/`Secondary`/`Danger` variants
 /// rest on exactly such a plate, so they use a private `shade`-based press
 /// instead of this helper; only their `Ghost` variant (genuinely
@@ -191,10 +195,9 @@ pub fn press_feedback(el: Stateful<Div>, theme: &Theme) -> Stateful<Div> {
 /// of those call sites built its own "does this control actually have an
 /// action" branch already (`if can_submit { .. } else { button.opacity(0.4)
 /// }`); this is the component-layer half those branches were missing, not a
-/// new per-component `disabled: bool` parameter — COMPONENTS.md's rule 1
-/// ("a component owns its look; the caller owns behaviour") puts exactly
-/// this decision (is there a click handler behind this or not) at the call
-/// site, which is the only place that already knows the answer.
+/// new per-component `disabled: bool` parameter — a component owns its look
+/// while the caller owns behaviour, and the call site is the only place
+/// that already knows whether there's a click handler behind a control.
 ///
 /// Visual dimming stays the call site's job too: the button call sites above
 /// already chain `.opacity(0.4)`, and [`crate::dialogs::render_branch_row`]
@@ -209,17 +212,11 @@ pub fn disabled(el: Stateful<Div>) -> Stateful<Div> {
 // ---------------------------------------------------------------------------
 
 /// The base of every selectable row: `RADIUS_ROW`, one neutral wash for
-/// hover, a stronger one for selection.
-///
-/// This used to also paint a 2px accent bar down the row's leading edge on
-/// selection. Users read that mark as a stray line rather than a selection
-/// cue ("eyebrows... on the left side"), and it was never load-bearing —
-/// `element_active` already carries the selected state. It's gone; a
-/// coloured left border above 1px on a list item is decoration, not
-/// signal, and the app should not violate that rule anywhere. Selection now
-/// reads from the wash alone (see `element_active`'s doc in `theme.rs` for
-/// how it stays distinguishable from `element_hover`), with the focus ring
-/// still handling keyboard focus.
+/// hover, a stronger one for selection. Selection reads from the wash alone
+/// (see `element_active`'s doc in `theme.rs` for how it stays
+/// distinguishable from `element_hover`), with the focus ring handling
+/// keyboard focus — a coloured left border on a list item is decoration,
+/// not signal.
 pub fn row(id: impl Into<gpui::ElementId>, selected: bool, theme: &Theme) -> Stateful<Div> {
     let styled = div()
         .id(id.into())
@@ -232,11 +229,9 @@ pub fn row(id: impl Into<gpui::ElementId>, selected: bool, theme: &Theme) -> Sta
         .cursor_default()
         .when(selected, |this| this.bg(theme.element_active))
         .when(!selected, |this| this.hover(|s| s.bg(theme.element_hover)))
-        // Keyboard focus (COMPONENTS.md: `row` is the base of every
-        // selectable row, and rows are 3 of the 72 `on_click`-only, never-
-        // reachable-by-Tab sites the redesign audit flagged). Gated on
-        // `theme.tab_stops` — see that field's doc — so this stays out of
-        // the tab order for the background shell while a dialog covers it.
+        // Gated on `theme.tab_stops` — see that field's doc — so this stays
+        // out of the tab order for the background shell while a dialog
+        // covers it.
         .when(theme.tab_stops, |this| this.tab_index(0))
         .focus(focus_ring(theme));
 
@@ -244,9 +239,8 @@ pub fn row(id: impl Into<gpui::ElementId>, selected: bool, theme: &Theme) -> Sta
 }
 
 /// A single-line action row: icon, label, optional trailing shortcut hint.
-/// The shortcut renders as a [`kbd`] chip rather than plain text (SURFACES
-/// §1) — the sidebar's "New Worktree"/"Search" rows are what this exists
-/// for.
+/// The shortcut renders as a [`kbd`] chip rather than plain text — the
+/// sidebar's "New Worktree"/"Search" rows are what this exists for.
 pub fn action_row(
     id: impl Into<gpui::ElementId>,
     path: &'static str,
@@ -285,10 +279,9 @@ pub fn action_row(
 }
 
 /// A meta item for a row's second line: a small icon and a muted label.
-/// Paths, SHAs and branch names are exactly what this renders in practice
-/// (SURFACES §3/§4), so the label always takes `theme.font_mono` (COMPONENTS
-/// .md's own wording for this component) — a SHA in a proportional face is a
-/// small but constant readability tax.
+/// Paths, SHAs and branch names are exactly what this renders in practice,
+/// so the label always takes `theme.font_mono` — a SHA in a proportional
+/// face is a small but constant readability tax.
 pub fn meta(path: &'static str, label: impl Into<SharedString>, theme: &Theme) -> impl IntoElement {
     div()
         .flex()
@@ -332,10 +325,10 @@ pub fn pill(label: impl Into<SharedString>, color: Hsla) -> impl IntoElement {
         )
 }
 
-/// A neutral chip for non-status labels, e.g. the `main` branch badge.
-/// Unlike [`pill`], `badge` paints its own `surface_raised` plate: it is
-/// meant to stand alone rather than sit inside an already-neutral row.
-pub fn badge(label: impl Into<SharedString>, theme: &Theme) -> impl IntoElement {
+/// The `main` branch badge. Unlike [`pill`], it paints its own
+/// `surface_raised` plate: it is meant to stand alone rather than sit inside
+/// an already-neutral row.
+pub fn main_badge(theme: &Theme) -> impl IntoElement {
     div()
         .flex()
         .flex_none()
@@ -346,7 +339,7 @@ pub fn badge(label: impl Into<SharedString>, theme: &Theme) -> impl IntoElement 
         .bg(theme.surface_raised)
         .text_size(px(TEXT_XS))
         .text_color(theme.text_muted)
-        .child(label.into())
+        .child("main")
 }
 
 /// A small keyboard-shortcut badge, for next to a button's label or inside
@@ -367,30 +360,6 @@ pub fn kbd(keys: &str, theme: &Theme) -> impl IntoElement {
         .text_size(px(TEXT_XS))
         .text_color(theme.text_ghost)
         .child(keys.to_string())
-}
-
-/// A small numeric chip (e.g. a selection count). Tabular-ish alignment via
-/// `theme.font_mono` rather than a font feature gpui 0.2.2 has no API for.
-/// COMPONENTS.md's Chips section names this required vocabulary. The one
-/// numeric-count surface built so far (`app/chrome.rs`'s "N selected"
-/// footer chip) renders as a full `ui::meta` text label, not a small
-/// circular badge, so this has no caller yet.
-#[allow(dead_code)]
-pub fn count_chip(n: usize, theme: &Theme) -> impl IntoElement {
-    div()
-        .flex()
-        .flex_none()
-        .items_center()
-        .justify_center()
-        .min_w(px(16.0))
-        .h(px(16.0))
-        .px(px(SPACE_4))
-        .rounded_full()
-        .bg(theme.surface_raised)
-        .font_family(theme.font_mono)
-        .text_size(px(TEXT_XS))
-        .text_color(theme.text_muted)
-        .child(n.to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -424,7 +393,7 @@ fn shade(color: Hsla, delta: f32) -> Hsla {
 /// by [`button`] and [`toolbar_button`] so the two stay visually identical
 /// apart from the leading icon. `Primary`/`Danger` carry `on_accent` — never
 /// `theme.text`, which goes near-white in dark mode and washes out on a
-/// colored plate (COMPONENTS.md's Buttons section).
+/// colored plate.
 fn button_colors(variant: ButtonVariant, theme: &Theme) -> (Hsla, Hsla, Hsla) {
     match variant {
         ButtonVariant::Primary => (
@@ -442,9 +411,9 @@ fn button_colors(variant: ButtonVariant, theme: &Theme) -> (Hsla, Hsla, Hsla) {
     }
 }
 
-/// Press feedback for a button, honoring SPEC §3's "brighten an opaque
-/// plate, never swap it for a translucent wash" rule: `Primary`/
-/// `Secondary`/`Danger` rest on an opaque fill, so their press state is a
+/// Press feedback for a button: an opaque plate should brighten, never swap
+/// to a translucent wash, so `Primary`/`Secondary`/`Danger` rest on an
+/// opaque fill and their press state is a
 /// further [`shade`] of that same fill plus a 1px inset — the same
 /// mechanic [`press_feedback`] uses, without the wash swap that would be
 /// wrong here. Only `Ghost` rests on a genuinely transparent fill, where
@@ -468,8 +437,8 @@ fn button_press(
 /// only owns the look and the hover/press feedback, the same split as
 /// [`row`] and [`action_row`] above.
 ///
-/// Exactly one `Primary` belongs in any single view (COMPONENTS.md) — that
-/// is a call-site discipline, not something this function can enforce.
+/// Exactly one `Primary` belongs in any single view — that is a call-site
+/// discipline, not something this function can enforce.
 pub fn button(
     id: impl Into<gpui::ElementId>,
     label: impl Into<SharedString>,
@@ -499,11 +468,7 @@ pub fn button(
 }
 
 /// A square icon button, as used in the title bar and toolbars.
-pub fn icon_button(
-    id: impl Into<gpui::ElementId>,
-    path: &'static str,
-    theme: &Theme,
-) -> Stateful<Div> {
+fn icon_button(id: impl Into<gpui::ElementId>, path: &'static str, theme: &Theme) -> Stateful<Div> {
     let styled = div()
         .id(id.into())
         .w(px(ICON_BUTTON_SIZE))
@@ -522,23 +487,13 @@ pub fn icon_button(
     press_feedback(styled, theme)
 }
 
-/// The tooltip view every `.tooltip(..)` call site in this crate should
-/// build from: a real popover recipe (`surface_overlay`, `RADIUS_CONTROL`,
-/// `shadow_popover`, `TEXT_SM`, a hairline `border`), styled per
-/// COMPONENTS.md rather than the bare-plate treatment this type used to
-/// hardcode privately as `SimpleTooltip`.
+/// The tooltip view every `.tooltip(..)` call site in this crate builds
+/// from: a popover recipe (`surface_overlay`, `RADIUS_CONTROL`,
+/// `shadow_popover`, `TEXT_SM`, a hairline `border`).
 ///
-/// gpui 0.2.2 ships no built-in tooltip widget (verified: no `Tooltip` type
-/// anywhere in the vendored `gpui-0.2.2` source) — `.tooltip(..)` only takes
-/// a closure that builds an `AnyView`, so *some* `Render` type has to exist
-/// to produce one. Before [`tooltip`] existed to construct this publicly,
-/// the only way to get a tooltip at all from outside this file was to
-/// duplicate the (then-private) recipe wholesale: `app/chrome.rs`
-/// (`ChromeTooltip`) and `detail_panel.rs` (`TruncatedValueTooltip`) each
-/// did exactly that. Both duplicates are gone now — the follow-up sweep
-/// deleted them and routed every call site (in `app/chrome.rs`,
-/// `detail_panel.rs`, `worktree_list.rs`, `diff_view.rs`, `file_browser.rs`)
-/// through [`tooltip`] instead.
+/// gpui 0.2.2 ships no built-in tooltip widget — `.tooltip(..)` only takes a
+/// closure that builds an `AnyView`, so *some* `Render` type has to exist to
+/// produce one.
 struct Tooltip {
     text: SharedString,
 }
@@ -583,11 +538,8 @@ pub fn tooltip(
     move |_window, cx| cx.new(|_cx| Tooltip { text: text.clone() }).into()
 }
 
-/// An [`icon_button`] with a named-and-shortcut tooltip. COMPONENTS.md calls
-/// an icon-only control with no accessible name "the single most common
-/// usability defect in this app today" — every titlebar/toolbar icon button
-/// should move to this over `icon_button` once a later phase wires up call
-/// sites.
+/// A square icon button with a named-and-shortcut tooltip, for a titlebar or
+/// toolbar control that has no other visible label.
 pub fn icon_button_with_tooltip(
     id: impl Into<gpui::ElementId>,
     path: &'static str,
@@ -598,10 +550,9 @@ pub fn icon_button_with_tooltip(
 }
 
 /// An icon-plus-label toolbar action (e.g. "New Worktree" / "Prune"). Takes
-/// a [`ButtonVariant`] — unlike COMPONENTS.md's 4-argument sketch — because
-/// SURFACES §3 wants both a filled primary ("New Worktree") and a neutral
-/// secondary ("Prune") toolbar action built from the same icon+label shape;
-/// a single fixed treatment could not serve both.
+/// a [`ButtonVariant`] because a filled primary ("New Worktree") and a
+/// neutral secondary ("Prune") toolbar action both build from this same
+/// icon+label shape; a single fixed treatment could not serve both.
 pub fn toolbar_button(
     id: impl Into<gpui::ElementId>,
     icon_path: &'static str,
@@ -713,42 +664,6 @@ pub fn segmented<T: Clone + PartialEq + 'static>(
 // Surfaces
 // ---------------------------------------------------------------------------
 
-/// An inline card resting on the content plane (`bg`). `shadow_card` +
-/// `border` carry separation; `RADIUS_PANEL` since a card is a
-/// self-contained block, not a single-line row. COMPONENTS.md's Surfaces
-/// section names this required vocabulary; no render call site builds an
-/// inline card on the content plane yet.
-#[allow(dead_code)]
-pub fn card(theme: &Theme) -> Div {
-    div()
-        .flex()
-        .flex_col()
-        .bg(theme.surface_card)
-        .border_1()
-        .border_color(theme.border)
-        .rounded(px(RADIUS_PANEL))
-        .shadow(theme.shadow_card())
-}
-
-/// A pane with its own hairline border (sidebar/detail-panel style
-/// container), flush against its neighbors rather than floating — no
-/// shadow, since panes are structural chrome, not elevated content.
-/// COMPONENTS.md's Surfaces section names this required vocabulary.
-/// `app/chrome.rs::render_sidebar` builds its own container by hand instead
-/// (`.bg(theme.glass())`, not this function's `.bg(theme.surface)` —
-/// the sidebar is translucent chrome, not an opaque pane, so this doesn't
-/// fit it as-is), and the detail panel's container does the same; no
-/// current pane wants the plain-`surface` shape this returns.
-#[allow(dead_code)]
-pub fn panel(theme: &Theme) -> Div {
-    div()
-        .flex()
-        .flex_col()
-        .bg(theme.surface)
-        .border_1()
-        .border_color(theme.border)
-}
-
 /// Menu / palette / context-menu surface: the highest plane, `RADIUS_PANEL`,
 /// `shadow_popover`. Callers wrap this with `motion::menu_in` at the render
 /// call site for the entrance animation — this function only owns the look.
@@ -777,9 +692,7 @@ pub fn popover(theme: &Theme) -> Div {
 /// top of it. The caller stacks this as a top-level, absolutely-positioned
 /// child — it is not meant to participate in normal layout flow.
 ///
-/// `scrim` (SPEC §2) is context-free, so this needs no `&Theme` — kept at
-/// its original zero-argument signature for that reason, not only for
-/// migration compatibility.
+/// `scrim` is context-free, so this needs no `&Theme`.
 pub fn modal_backdrop() -> Div {
     div()
         .absolute()
@@ -799,7 +712,7 @@ pub fn modal_backdrop() -> Div {
 /// The dialog surface itself: a raised panel with enough shadow to read as
 /// floating above the scrim, at a fixed width so its content doesn't
 /// reflow while its data loads. `RADIUS_DIALOG`; fields inside it use
-/// `RADIUS_CONTROL` (COMPONENTS.md's Surfaces section).
+/// `RADIUS_CONTROL`.
 pub fn modal_card(width: f32, theme: &Theme) -> Div {
     div()
         .w(px(width))
@@ -856,9 +769,8 @@ pub fn modal_header(
 
 /// A right-aligned button row along a modal's bottom edge, separated from
 /// the body by a hairline so it reads as the dialog's fixed action bar even
-/// when the content above it scrolls. This hairline is structural (SURFACES
-/// "Non-negotiables"), so it stays even though most in-pane separators are
-/// deleted in favor of spacing.
+/// when the content above it scrolls — structural, unlike most in-pane
+/// separators, which are spacing instead.
 pub fn modal_footer(theme: &Theme) -> Div {
     div()
         .flex()
@@ -882,9 +794,8 @@ pub fn modal_footer(theme: &Theme) -> Div {
 
 /// Centered, muted helper text for an empty state inside a panel — the
 /// "Run `wtm` inside a repository…" line's shape, generalized so other
-/// panels don't have to hand-roll it. Kept for its existing call sites; new
-/// empty states should prefer [`empty_state`], which adds the icon/headline
-/// treatment COMPONENTS.md calls for.
+/// panels don't have to hand-roll it. A designed empty state (icon,
+/// headline, hint) should prefer [`empty_state`] instead.
 pub fn empty_hint(text: impl Into<SharedString>, theme: &Theme) -> impl IntoElement {
     div()
         .flex_1()
@@ -899,14 +810,8 @@ pub fn empty_hint(text: impl Into<SharedString>, theme: &Theme) -> impl IntoElem
 /// [`empty_hint`]'s error sibling: the same centered, panel-filling layout,
 /// but in `theme.danger` with a leading alert icon so an error reads as
 /// distinct from "loading…"/"nothing here" at a glance rather than only in
-/// its wording — color is never the only channel (SPEC §5), hence the icon,
-/// same rule [`inline_error`] already follows for a dialog field.
-/// `detail_panel`'s Files/Changes tabs (`app/chrome.rs::render_file_tree`/
-/// `render_selected_file_diff`/`render_changes_tab`) were rendering "Could
-/// not list files: …"/"Could not load diff: …"/"Could not compute changes:
-/// …" through plain [`empty_hint`] — indistinguishable from every loading
-/// and empty state around them except by reading the sentence — until this
-/// existed.
+/// its wording — color is never the only channel, hence the icon, same rule
+/// [`inline_error`] follows for a dialog field.
 pub fn empty_hint_error(message: impl Into<SharedString>, theme: &Theme) -> impl IntoElement {
     div()
         .flex_1()
@@ -921,9 +826,8 @@ pub fn empty_hint_error(message: impl Into<SharedString>, theme: &Theme) -> impl
 }
 
 /// A designed empty state: icon above headline, a supporting hint line, and
-/// an optional action slot (e.g. "No worktrees yet" → `New Worktree`).
-/// COMPONENTS.md: "an empty state is a designed state, not an absence of
-/// one."
+/// an optional action slot (e.g. "No worktrees yet" → `New Worktree`) — an
+/// empty state is a designed state, not an absence of one.
 pub fn empty_state(
     icon_path: &'static str,
     title: impl Into<SharedString>,
@@ -958,37 +862,10 @@ pub fn empty_state(
         })
 }
 
-/// A loading-indicator spinner. Thin wrapper over [`motion::spin`] — needs
-/// `&App` (unlike every other component here) purely to honor
-/// `motion::reduced`, never for color; SPEC §5 requires a mounted spinner to
-/// stop repainting once its state leaves, which `motion::spin` already
-/// handles by rendering a static icon and mounting no animation at all when
-/// reduced motion is on. COMPONENTS.md's States section names this required
-/// vocabulary. `app/chrome.rs::render_reload_button` — this app's one
-/// spin-on-loading control — calls `motion::spin` directly instead and
-/// says why in its own doc: it needs a *button* that swaps a static/spinning
-/// icon, not this bare icon-only spinner, and building that animated
-/// `icon_button` variant is explicitly flagged there as belonging in this
-/// file, not yet done.
-#[allow(dead_code)]
-pub fn spinner(
-    id: impl Into<gpui::ElementId>,
-    size: f32,
-    theme: &Theme,
-    cx: &App,
-) -> impl IntoElement {
-    let icon = svg()
-        .path(crate::assets::icons::LOADER_CIRCLE)
-        .size(px(size))
-        .flex_none()
-        .text_color(theme.text_muted);
-    motion::spin(id, icon, cx)
-}
-
-/// A loading placeholder: a static, rounded `surface_inset` block. SURFACES
-/// §4 prefers this over a spinner for recent-commits loading — "the shape
-/// of what is coming is better feedback than a spinner" — so this
-/// deliberately does not animate.
+/// A loading placeholder: a static, rounded `surface_inset` block. Preferred
+/// over a spinner for recent-commits loading — the shape of what is coming
+/// is better feedback than a spinner — so this deliberately does not
+/// animate.
 pub fn skeleton(width: f32, height: f32, theme: &Theme) -> Div {
     div()
         .w(px(width))
@@ -999,7 +876,7 @@ pub fn skeleton(width: f32, height: f32, theme: &Theme) -> Div {
 }
 
 /// An inline validation error: icon + message in `danger`, for under a
-/// dialog field. Color is never the only channel (SPEC §5), hence the icon.
+/// dialog field. Color is never the only channel, hence the icon.
 pub fn inline_error(message: impl Into<SharedString>, theme: &Theme) -> impl IntoElement {
     div()
         .flex()
@@ -1018,7 +895,7 @@ pub fn inline_error(message: impl Into<SharedString>, theme: &Theme) -> impl Int
 /// A gradient that fades content into `surface` at a scroll region's top
 /// edge. `linear_gradient` over an **opaque** surface only — over the
 /// translucent (vibrancy) sidebar there is nothing to fade into, because
-/// "what is behind the window" is not a paintable color (COMPONENTS.md).
+/// "what is behind the window" is not a paintable color.
 /// Used on the worktree list and the detail panel's Details/Changes tabs
 /// (`app::chrome`); never on the sidebar (translucent) or the Files tab's
 /// tree column (`SPACE_2`-wide, no room to spare — see that call site).
@@ -1089,32 +966,25 @@ pub fn scroll_edges(offset: f32, max_offset: f32) -> ScrollEdges {
 // Scrollbar
 // ---------------------------------------------------------------------------
 
-/// gpui 0.2.2 ships no scrollbar widget at all — grepped the vendored
-/// source (`elements/`, `style.rs`) and found exactly one trace of the
-/// concept, `Style::scrollbar_width`, a layout-reservation number with no
-/// paint, no thumb, and no drag behind it. Zed hand-builds its own on top of
-/// its git-fork `gpui`; this is wtm's equivalent, built on the crates.io
-/// release (SPEC §0) from primitives that *do* exist here:
-/// `ScrollHandle::offset()`/`max_offset()` for geometry, and — for the
-/// drag — gpui's drag-and-drop pair `on_drag`/`on_drag_move`, repurposed
-/// for a non-DnD drag exactly the way `on_drag_move`'s own doc invites:
-/// "useful for implementing draggable UIs that don't conform to a drag and
-/// drop style interaction, like resizing."
+/// gpui 0.2.2 ships no scrollbar widget at all, so this is a hand-built one:
+/// `ScrollHandle::offset()`/`max_offset()` for geometry, and gpui's
+/// drag-and-drop pair `on_drag`/`on_drag_move`, repurposed for a non-DnD
+/// drag the way `on_drag_move`'s own doc invites: "useful for implementing
+/// draggable UIs that don't conform to a drag and drop style interaction,
+/// like resizing."
 ///
 /// # Why drag-and-drop primitives for a scrollbar thumb
 ///
 /// A plain `.on_mouse_move(..)` only fires while the pointer stays over the
-/// element's own hitbox (`Interactivity::on_mouse_move`, gated on
-/// `hitbox.is_hovered(window)`) — exactly wrong for a drag, since a fast
-/// drag routinely carries the pointer outside a several-pixel-wide thumb.
+/// element's own hitbox — exactly wrong for a drag, since a fast drag
+/// routinely carries the pointer outside a several-pixel-wide thumb.
 /// `on_drag_move::<T>` is the one listener gpui dispatches regardless of
 /// hover, for as long as a same-typed drag is active, which is what keeps
 /// the thumb tracking the cursor past its own edges. The trade-off: gpui
 /// matches `on_drag_move::<T>` purely by `TypeId`, not by which element
-/// started the drag, so *every* mounted scrollbar of the same axis receives
-/// every move event once any one of them is being dragged — see
-/// [`ScrollbarDrag`]'s `id` field for how each listener ignores a drag that
-/// isn't its own.
+/// started the drag, so *every* mounted scrollbar receives every move event
+/// once any one of them is being dragged — see [`ScrollbarDrag`]'s `id`
+/// field for how each listener ignores a drag that isn't its own.
 ///
 /// # Wiring
 ///
@@ -1123,39 +993,16 @@ pub fn scroll_edges(offset: f32, max_offset: f32) -> ScrollEdges {
 /// descendant — a child of the scrolling element scrolls away with its own
 /// content, which would drag the overlay out of view along with the list.
 ///
-/// # Focus
-///
-/// The thumb is drag-only and takes no click/keyboard action of its own, so
-/// it is intentionally not part of `Theme::tab_stops`' focus trap — the
-/// scroll region it belongs to is already keyboard-scrollable by other
-/// means (arrow keys on the list/tree, page up/down), and a tab stop that
-/// does nothing on Enter/Space would be a trap, not an affordance.
-///
 /// Renders an empty, zero-size element when [`scrollbar_thumb`] finds no
-/// overflow — hidden, not just invisible, so it never reserves layout room
-/// (COMPONENTS.md: "overlay it inside the scroll container, do not consume
-/// layout width").
-///
-/// Takes no `&Theme` — like [`pill`], it paints from the context-free
-/// `hairline()` helper alone, so there is nothing theme-shaped to plumb
-/// through.
-pub fn scrollbar(id: impl Into<ElementId>, handle: &ScrollHandle, axis: ScrollAxis) -> AnyElement {
+/// overflow, so it never reserves layout room.
+pub fn scrollbar(id: impl Into<ElementId>, handle: &ScrollHandle) -> AnyElement {
     let id = id.into();
     let bounds = handle.bounds();
     let max = handle.max_offset();
     let off = handle.offset();
-    let (viewport, max_offset, offset) = match axis {
-        ScrollAxis::Vertical => (
-            f32::from(bounds.size.height),
-            f32::from(max.height),
-            f32::from(off.y),
-        ),
-        ScrollAxis::Horizontal => (
-            f32::from(bounds.size.width),
-            f32::from(max.width),
-            f32::from(off.x),
-        ),
-    };
+    let viewport = f32::from(bounds.size.height);
+    let max_offset = f32::from(max.height);
+    let offset = f32::from(off.y);
 
     let Some(geometry) = scrollbar_thumb(viewport, max_offset, offset) else {
         return div().into_any_element();
@@ -1175,22 +1022,13 @@ pub fn scrollbar(id: impl Into<ElementId>, handle: &ScrollHandle, axis: ScrollAx
             ScrollbarDrag {
                 id: track_id.clone(),
                 handle: handle.clone(),
-                axis,
             },
             |_payload, _cursor_offset, _window, cx| cx.new(|_cx| DragGhost),
-        );
-    let thumb = match axis {
-        ScrollAxis::Vertical => thumb
-            .top(px(geometry.position))
-            .right(px(SCROLLBAR_INSET))
-            .w(px(SCROLLBAR_THICKNESS))
-            .h(px(geometry.length)),
-        ScrollAxis::Horizontal => thumb
-            .left(px(geometry.position))
-            .bottom(px(SCROLLBAR_INSET))
-            .h(px(SCROLLBAR_THICKNESS))
-            .w(px(geometry.length)),
-    };
+        )
+        .top(px(geometry.position))
+        .right(px(SCROLLBAR_INSET))
+        .w(px(SCROLLBAR_THICKNESS))
+        .h(px(geometry.length));
 
     div()
         .absolute()
@@ -1202,72 +1040,34 @@ pub fn scrollbar(id: impl Into<ElementId>, handle: &ScrollHandle, axis: ScrollAx
         // `InteractiveElement`-only method (unlike `on_drag`, it needs no
         // `Stateful<Div>`), and this track div's only job is supplying
         // `DragMoveEvent::bounds` (its own painted bounds, used below to
-        // convert the live cursor position back into a scroll fraction) —
-        // see this function's own "why drag-and-drop primitives" doc.
+        // convert the live cursor position back into a scroll fraction).
         .on_drag_move::<ScrollbarDrag>(move |event, _window, cx| {
             let drag = event.drag(cx);
             if drag.id != track_id {
                 // Not this scrollbar's own drag — see `ScrollbarDrag::id`'s
-                // doc for why every mounted scrollbar of this axis sees
-                // every drag move event and must filter for its own.
+                // doc for why every mounted scrollbar sees every drag move
+                // event and must filter for its own.
                 return;
             }
             let track_bounds = event.bounds;
-            let (track_len, track_origin, cursor) = match drag.axis {
-                ScrollAxis::Vertical => (
-                    f32::from(track_bounds.size.height),
-                    f32::from(track_bounds.origin.y),
-                    f32::from(event.event.position.y),
-                ),
-                ScrollAxis::Horizontal => (
-                    f32::from(track_bounds.size.width),
-                    f32::from(track_bounds.origin.x),
-                    f32::from(event.event.position.x),
-                ),
-            };
-            let max_offset = match drag.axis {
-                ScrollAxis::Vertical => f32::from(drag.handle.max_offset().height),
-                ScrollAxis::Horizontal => f32::from(drag.handle.max_offset().width),
-            };
+            let track_len = f32::from(track_bounds.size.height);
+            let track_origin = f32::from(track_bounds.origin.y);
+            let cursor = f32::from(event.event.position.y);
+            let max_offset = f32::from(drag.handle.max_offset().height);
             let Some(new_offset) =
                 scrollbar_drag_offset(track_len, track_origin, cursor, max_offset)
             else {
                 return;
             };
             let current = drag.handle.offset();
-            let updated = match drag.axis {
-                ScrollAxis::Vertical => point(current.x, px(new_offset)),
-                ScrollAxis::Horizontal => point(px(new_offset), current.y),
-            };
-            drag.handle.set_offset(updated);
+            drag.handle.set_offset(point(current.x, px(new_offset)));
         })
         .child(thumb)
         .into_any_element()
 }
 
-/// Axis a [`scrollbar`] tracks — the caller already knows this from its own
-/// layout (a vertical list, a horizontally-scrolling diff line), so it is a
-/// parameter rather than something [`scrollbar`] infers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ScrollAxis {
-    Vertical,
-    /// No call site yet: `diff_view::render_hunks` is this app's one
-    /// horizontally-scrolling region (per SPEC's own "Long lines" doc), but
-    /// it scrolls *per file* inside the Changes tab, and `diff_view.rs` is
-    /// deliberately pure rendering with no `Context<WtmApp>` to persist a
-    /// per-file `ScrollHandle` across frames in (see that module's doc) —
-    /// wiring it needs `WtmApp` to own a `ScrollHandle` keyed by diff path
-    /// and thread it down, which is more than this pass's five named scroll
-    /// regions (Changes tab, Files tab, worktree list, settings sheet,
-    /// palette results) called for. Kept, not deleted, since [`scrollbar`]
-    /// is already fully axis-generic and this is exactly what the variant
-    /// is for once that wiring lands.
-    #[allow(dead_code)]
-    Horizontal,
-}
-
-/// Scrollbar thumb thickness — thin and "quiet at rest" (COMPONENTS.md),
-/// derived from [`SPACE_6`] rather than an invented pixel value.
+/// Scrollbar thumb thickness — thin and quiet at rest, derived from
+/// [`SPACE_6`] rather than an invented pixel value.
 const SCROLLBAR_THICKNESS: f32 = SPACE_6;
 /// Gap between the thumb and the scroll region's own edge.
 const SCROLLBAR_INSET: f32 = SPACE_2;
@@ -1284,9 +1084,8 @@ const SCROLLBAR_MIN_THUMB: f32 = SPACE_32;
 /// `ScrollHandle` — see [`scroll_edges`]'s doc for the shared sign
 /// convention. `None` when there is nothing to scroll (`max_offset <= 0`, or
 /// a degenerate `viewport <= 0` before the region's first real layout
-/// pass) — the caller hides the scrollbar entirely in that case
-/// (COMPONENTS.md: "show it when there is overflow; hide it when there is
-/// not").
+/// pass) — the caller hides the scrollbar entirely in that case: show it
+/// when there is overflow, hide it when there is not.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ThumbGeometry {
     /// Thumb length along the scroll axis, in px.
@@ -1368,7 +1167,6 @@ pub fn scrollbar_drag_offset(
 struct ScrollbarDrag {
     id: ElementId,
     handle: ScrollHandle,
-    axis: ScrollAxis,
 }
 
 /// The `on_drag` API requires *some* `Render` view to show under the cursor
@@ -1495,86 +1293,9 @@ mod scroll_tests {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Radius arithmetic
-// ---------------------------------------------------------------------------
-
-/// The concentric-radius rule (SPEC §4): `outer = inner + padding`. Given an
-/// outer container's radius and the padding between its edge and a nested
-/// element, returns the inner element's ideal radius — clamped to zero (a
-/// padding larger than the outer radius has no negative-radius answer), then
-/// snapped to the nearest step in the `RADIUS_*` ladder so nested corners
-/// land on an actual token instead of an arbitrary computed float.
-///
-/// Worked example this passes: [`segmented`]'s own nesting is
-/// `RADIUS_CONTROL` (6) plate around `RADIUS_CHIP` (4) segments at 2px
-/// padding — `6 == 4 + 2` exactly, so `concentric_inner_radius(RADIUS_CONTROL,
-/// SPACE_2) == RADIUS_CHIP`. SPEC §4's own dialog-nesting worked example
-/// ("...use RADIUS_CONTROL (6) with 8px padding inside a RADIUS_ROW (8+6=14
-/// ≈ panel) container") does not check out arithmetically — `8 + 6 = 14` is
-/// `RADIUS_DIALOG`, not `RADIUS_PANEL` (10) — flagged rather than encoded
-/// into this helper's tests.
-///
-/// This module's own doc says nested containers use this helper "or its
-/// documented reasoning" — every real nesting call site built so far
-/// (`segmented`'s own chip-in-plate nesting; `context_menu.rs`'s and
-/// `palette.rs`'s inset wells) takes the second option: hardcode the
-/// already-known nearest `RADIUS_*` constant and cite this function's
-/// worked example in a comment, rather than pay a runtime call for a value
-/// that's compile-time-knowable. This function's job is the tested half of
-/// that pair — its test suite is what keeps those comments honest — not a
-/// call site of its own.
-#[allow(dead_code)]
-pub fn concentric_inner_radius(outer: f32, padding: f32) -> f32 {
-    const LADDER: [f32; 5] = [
-        RADIUS_CHIP,
-        RADIUS_CONTROL,
-        RADIUS_ROW,
-        RADIUS_PANEL,
-        RADIUS_DIALOG,
-    ];
-    let ideal = (outer - padding).max(0.0);
-    LADDER
-        .iter()
-        .copied()
-        .min_by(|a, b| (a - ideal).abs().total_cmp(&(b - ideal).abs()))
-        .unwrap_or(0.0)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn concentric_inner_radius_snaps_to_the_ladder() {
-        // segmented's own control-plate/chip nesting: 6 - 2 = 4 exactly.
-        assert_eq!(
-            concentric_inner_radius(RADIUS_CONTROL, SPACE_2),
-            RADIUS_CHIP
-        );
-        // 10 - 4 = 6 exactly.
-        assert_eq!(
-            concentric_inner_radius(RADIUS_PANEL, SPACE_4),
-            RADIUS_CONTROL
-        );
-    }
-
-    #[test]
-    fn concentric_inner_radius_clamps_before_snapping() {
-        // A padding bigger than the outer radius clamps to zero rather than
-        // going negative, then snaps to the ladder's smallest step.
-        assert_eq!(
-            concentric_inner_radius(RADIUS_DIALOG, SPACE_32),
-            RADIUS_CHIP
-        );
-        assert_eq!(concentric_inner_radius(0.0, 10.0), RADIUS_CHIP);
-    }
-
-    #[test]
-    fn concentric_inner_radius_picks_the_closer_neighbor() {
-        // 8.5 sits between RADIUS_ROW (8) and RADIUS_PANEL (10); 8 is closer.
-        assert_eq!(concentric_inner_radius(9.5, 1.0), RADIUS_ROW);
-    }
 
     #[test]
     fn shade_clamps_lightness_to_the_unit_range() {
@@ -1593,15 +1314,5 @@ mod tests {
         };
         assert_eq!(shade(bright, 0.5).l, 1.0, "cannot exceed 1");
         assert!((shade(base, 0.1).l - 0.15).abs() < 1e-6);
-    }
-
-    #[test]
-    fn layout_aliases_match_their_theme_source() {
-        assert_eq!(ROW_HEIGHT, crate::theme::ROW_HEIGHT);
-        assert_eq!(TITLEBAR_HEIGHT, crate::theme::TITLEBAR_HEIGHT);
-        assert_eq!(
-            TRAFFIC_LIGHT_CLEARANCE,
-            crate::theme::TRAFFIC_LIGHT_CLEARANCE
-        );
     }
 }

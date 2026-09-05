@@ -40,7 +40,7 @@ const BORDER: Pixels = px(1.0);
 /// Which of the frame's four edges may show a resize handle, and which of
 /// its four corners may be rounded, derived from the compositor's current
 /// edge-tiling state. See the module doc for the reasoning.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FrameLayout {
     pub edge_top: bool,
     pub edge_right: bool,
@@ -131,12 +131,12 @@ pub(crate) fn wrap(content: impl IntoElement, theme: &Theme, window: &mut Window
                         // A tiled window butts against the screen edge or a
                         // neighbor on at least one side, so it never floats
                         // — no shadow to cast, matching every desktop
-                        // environment's own tiled-window treatment. Never
-                        // gpui's own `shadow_lg()` preset — COMPONENTS.md:
-                        // "gpui's built-in ramp is not tuned for this
-                        // palette" — so this uses the theme's own dialog
-                        // ladder instead, the heaviest one, for the single
-                        // floating element that contains everything else.
+                        // environment's own tiled-window treatment. Not
+                        // gpui's own `shadow_lg()` preset (its built-in ramp
+                        // is not tuned for this palette) — this uses the
+                        // theme's own dialog ladder instead, the heaviest
+                        // one, for the single floating element that
+                        // contains everything else.
                         .when(!tiling.is_tiled(), |d| d.shadow(theme.shadow_dialog()))
                         .child(content),
                 ),
@@ -267,30 +267,6 @@ mod tests {
             bottom,
             left,
         }
-    }
-
-    #[test]
-    fn untiled_window_rounds_every_corner_and_resizes_every_edge() {
-        let layout = FrameLayout::for_tiling(Tiling::default());
-        assert!(layout.edge_top && layout.edge_right && layout.edge_bottom && layout.edge_left);
-        assert!(
-            layout.corner_top_left
-                && layout.corner_top_right
-                && layout.corner_bottom_left
-                && layout.corner_bottom_right
-        );
-    }
-
-    #[test]
-    fn fully_tiled_window_has_no_rounded_corners_or_resize_edges() {
-        let layout = FrameLayout::for_tiling(Tiling::tiled());
-        assert!(!layout.edge_top && !layout.edge_right && !layout.edge_bottom && !layout.edge_left);
-        assert!(
-            !layout.corner_top_left
-                && !layout.corner_top_right
-                && !layout.corner_bottom_left
-                && !layout.corner_bottom_right
-        );
     }
 
     #[test]

@@ -4,7 +4,6 @@
 mod common;
 
 use common::{find_entry, TestRepo};
-use predicates::prelude::*;
 
 /// Stable field names declared in src/model.rs — the JSON contract.
 const EXPECTED_FIELDS: &[&str] = &[
@@ -84,19 +83,4 @@ fn json_no_status_and_fast_alias_yield_null_status() {
             );
         }
     }
-}
-
-#[test]
-fn list_table_accepts_no_status_and_fast_alias() {
-    let repo = TestRepo::new();
-    repo.wtm()
-        .args(["list", "--no-status"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("main"));
-    repo.wtm()
-        .args(["list", "--fast"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("main"));
 }

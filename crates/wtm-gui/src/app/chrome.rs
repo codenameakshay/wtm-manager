@@ -31,11 +31,9 @@ impl WtmApp {
         let theme = self.chrome_theme(cx);
         let active_path = self.active.as_ref().map(|r| r.path().to_path_buf());
 
-        // Continuity (SPEC §5 candidate 1): the sidebar mounts/unmounts
-        // instantly today, with no explanation of where it went. Wrapped in
-        // `motion::pane_in` below — see that helper's doc for why this
-        // animates opacity + a slide rather than the `w(px(..))` set here,
-        // which stays instant so every layout budget that reads
+        // Wrapped in `motion::pane_in` below — see that helper's doc for why
+        // this animates opacity + a slide rather than the `w(px(..))` set
+        // here, which stays instant so every layout budget that reads
         // `theme::SIDEBAR_WIDTH` (`app::layout::content_column_width`,
         // `worktree_row_card_width`) is correct from frame one.
         let sidebar = div()
@@ -45,7 +43,7 @@ impl WtmApp {
             .flex_none()
             .flex_col()
             // The chrome plane, translucent over the window's blurred
-            // backing on macOS (opaque elsewhere) — SURFACES §1.
+            // backing on macOS (opaque elsewhere).
             .bg(theme.glass())
             .border_r_1()
             .border_color(theme.border)
@@ -75,15 +73,10 @@ impl WtmApp {
                                 this.on_open_palette(&OpenPalette, window, cx);
                             })),
                     )
-                    // The "Repositories" eyebrow (and the hand-rolled header
-                    // copy it replaced before that) is gone — the user's
-                    // call, final: every eyebrow in the app goes. Its `+`
-                    // button is promoted here to a third `action_row`
-                    // alongside "New Worktree" and "Search" rather than
-                    // left to float without a header to anchor it; the
-                    // sidebar already speaks this vocabulary (icon, label,
-                    // shortcut chip), so this reads as consistency, not
-                    // loss.
+                    // "Add Repository" is a third `action_row` alongside
+                    // "New Worktree" and "Search" rather than a header-less
+                    // floating `+` button — the sidebar already speaks this
+                    // vocabulary (icon, label, shortcut chip).
                     .child(
                         ui::action_row(
                             "add-repository",
@@ -115,12 +108,10 @@ impl WtmApp {
                                 self.render_repo_row(entry, active_path.as_deref(), &theme, cx)
                             }))
                             .when(self.repos.is_empty(), |this| {
-                                // The empty state no longer repeats its own
-                                // "Add Repository" affordance — the action
-                                // row above (always visible, not scoped to
-                                // "the list happens to be empty") already
-                                // covers it; a second one here would just be
-                                // the same control twice.
+                                // The action row above (always visible, not
+                                // scoped to the empty case) already covers
+                                // "Add Repository", so the empty state here
+                                // is just the message, not a second control.
                                 this.child(
                                     div()
                                         .px(px(theme::SPACE_8))
@@ -135,7 +126,7 @@ impl WtmApp {
             .child(
                 // Height is left to derive from the button plus this
                 // padding rather than a fixed density number, so it doesn't
-                // need its own token — see the redesign report.
+                // need its own token.
                 div()
                     .flex_none()
                     .py(px(theme::SPACE_8))
@@ -201,10 +192,9 @@ impl WtmApp {
                         .child(entry.name.clone()),
                 )
                 .when(missing, |this| {
-                    // A missing worktree directory keeps its warning icon,
-                    // now with a tooltip explaining what it means — an icon
-                    // alone with no accessible name is exactly the defect
-                    // COMPONENTS.md calls out. `.tooltip(..)` is only on
+                    // A missing worktree directory's warning icon carries a
+                    // tooltip explaining what it means — an icon alone has
+                    // no accessible name. `.tooltip(..)` is only on
                     // `StatefulInteractiveElement` (gpui-0.2.2's
                     // `elements/div.rs`), so this needs an `.id(..)` to
                     // become `Stateful<Div>` before it's callable.
@@ -386,22 +376,16 @@ impl WtmApp {
     /// The titlebar's reload button. Unlike every other titlebar icon (built
     /// through [`ui::icon_button_with_tooltip`]), this one swaps its glyph
     /// for a spinning one while `self.loading` is true and stops the instant
-    /// it lands — SURFACES §2: "Reload gets a spin animation while a reload
-    /// is actually running and stops when it finishes. This is the one place
-    /// a spinner is honest." `self.loading` is exactly that signal: it's set
-    /// at the start of every `reload_impl` (manual ⌘R, a repo switch, the
-    /// filesystem watcher) and cleared once the status-bearing pass lands —
-    /// see `loading.rs`.
+    /// it lands, so the spinner only ever shows for a reload actually in
+    /// flight. `self.loading` is set at the start of every `reload_impl`
+    /// (manual ⌘R, a repo switch, the filesystem watcher) and cleared once
+    /// the status-bearing pass lands — see `loading.rs`.
     ///
     /// `ui::icon_button`/`icon_button_with_tooltip` hard-code a static icon
     /// child and have no animated variant, so this rebuilds their exact look
     /// (`theme::ICON_BUTTON_SIZE`, `RADIUS_CONTROL`, `element_hover` hover,
-    /// `press_feedback`) by hand instead of through them — `ui.rs` is
-    /// outside this task's file scope (see the redesign report) so a real
-    /// animated variant belongs there, not here.
+    /// `press_feedback`) by hand instead of through them.
     fn render_reload_button(&self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
-        const TOOLTIP: &str = "Reload · ⌘R";
-
         let glyph: AnyElement = if self.loading {
             let icon_svg = gpui::svg()
                 .path(icons::REFRESH)
@@ -427,7 +411,7 @@ impl WtmApp {
             .child(glyph);
 
         ui::press_feedback(styled, theme)
-            .tooltip(ui::tooltip(TOOLTIP))
+            .tooltip(ui::tooltip("Reload · ⌘R"))
             .on_click(cx.listener(|this, _, window, cx| {
                 this.on_reload(&Reload, window, cx);
             }))
@@ -439,19 +423,31 @@ impl WtmApp {
         Some(info.display_name().to_string())
     }
 
+    /// The content column's width this frame: the window's real drawable
+    /// width minus whichever side panels are actually showing — the one
+    /// signal `worktree_row_card_width` and `render_footer` both derive
+    /// their own subtractions from, so neither can drift out of sync with
+    /// the detail-panel auto-collapse.
+    fn content_column(&self, window: &Window) -> f32 {
+        let panel_width = self
+            .show_detail_panel(window)
+            .then(|| self.detail_panel_width());
+        layout::content_column_width(
+            f32::from(window.viewport_size().width),
+            self.sidebar_visible,
+            panel_width,
+        )
+    }
+
     /// The live pixel width `worktree_list::render_row` actually gets for
-    /// one row's card, this frame — not the flat, worst-case-only character
-    /// budget the row used before (Task 1: "a fixed character cap does not
-    /// adapt to width"). Recomputed once per `uniform_list` render pass
-    /// (nothing in this formula varies row to row, so the call site does it
-    /// once rather than once per visible row) from the window's *real*
-    /// drawable width, minus whichever side panels are actually showing
-    /// this frame, minus [`LIST_MAX_WIDTH`]'s centering cap, minus every
-    /// fixed-size wrapper between the content column and the row card
-    /// itself: the list's own `SPACE_8` inset, the per-row wrapper's own
-    /// `SPACE_8` inset, and the selection checkbox
-    /// ([`ROW_CHECKBOX_SIZE`]) plus its `SPACE_6` gap to the card — see
-    /// `render_list`'s own `uniform_list` child for each of those in
+    /// one row's card, this frame — recomputed once per `uniform_list`
+    /// render pass (nothing in this formula varies row to row) from
+    /// [`content_column`](Self::content_column), capped at
+    /// [`LIST_MAX_WIDTH`], minus every fixed-size wrapper between the
+    /// content column and the row card itself: the list's own `SPACE_8`
+    /// inset, the per-row wrapper's own `SPACE_8` inset, and the selection
+    /// checkbox ([`ROW_CHECKBOX_SIZE`]) plus its `SPACE_6` gap to the card
+    /// — see `render_list`'s own `uniform_list` child for each of those in
     /// context.
     ///
     /// `worktree_list::render_row` turns this into per-row budgets (branch
@@ -461,15 +457,7 @@ impl WtmApp {
     /// option (gpui has no API to measure real shaped text outside of an
     /// actual layout pass).
     fn worktree_row_card_width(&self, window: &Window) -> f32 {
-        let panel_width = self
-            .show_detail_panel(window)
-            .then(|| self.detail_panel_width());
-        let content_column = layout::content_column_width(
-            f32::from(window.viewport_size().width),
-            self.sidebar_visible,
-            panel_width,
-        )
-        .min(LIST_MAX_WIDTH);
+        let content_column = self.content_column(window).min(LIST_MAX_WIDTH);
         content_column
             - theme::SPACE_8 * 2.0 // the list's own `.px(px(theme::SPACE_8))`
             - theme::SPACE_8 * 2.0 // the per-row wrapper's own `.px(px(theme::SPACE_8))`
@@ -506,32 +494,30 @@ impl WtmApp {
                 .on_mouse_down(MouseButton::Right, empty_space_menu)
                 .into_any_element();
         }
-        if self.rows.is_empty() && self.loading {
-            // Reachable only when `seed_initial_rows` fell back to `reload`
-            // at startup (a broken repo — see its doc comment) or briefly
-            // during a repo switch, before the fast pass has landed. The
-            // worktree count is genuinely unknown at this instant, so both
-            // of the alternatives below would be claiming something false:
-            // `render_header`'s "0 worktrees" (built for a confirmed empty
-            // count, not an unknown one) and `render_empty`'s "No worktrees
-            // yet" equally assert a fact this app doesn't have yet.
+        if self.rows.is_empty() {
             let theme = self.chrome_theme(cx);
-            return div()
-                .flex_1()
-                .flex()
-                .items_center()
-                .justify_center()
-                .on_mouse_down(MouseButton::Right, empty_space_menu)
-                .child(
-                    div()
-                        .text_size(px(ui::TEXT_BASE))
-                        .text_color(theme.text_muted)
-                        .child("Listing worktrees…"),
-                )
-                .into_any_element();
-        }
-        if self.rows.is_empty() && !self.loading {
-            let theme = self.chrome_theme(cx);
+            if self.loading {
+                // Reachable only when `seed_initial_rows` fell back to
+                // `reload` at startup (a broken repo — see its doc comment)
+                // or briefly during a repo switch, before the fast pass has
+                // landed. The worktree count is genuinely unknown at this
+                // instant, so both `render_header`'s "0 worktrees" (built
+                // for a confirmed empty count) and `render_empty`'s "No
+                // worktrees yet" would be claiming something false.
+                return div()
+                    .flex_1()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .on_mouse_down(MouseButton::Right, empty_space_menu)
+                    .child(
+                        div()
+                            .text_size(px(ui::TEXT_BASE))
+                            .text_color(theme.text_muted)
+                            .child("Listing worktrees…"),
+                    )
+                    .into_any_element();
+            }
             let action = ui::button(
                 "empty-new-worktree",
                 "New Worktree",
@@ -594,44 +580,10 @@ impl WtmApp {
                     .flex()
                     .flex_col()
                     .child(
-                        // FINDINGS.md G1: at 900×600 (the window's own
-                        // minimum) this row used to lose the sort control
-                        // and the filter field off the right edge entirely —
-                        // `flex_wrap()` was already here but never fired.
-                        // Root cause (see FINDINGS-2.md's "mechanism"
-                        // section): a flex child never shrinks below its own
-                        // content width unless `min_w_0()` is set on *every*
-                        // element in the chain down to the text node: this
-                        // row, its `max_w(1040)` and `flex_1` ancestors
-                        // above, the count (now truncating for real —
-                        // `worktree_list::render_header` grew its own
-                        // `min_w_0`/`.truncate()` this phase instead of
-                        // relying on this wrapper's `overflow_hidden` to
-                        // hard-clip it), and the actions group below. Without
-                        // that chain, nothing ever reported as "out of room",
-                        // so the wrap this row already asked for never had a
-                        // reason to trigger.
-                        //
-                        // Chosen degrade strategy: **wrap**, not
-                        // priority-collapse. Every control here (New
-                        // Worktree, Fetch, Prune, the sort segmented control,
-                        // the filter field) is something a user reaches for
-                        // regularly — there's no single "lowest-value"
-                        // control to demote into an overflow menu without
-                        // that menu becoming just as likely to be reached
-                        // for, and building one would mean new interactive
-                        // surface in `ui.rs`, which this phase does not own.
-                        // Wrapping keeps every control reachable with a
-                        // fixed, predictable set of elements: the count
-                        // gives way first (it already shrinks/truncates),
-                        // then the actions group drops to its own line, then
-                        // — since even a full line is not always wide enough
-                        // for five controls at once — the actions group's
-                        // own `flex_wrap()` (below) lets individual controls
-                        // spill onto a third line rather than clip. The
-                        // `SPACE_16` gap between the two top-level children
-                        // is 2× the `SPACE_8` gap used *within* the actions
-                        // group, per `better-layout` §1.
+                        // Wraps rather than priority-collapsing: the count
+                        // shrinks first, then the actions group drops to its
+                        // own line (and its own `flex_wrap()` below lets
+                        // individual controls spill onto a third).
                         div()
                             .flex()
                             .flex_wrap()
@@ -655,9 +607,7 @@ impl WtmApp {
                                     .items_center()
                                     .gap(px(theme::SPACE_8))
                                     .child(
-                                        // The view's one filled control —
-                                        // SURFACES §3: "New Worktree is the
-                                        // only filled button in the view."
+                                        // The view's one filled control.
                                         ui::toolbar_button(
                                             "toolbar-new-worktree",
                                             icons::PLUS,
@@ -705,7 +655,7 @@ impl WtmApp {
                                         // way around it. The count in the label is
                                         // what lets a user see there is something to
                                         // clean without opening anything. Secondary,
-                                        // never filled — SURFACES §3.
+                                        // never filled.
                                         ui::toolbar_button(
                                             "toolbar-prune",
                                             icons::TRASH,
@@ -816,7 +766,7 @@ impl WtmApp {
                                                         SharedString::from(format!("wt-row-{ix}"));
                                                     div()
                                             .px(px(theme::SPACE_8))
-                                            .pb(px(2.0))
+                                            .pb(px(theme::LIST_ROW_PITCH - theme::LIST_ROW_HEIGHT))
                                             .flex()
                                             .items_center()
                                             .gap(px(theme::SPACE_6))
@@ -901,11 +851,7 @@ impl WtmApp {
                             .when(edges.trailing, |this| {
                                 this.child(ui::scroll_fade_bottom(theme.bg, theme::SPACE_24))
                             })
-                            .child(ui::scrollbar(
-                                "worktree-list-scrollbar",
-                                &list_handle,
-                                ui::ScrollAxis::Vertical,
-                            ))
+                            .child(ui::scrollbar("worktree-list-scrollbar", &list_handle))
                     }),
             )
             .into_any_element()
@@ -918,11 +864,10 @@ impl WtmApp {
     /// nothing to do about that, or about the main worktree staying pinned
     /// first (both are `worktree_list::sort_rows`'s own guarantees).
     ///
-    /// Now literally `ui::segmented`: its generic `on_select` closure is
-    /// exactly the shape `cx.listener` produces (`impl Fn(&E, &mut Window,
-    /// &mut App)`), so wiring the real `set_sort_mode` click through it
-    /// needs no signature change to `ui.rs` — the hand-rolled copy this
-    /// used to be is gone.
+    /// Built on `ui::segmented`: its generic `on_select` closure is exactly
+    /// the shape `cx.listener` produces (`impl Fn(&E, &mut Window, &mut
+    /// App)`), so wiring the real `set_sort_mode` click through it needs no
+    /// signature change to `ui.rs`.
     fn render_sort_control(&self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let options: Vec<(SortMode, &str)> = SortMode::ALL
             .into_iter()
@@ -968,13 +913,11 @@ impl WtmApp {
             .rounded(px(4.0))
             .cursor_default()
             .border_1()
-            // FINDINGS F4: the accent is identity/focus only (SPEC §3) and
-            // must never be a structural fill — a checked checkbox is a
-            // selection state, already carried by the row's own wash. So
-            // the plate stays neutral (`element_active`, the same wash
-            // every other selected state in the app uses) and only the
-            // border and the check glyph itself carry the accent, rather
-            // than filling the whole square with it.
+            // The accent marks identity/focus, never a structural fill — a
+            // checked checkbox is a selection state, already carried by the
+            // row's own wash. So the plate stays neutral (`element_active`,
+            // the same wash every other selected state uses) and only the
+            // border and the check glyph carry the accent.
             .border_color(if checked {
                 theme.accent
             } else {
@@ -1030,9 +973,7 @@ impl WtmApp {
                     .child(
                         // Lowest-priority text in this row — the reminder
                         // shrinks and clips before either button does
-                        // (`ui::button` is already `flex_none`), the same
-                        // "give up space gracefully" discipline FINDINGS F1
-                        // asked for in the toolbar above.
+                        // (`ui::button` is already `flex_none`).
                         div()
                             .min_w_0()
                             .truncate()
@@ -1066,8 +1007,7 @@ impl WtmApp {
     }
 
     /// The footer: the current message on the left, context chips on the
-    /// right, in the spirit of a status line that never shouts (SURFACES
-    /// §5: "ambient information — it must never out-shout the list").
+    /// right — ambient information, never louder than the list above it.
     pub(super) fn render_footer(
         &self,
         window: &Window,
@@ -1076,18 +1016,9 @@ impl WtmApp {
         let theme = self.chrome_theme(cx);
         // The footer spans the same content column the list/titlebar above
         // it do (`app/mod.rs`'s root layout puts all three in one
-        // `flex_1` child) — reusing `layout::content_column_width` rather
-        // than a second copy of the sidebar/panel subtraction lets the
-        // hint row degrade by the same width signal the detail-panel
-        // collapse uses, instead of drifting out of sync with it.
-        let panel_width = self
-            .show_detail_panel(window)
-            .then(|| self.detail_panel_width());
-        let content_column = layout::content_column_width(
-            f32::from(window.viewport_size().width),
-            self.sidebar_visible,
-            panel_width,
-        );
+        // `flex_1` child), so the hint row degrades by the same width
+        // signal the detail-panel collapse uses.
+        let content_column = self.content_column(window);
 
         div()
             .h(px(theme::FOOTER_HEIGHT))
@@ -1098,10 +1029,9 @@ impl WtmApp {
             .justify_between()
             .gap(px(theme::SPACE_12))
             .px(px(theme::SPACE_16))
-            // Chrome, like the sidebar/titlebar — was unpainted before,
-            // showing the content plane's `bg` straight through, which
-            // flattened the footer onto the same plane as the list above
-            // it (SPEC §3 puts sidebar/titlebar/footer all on `surface`).
+            // Chrome, like the sidebar/titlebar, sits on `surface` rather
+            // than the content plane's `bg`, so it reads as a distinct
+            // plane from the list above it rather than flattening onto it.
             .bg(theme.surface)
             .border_t_1()
             .border_color(theme.border)
@@ -1244,7 +1174,10 @@ impl WtmApp {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let Some(info) = self.selected.and_then(|ix| self.rows.get(ix)) else {
+        if !self.show_detail_panel(window) {
+            return div().into_any_element();
+        }
+        let Some(info) = self.selected_row() else {
             return div().into_any_element();
         };
         let theme = self.chrome_theme(cx);
@@ -1258,10 +1191,9 @@ impl WtmApp {
             DetailTab::Files => self.render_files_tab(&worktree_path, &theme, cx),
             DetailTab::Changes => self.render_changes_tab(&theme),
         };
-        // Continuity (SURFACES §4's Details/Files/Changes switch): tab
-        // content used to cut hard. `motion::fade_quick` keyed by the tab
-        // itself (not a fixed id) is what makes this replay on every
-        // switch rather than only once — a fixed id would stay mounted
+        // `motion::fade_quick` keyed by the tab itself (not a fixed id) is
+        // what makes this replay on every switch rather than only once — a
+        // fixed id would stay mounted
         // continuously as the *panel's* content slot across every switch,
         // so gpui would never see it as newly appeared and the animation
         // state would never restart. Keying by tab means the outgoing
@@ -1284,9 +1216,8 @@ impl WtmApp {
         )
         .into_any_element();
 
-        // Continuity (SPEC §5 candidate 1) — same treatment and the same
-        // reasoning as `render_sidebar`'s `sidebar` binding: `w(px(width))`
-        // stays instant (every layout budget that reads
+        // Same treatment as `render_sidebar`'s `sidebar` binding:
+        // `w(px(width))` stays instant (every layout budget that reads
         // `detail_panel_width` is correct from frame one), only opacity and
         // a slide animate.
         let panel = div()
@@ -1295,9 +1226,9 @@ impl WtmApp {
             .flex_none()
             .flex()
             .flex_col()
-            // FINDINGS-2.md G1/G2: a fixed `w(px(width))` plus `flex_none()`
-            // guarantees this container's own box never grows or shrinks —
-            // it does *not* guarantee its children stop there. Without
+            // A fixed `w(px(width))` plus `flex_none()` guarantees this
+            // container's own box never grows or shrinks — it does *not*
+            // guarantee its children stop there. Without
             // `min_w_0()` here, `content` (Details/Files/Changes) was still
             // free to stretch past `width` following its own widest,
             // unshrunk descendant (a long commit subject, in practice), and
@@ -1313,10 +1244,8 @@ impl WtmApp {
             .min_w_0()
             .overflow_hidden()
             // A chrome pane like the sidebar, not a plate proud of one —
-            // `surface_raised` (this used to read) is SPEC §3's token for
-            // "opaque pills/chips proud of the panel," not for a whole
-            // panel's own background; the fourth pane SURFACES' "Global"
-            // section groups alongside sidebar/content reads correctly as
+            // `surface_raised` is for opaque pills/chips proud of a panel,
+            // not for a whole panel's own background, so this reads as
             // `surface`, the same chrome tone titlebar/sidebar/footer use.
             .bg(theme.surface)
             .border_l_1()
@@ -1332,8 +1261,8 @@ impl WtmApp {
     }
 
     /// The Details/Files/Changes switch, as a segmented control rather than
-    /// three plain text buttons (SURFACES §4). The Files/Changes segments
-    /// are disabled below `layout::WIDE_TABS_BREAKPOINT` — see
+    /// three plain text buttons. The Files/Changes segments are disabled
+    /// below `layout::WIDE_TABS_BREAKPOINT` — see
     /// [`render_detail_tab`]'s doc for why there's no override for this one.
     fn render_detail_tab_bar(
         &self,
@@ -1387,16 +1316,12 @@ impl WtmApp {
             ))
     }
 
-    /// One tab segment. SURFACES §4: "the selected tab carries the wash +
-    /// accent underline; unselected are `text_muted`" — a wash alone would
-    /// read the same as `render_sort_control`'s segments, so a 2px accent
-    /// underline is what tells a tab apart from a sort option at a glance,
-    /// while still keeping the accent off the fill (SPEC §3: identity/focus
-    /// only, never structural). This is a tab indicator, not a selected-row
-    /// mark — it stays even though `ui::row`'s own leading accent bar was
-    /// removed (see that function's doc); a horizontal underline under a
-    /// tab label reads as navigation, not the left-edge decoration that
-    /// prompted the row change.
+    /// One tab segment: the selected tab carries the wash plus a 2px accent
+    /// underline (unselected are `text_muted`) — a wash alone would read
+    /// the same as `render_sort_control`'s segments, so the underline is
+    /// what tells a tab apart from a sort option at a glance, while
+    /// keeping the accent off the fill (identity/focus only, never
+    /// structural).
     ///
     /// `enabled` is `false` only for Files/Changes below
     /// `layout::WIDE_TABS_BREAKPOINT` (Details is always enabled — the
@@ -1507,7 +1432,6 @@ impl WtmApp {
                     .child(ui::scrollbar(
                         "file-tree-scrollbar",
                         &self.files_tree_scroll,
-                        ui::ScrollAxis::Vertical,
                     )),
             )
             .child(
@@ -1535,7 +1459,6 @@ impl WtmApp {
                     .child(ui::scrollbar(
                         "file-diff-scrollbar",
                         &self.files_diff_scroll,
-                        ui::ScrollAxis::Vertical,
                     )),
             )
             .into_any_element()
@@ -1651,11 +1574,7 @@ impl WtmApp {
             .when(edges.trailing, |this| {
                 this.child(ui::scroll_fade_bottom(theme.surface, theme::SPACE_24))
             })
-            .child(ui::scrollbar(
-                "changes-scrollbar",
-                &self.changes_scroll,
-                ui::ScrollAxis::Vertical,
-            ))
+            .child(ui::scrollbar("changes-scrollbar", &self.changes_scroll))
             .into_any_element()
     }
 }
@@ -1680,14 +1599,8 @@ const SIDEBAR_PATH_MAX_CHARS: usize = 28;
 /// it's what has to survive), via the same `truncate_path_tail` mechanism
 /// `detail_panel`/`worktree_list` use for their own paths.
 fn parent_label(path: &std::path::Path) -> String {
-    let parent = path.parent().unwrap_or(path).display().to_string();
-    let home_relative = match std::env::var("HOME") {
-        Ok(home) if !home.is_empty() && parent.starts_with(&home) => {
-            format!("~{}", &parent[home.len()..])
-        }
-        _ => parent,
-    };
-    detail_panel::truncate_path_tail(&home_relative, SIDEBAR_PATH_MAX_CHARS)
+    let parent = path.parent().unwrap_or(path);
+    detail_panel::truncate_path_tail(&ui::display_path(parent), SIDEBAR_PATH_MAX_CHARS)
 }
 
 /// Missing/prunable worktrees the active repository has right now, using the
@@ -1698,7 +1611,7 @@ fn parent_label(path: &std::path::Path) -> String {
 /// `crate::dialogs`'s own prune tests already use, rather than only
 /// reachable through a live `WtmApp`.
 fn prunable_count(repo: &OpenRepo, rows: &[WorktreeInfo]) -> usize {
-    data::prune_candidates(repo, rows.to_vec(), false, false).len()
+    data::prune_candidates(repo, rows, false, false).len()
 }
 
 /// The window controls Linux draws in its own title bar when the compositor
@@ -1715,12 +1628,21 @@ fn render_window_controls(theme: &Theme, cx: &mut Context<WtmApp>) -> impl IntoE
         .gap(px(2.0))
         .child(
             window_control_button("win-minimize", theme)
-                .child(minimize_glyph(theme))
+                // A single horizontal line, the shape every desktop
+                // environment uses for minimize.
+                .child(div().w(px(10.0)).h(px(1.0)).bg(theme.text_faint))
                 .on_click(|_, window, _cx| window.minimize_window()),
         )
         .child(
             window_control_button("win-maximize", theme)
-                .child(maximize_glyph(theme))
+                // A small square outline for maximize/restore.
+                .child(
+                    div()
+                        .w(px(9.0))
+                        .h(px(9.0))
+                        .border_1()
+                        .border_color(theme.text_faint),
+                )
                 .on_click(|_, window, _cx| window.zoom_window()),
         )
         .child(
@@ -1745,8 +1667,7 @@ fn render_window_controls(theme: &Theme, cx: &mut Context<WtmApp>) -> impl IntoE
 /// The base of a Linux window-control button: the same hover square
 /// `ui::icon_button` uses (`theme::ICON_BUTTON_SIZE`), but built here
 /// directly rather than through it, since minimize/maximize need a
-/// caller-supplied glyph in place of an svg icon — see
-/// `minimize_glyph`/`maximize_glyph` below for why.
+/// caller-supplied glyph in place of an svg icon.
 fn window_control_button(id: &'static str, theme: &Theme) -> Stateful<Div> {
     div()
         .id(id)
@@ -1761,45 +1682,17 @@ fn window_control_button(id: &'static str, theme: &Theme) -> Stateful<Div> {
         .hover(|this| this.bg(theme.element_hover))
 }
 
-/// A minimize glyph: a single horizontal line, the shape every desktop
-/// environment uses for it. Composed from a plain `div()` rather than an
-/// svg asset — `assets.rs` is owned elsewhere and not extended for this
-/// task, and it has nothing shaped like this to begin with.
-fn minimize_glyph(theme: &Theme) -> impl IntoElement {
-    div().w(px(10.0)).h(px(1.0)).bg(theme.text_faint)
-}
-
-/// A maximize/restore glyph: a small square outline, composed the same way
-/// `minimize_glyph` is.
-fn maximize_glyph(theme: &Theme) -> impl IntoElement {
-    div()
-        .w(px(9.0))
-        .h(px(9.0))
-        .border_1()
-        .border_color(theme.text_faint)
-}
-
 /// The footer's default (no active status message) hint line: the highest-
-/// value keybindings as [`ui::kbd`] chips rather than plain text (SPEC §1's
-/// `kbd` vocabulary), so a shortcut named in the footer looks like the same
-/// shortcut everywhere else in the app instead of a bare string.
+/// value keybindings as [`ui::kbd`] chips rather than plain text, so a
+/// shortcut named in the footer looks like the same shortcut everywhere
+/// else in the app instead of a bare string.
 fn render_footer_hints(theme: &Theme, content_column: f32) -> AnyElement {
-    // FINDINGS-2.md G1: this row used to hard-clip its trailing hints with
-    // no ellipsis at 900×600 (with the detail panel open — plain sidebar
-    // widths never got this narrow). An earlier attempt made the last hint
-    // `min_w_0()`/`.truncate()` so it would shrink and ellipsize instead —
-    // that made things *worse* (gpui 0.2.2's text-measurement caching bug,
-    // documented once at `detail_panel::LABEL_WIDTH`, meant it collapsed to
-    // 2-3 characters with no ellipsis and a large unused gap, rather than
-    // clipping cleanly). Every hint here is a short, fixed,
-    // known-at-compile-time string, not user content, so — unlike the
-    // genuinely-long, unbounded strings elsewhere in this app (paths,
-    // commit subjects) that need one of the truncation strategies
-    // `detail_panel::LABEL_WIDTH` explains — there is no per-glyph
-    // ellipsis story to lean on here. The actual fix: drop whole hints by
-    // priority (`layout::FooterHints`) once the live content column
-    // reports there isn't room for all of them, rather than shrinking any
-    // one of them.
+    // Every hint here is a short, fixed, known-at-compile-time string, so
+    // rather than shrinking/truncating one to fit (gpui 0.2.2's
+    // text-measurement caching bug makes that collapse to 2-3 characters
+    // with no ellipsis — see `detail_panel::LABEL_WIDTH`), this drops
+    // whole hints by priority (`layout::FooterHints`) once the live
+    // content column reports there isn't room for all of them.
     let row = div()
         .flex()
         .items_center()

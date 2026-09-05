@@ -76,21 +76,19 @@ impl Registry {
         out
     }
 
-    /// Record `path` (or refresh its timestamp when already present) and
-    /// return whether the registry changed.
-    pub fn remember(&mut self, path: &Path, name: &str) -> bool {
+    /// Record `path` (or refresh its timestamp when already present).
+    pub fn remember(&mut self, path: &Path, name: &str) {
         let now = unix_now();
         if let Some(existing) = self.repos.iter_mut().find(|r| r.path == path) {
             existing.last_opened = now;
             existing.name = name.to_string();
-            return true;
+            return;
         }
         self.repos.push(RepoEntry {
             path: path.to_path_buf(),
             name: name.to_string(),
             last_opened: now,
         });
-        true
     }
 
     /// Drop `path` from the registry. Returns whether anything was removed.
@@ -99,11 +97,6 @@ impl Registry {
         let before = self.repos.len();
         self.repos.retain(|r| r.path != path);
         self.repos.len() != before
-    }
-
-    /// Does the registry already know about this path?
-    pub fn contains(&self, path: &Path) -> bool {
-        self.repos.iter().any(|r| r.path == path)
     }
 }
 
@@ -142,8 +135,9 @@ pub fn save(registry: &Registry) -> Result<()> {
 
     let mut to_write = registry.clone();
     to_write.version = SCHEMA_VERSION;
-    let json = serde_json::to_string_pretty(&to_write)
-        .map_err(|e| crate::Error::Other(format!("could not serialize the repo registry: {e}")))?;
+    let json = serde_json::to_string_pretty(&to_write).map_err(|e| {
+        crate::error::Error::Other(format!("could not serialize the repo registry: {e}"))
+    })?;
 
     let tmp = path.with_extension("json.tmp");
     std::fs::write(&tmp, json.as_bytes())?;
@@ -213,16 +207,8 @@ mod tests {
 
         assert!(registry.forget(Path::new("/tmp/a")));
         assert!(!registry.forget(Path::new("/tmp/a")));
-        assert!(!registry.contains(Path::new("/tmp/a")));
-        assert!(registry.contains(Path::new("/tmp/b")));
-    }
 
-    #[test]
-    fn a_corrupt_registry_file_loads_as_empty() {
-        // The parse path is what matters here; `load` reads a real file, so
-        // exercise the same deserialization it uses.
-        let parsed = serde_json::from_str::<Registry>("{ not json");
-        assert!(parsed.is_err());
-        assert!(Registry::default().entries().is_empty());
+        let names: Vec<String> = registry.entries().into_iter().map(|e| e.name).collect();
+        assert_eq!(names, vec!["b".to_string()]);
     }
 }

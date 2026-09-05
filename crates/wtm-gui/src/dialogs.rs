@@ -199,8 +199,8 @@ impl CreateState {
             .default_base
             .clone()
             .unwrap_or_else(|| "HEAD".to_string());
-        let branch_input = cx.new(|cx| TextInput::new("branch name", window, cx));
-        let base_input = cx.new(|cx| TextInput::new(base_placeholder, window, cx));
+        let branch_input = cx.new(|cx| TextInput::new("branch name", cx));
+        let base_input = cx.new(|cx| TextInput::new(base_placeholder, cx));
 
         // `subscribe_in` rather than `subscribe`: closing the dialog or
         // submitting the form both need to hand focus back to the root
@@ -241,15 +241,13 @@ impl CreateState {
         // The picker opens and closes with `base_input`'s own focus — a
         // click or Tab into the field shows suggestions, moving focus
         // elsewhere (to the branch field, say) hides them again — rather
-        // than a dedicated toggle button: this crate cannot add a new
-        // global key binding (that table lives in `main.rs`, owned by
-        // another task), and every dialog field here already grabs focus on
-        // click for free via `TextInput`'s `track_focus` (see
-        // `paint_mouse_listeners` in gpui's `div.rs`), so focus is the one
-        // signal already flowing through this exact field with no new
-        // wiring anywhere off-limits. Escape (`close_base_picker_or_dialog`
-        // above) closes the picker *without* blurring the field, so typing
-        // can continue right after — see that method's doc comment.
+        // than a dedicated toggle button: every dialog field here already
+        // grabs focus on click for free via `TextInput`'s `track_focus`,
+        // so focus is the one signal already flowing through this exact
+        // field with no new wiring needed. Escape
+        // (`close_base_picker_or_dialog` above) closes the picker
+        // *without* blurring the field, so typing can continue right
+        // after — see that method's doc comment.
         let base_focus_handle = base_input.focus_handle(cx);
         let base_focus_sub = cx.on_focus(
             &base_focus_handle,
@@ -295,19 +293,40 @@ impl CreateState {
     }
 }
 
-/// Branches matching `query` as a case-insensitive substring of the branch
-/// name, preserving `branches`' order. An empty (or all-whitespace) query
-/// matches everything — the picker shows the full list until the user
-/// starts narrowing it, rather than an empty list waiting for input.
-pub fn filter_branches<'a>(branches: &'a [BranchInfo], query: &str) -> Vec<&'a BranchInfo> {
-    let query = query.trim().to_lowercase();
+/// Case-insensitive substring filter shared by the create dialog's branch
+/// picker and the run-command dialog's recent-command list. An empty (or
+/// all-whitespace) query matches everything, preserving `items`' own order
+/// — the picker shows the full list until the user starts narrowing it,
+/// rather than an empty list waiting for input.
+///
+/// Branch and command names are ASCII in every real case, so this matches
+/// byte-for-byte ignoring ASCII case rather than lowercasing each item —
+/// `query` is trimmed once up front instead of on every comparison.
+pub(crate) fn substring_filter<'a, T>(
+    items: &'a [T],
+    query: &str,
+    key: impl Fn(&T) -> &str,
+) -> Vec<&'a T> {
+    let query = query.trim();
     if query.is_empty() {
-        return branches.iter().collect();
+        return items.iter().collect();
     }
-    branches
+    let query = query.as_bytes();
+    items
         .iter()
-        .filter(|b| b.name.to_lowercase().contains(&query))
+        .filter(|item| {
+            key(item)
+                .as_bytes()
+                .windows(query.len())
+                .any(|w| w.eq_ignore_ascii_case(query))
+        })
         .collect()
+}
+
+/// Branches matching `query` as a case-insensitive substring of the branch
+/// name — see [`substring_filter`].
+pub fn filter_branches<'a>(branches: &'a [BranchInfo], query: &str) -> Vec<&'a BranchInfo> {
+    substring_filter(branches, query, |b| b.name.as_str())
 }
 
 /// One row in the branch picker: name, plus a "checked out" hint (disabled,
@@ -355,10 +374,9 @@ pub fn render_branch_row(branch: &BranchInfo, theme: &Theme) -> Stateful<Div> {
 /// A log line, tinted by what kind of setup step it reports: quiet info for
 /// bookkeeping (copy/command start), quieter still for the command's own
 /// output, and `theme.danger` for the one line that means setup didn't
-/// finish clean. SURFACES §7: progress/log views are mono on
-/// `surface_inset`, so every line here takes [`ui::FONT_MONO`] regardless of
-/// kind — the whole log reads as one console, not a mix of proportional and
-/// monospace text.
+/// finish clean. Every line takes [`ui::mono_font`] regardless of kind — the
+/// whole log reads as one console, not a mix of proportional and monospace
+/// text.
 pub fn render_log_entry(entry: &LogEntry, theme: &Theme) -> impl IntoElement {
     let color = match entry.kind {
         LogKind::Info => theme.text_faint,
@@ -366,7 +384,7 @@ pub fn render_log_entry(entry: &LogEntry, theme: &Theme) -> impl IntoElement {
         LogKind::Error => theme.danger,
     };
     div()
-        .font_family(ui::FONT_MONO)
+        .font(ui::mono_font())
         .text_size(px(TEXT_XS))
         .line_height(px(16.0))
         .text_color(color)
@@ -375,9 +393,9 @@ pub fn render_log_entry(entry: &LogEntry, theme: &Theme) -> impl IntoElement {
 
 /// A labeled toggle row: a checkbox glyph plus its label, dimmed and
 /// non-interactive-looking when `disabled`. Shared by every toggle across
-/// all three dialogs (run setup, force, delete branch, merged, gone) — and,
-/// since the redesign, the settings sheet's "Reduce motion" toggle too — so
-/// they read as one control, not five reinvented ones.
+/// all three dialogs (run setup, force, delete branch, merged, gone) and
+/// the settings sheet's "Reduce motion" toggle, so they read as one
+/// control, not five reinvented ones.
 pub fn render_toggle(
     id: impl Into<gpui::ElementId>,
     label: impl Into<SharedString>,
@@ -423,9 +441,8 @@ pub fn render_toggle(
                         } else {
                             // The checkmark sits on an `accent`-filled plate
                             // — `on_accent` is the token built for exactly
-                            // that (COMPONENTS.md: never `theme.text`/`bg`
-                            // on a colored plate, even implicitly via the
-                            // old `canvas` alias).
+                            // that, never `theme.text`/`bg` on a colored
+                            // plate.
                             theme.on_accent
                         },
                     ))
@@ -450,16 +467,16 @@ pub fn render_toggle(
 /// Refs matching `query`, ranked by `crate::palette::fuzzy_match`'s score
 /// (best first) — the same fuzzy scorer the command palette uses, reused
 /// rather than reimplemented since `fuzzy_match` is a public function of
-/// this crate. Matching is against `display`, the same field the row
-/// renders. `sort_by_key` is stable, so an empty query — every ref scores
-/// `0` — leaves `refs`' own order untouched: `list_refs`' Current, Default,
+/// this crate. Matching is against `name`, the same field the row renders.
+/// `sort_by_key` is stable, so an empty query — every ref scores `0` —
+/// leaves `refs`' own order untouched: `list_refs`' Current, Default,
 /// locals-then-remotes ordering is exactly what a picker should browse
 /// before the user has typed anything to rank by.
 pub fn filter_refs<'a>(refs: &'a [RefInfo], query: &str) -> Vec<&'a RefInfo> {
     let mut scored: Vec<(i64, &RefInfo)> = refs
         .iter()
         .filter_map(|r| {
-            let m = crate::palette::fuzzy_match(query, &r.display)?;
+            let m = crate::palette::fuzzy_match(query, &r.name)?;
             Some((m.score, r))
         })
         .collect();
@@ -486,7 +503,7 @@ pub fn clamp_highlight(highlighted: usize, len: usize) -> usize {
 /// `WtmApp::palette_move_highlight` already uses for the command palette,
 /// so every fuzzy list in this app agrees on what Up from the top (or Down
 /// from the bottom) does. `0` when there is nothing to highlight.
-pub fn move_highlight(highlighted: usize, delta: i32, len: usize) -> usize {
+pub(crate) fn move_highlight(highlighted: usize, delta: i32, len: usize) -> usize {
     if len == 0 {
         return 0;
     }
@@ -498,7 +515,7 @@ pub fn move_highlight(highlighted: usize, delta: i32, len: usize) -> usize {
 /// `None` for a plain local branch, which is the common, unremarkable case
 /// and reads better with no badge at all than with a "local" label on every
 /// single row.
-pub fn ref_kind_label(kind: &RefKind) -> Option<&'static str> {
+fn ref_kind_label(kind: &RefKind) -> Option<&'static str> {
     match kind {
         RefKind::Current => Some("current"),
         RefKind::Default => Some("default"),
@@ -543,7 +560,7 @@ pub fn render_ref_row(r: &RefInfo, highlighted: bool, theme: &Theme) -> Stateful
                     .truncate()
                     .text_size(px(TEXT_BASE))
                     .text_color(theme.text)
-                    .child(r.display.clone()),
+                    .child(r.name.clone()),
             )
             .when_some(tag, |this, tag| {
                 this.child(
@@ -563,11 +580,11 @@ pub fn render_ref_row(r: &RefInfo, highlighted: bool, theme: &Theme) -> Stateful
                 .items_baseline()
                 .gap(px(SPACE_6))
                 .text_size(px(TEXT_XS))
-                // The short id is a sha — SPEC §6: shas take the bundled
-                // mono face, never the proportional one, so a column of
-                // them actually lines up. The subject stays proportional
-                // and a step quieter (`text_ghost`), since it's the "what"
-                // and the sha is the more scannable "which one".
+                // The short id is a sha, so it takes the bundled mono face,
+                // never the proportional one, so a column of them actually
+                // lines up. The subject stays proportional and a step
+                // quieter (`text_ghost`), since it's the "what" and the sha
+                // is the more scannable "which one".
                 .when_some(r.short_id.clone(), |this, id| {
                     this.child(
                         div()
@@ -676,8 +693,7 @@ impl PruneState {
     /// runs directly on every toggle change instead of round-tripping
     /// through the background executor.
     pub fn recompute(&mut self, repo: &OpenRepo, rows: &[WorktreeInfo]) {
-        self.candidates =
-            crate::data::prune_candidates(repo, rows.to_vec(), self.merged, self.gone);
+        self.candidates = crate::data::prune_candidates(repo, rows, self.merged, self.gone);
     }
 }
 
@@ -688,9 +704,9 @@ impl Default for PruneState {
 }
 
 /// Color a prune reason by what it means: `missing`/`gone` are the reasons
-/// that mean "this is no longer reachable", `merged` is a calmer "already
+/// that mean "this is unreachable now", `merged` is a calmer "already
 /// landed", and anything else (currently just `prunable`) stays neutral.
-pub fn reason_color(reason: &str, theme: &Theme) -> Hsla {
+fn reason_color(reason: &str, theme: &Theme) -> Hsla {
     match reason {
         "missing" | "gone" => theme.danger,
         "merged" => theme.success,
@@ -700,10 +716,9 @@ pub fn reason_color(reason: &str, theme: &Theme) -> Hsla {
 
 /// One prune candidate: its name, why it was selected, and whether its
 /// branch goes with it. Rendered as a proud `surface_raised` plate rather
-/// than a plain wash — SURFACES §7: the remove/prune dialogs are the
-/// destructive ones, and "the affected worktree list gets real room" means
-/// each row reads as a real, weighty item about to be destroyed, not a
-/// throwaway list line.
+/// than a plain wash — the affected worktree gets real room, so each row
+/// reads as a real, weighty item about to be destroyed, not a throwaway
+/// list line.
 pub fn render_candidate_row(candidate: &PruneCandidate, theme: &Theme) -> impl IntoElement {
     div()
         .flex()
@@ -756,7 +771,6 @@ mod tests {
     fn branch(name: &str, checked_out: bool) -> BranchInfo {
         BranchInfo {
             name: name.to_string(),
-            is_local: true,
             is_checked_out: checked_out,
             upstream_gone: false,
         }
@@ -765,7 +779,6 @@ mod tests {
     fn ref_info(name: &str, kind: RefKind) -> RefInfo {
         RefInfo {
             name: name.to_string(),
-            display: name.to_string(),
             kind,
             subject: None,
             short_id: None,

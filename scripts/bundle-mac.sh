@@ -118,7 +118,31 @@ contents="$bundle/Contents"
 # Build
 # ---------------------------------------------------------------------------
 
-binary="$repo_root/target/$profile/wtm-gui"
+# Resolve the target dir the way cargo does, since CI/container builds
+# routinely set CARGO_TARGET_DIR. A relative value is only resolvable when
+# this script itself invokes cargo from $repo_root; with --skip-build it
+# can't be, so that combination is rejected below rather than guessed at.
+if [ -n "${CARGO_TARGET_DIR:-}" ]; then
+	case "$CARGO_TARGET_DIR" in
+	/*) target_dir="$CARGO_TARGET_DIR" ;; # already absolute
+	*)
+		if [ "$skip_build" = true ]; then
+			echo "error: CARGO_TARGET_DIR=$CARGO_TARGET_DIR is relative, and --skip-build" >&2
+			echo "       means this script never invokes cargo itself, so it can't know" >&2
+			echo "       what directory that path was resolved against when the binary was" >&2
+			echo "       actually built." >&2
+			echo "       Set CARGO_TARGET_DIR to an absolute path, or unset it if the binary" >&2
+			echo "       is under $repo_root/target." >&2
+			exit 1
+		fi
+		target_dir="$repo_root/$CARGO_TARGET_DIR"
+		;;
+	esac
+else
+	target_dir="$repo_root/target"
+fi
+
+binary="$target_dir/$profile/wtm-gui"
 
 if [ "$skip_build" = false ]; then
 	build_args=(build -p wtm-gui)

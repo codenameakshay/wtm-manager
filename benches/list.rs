@@ -5,70 +5,18 @@
 //! `wtm::repo`/`wtm::worktree` API exactly as `DESIGN.md` declares it and
 //! never spawns a process.
 
-use std::path::{Path, PathBuf};
-use std::process::Command;
-
 use criterion::{criterion_group, criterion_main, Criterion};
-use tempfile::TempDir;
 use wtm::worktree::{self, ListOptions};
 
+#[path = "../tests/common/perf_fixture.rs"]
+mod perf_fixture;
+
 const WORKTREE_COUNT: usize = 64;
-
-fn run_git(cwd: &Path, args: &[&str]) {
-    let output = Command::new("git")
-        .current_dir(cwd)
-        .args(args)
-        .output()
-        .expect("spawn git");
-    assert!(
-        output.status.success(),
-        "git {args:?} failed in {cwd:?}: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-}
-
-/// Build a fixture repo with an initial commit and `count` linked worktrees,
-/// each on its own branch. Returns the `TempDir` (kept alive for the
-/// lifetime of the benchmark) and the main working tree's path.
-fn build_fixture(count: usize) -> (TempDir, PathBuf) {
-    let tmp = TempDir::new().expect("create tempdir");
-    let repo_dir = tmp.path().join("repo");
-    std::fs::create_dir_all(&repo_dir).expect("create repo dir");
-
-    run_git(&repo_dir, &["init", "-b", "main"]);
-    run_git(
-        &repo_dir,
-        &[
-            "-c",
-            "user.name=wtm bench",
-            "-c",
-            "user.email=bench@example.com",
-            "-c",
-            "commit.gpgsign=false",
-            "commit",
-            "--allow-empty",
-            "-m",
-            "initial commit",
-        ],
-    );
-
-    for i in 0..count {
-        let branch = format!("br{i}");
-        let worktree_dir = tmp.path().join(format!("wt{i}"));
-        let worktree_dir_str = worktree_dir.to_str().expect("utf8 fixture path");
-        run_git(
-            &repo_dir,
-            &["worktree", "add", "-b", &branch, worktree_dir_str, "main"],
-        );
-    }
-
-    (tmp, repo_dir)
-}
 
 fn bench_list(c: &mut Criterion) {
     // Setup happens once, outside the timed loop: build the fixture and
     // resolve the RepoContext a single time, then reuse it across samples.
-    let (_tmp, repo_dir) = build_fixture(WORKTREE_COUNT);
+    let (_tmp, repo_dir) = perf_fixture::build_fixture(WORKTREE_COUNT);
     let ctx = wtm::repo::discover(Some(&repo_dir)).expect("discover fixture repo");
 
     c.bench_function("list_with_status", |b| {

@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **App: one monospace face.** The run-command log, the diff view, and
+  the create-dialog log rendered in two different monospace fonts; all
+  three now use the bundled Geist Mono.
+- **App: keyboard scrolling in long lists.** Arrow-key selection assumed
+  a 56px row pitch while rows are laid out at 58px, so deep in a long
+  list a newly selected row could sit just below the viewport without
+  scrolling into view.
+- **App: the `terminal` setting is honored.** `gui.json`'s `terminal`
+  field was saved but never read; it now takes precedence over
+  `WTM_TERMINAL` when opening a worktree in a terminal, and the settings
+  sheet shows the effective value.
+- **App: a partial `gui.json` no longer resets every setting.** A file
+  missing any one field previously failed to parse and fell back to
+  defaults for everything.
+- **TUI: clipboard fallback.** A clipboard tool that is installed but
+  fails mid-write (for example `wl-copy` on an X11 session) no longer
+  aborts the copy; the TUI moves on to the next tool and finally to
+  OSC 52.
+- **`scripts/bundle-mac.sh` honors `CARGO_TARGET_DIR`**, matching the
+  Linux packaging script.
+
 ## [0.7.0] - 2026-08-19
 
 ### Changed

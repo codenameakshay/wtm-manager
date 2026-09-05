@@ -1,63 +1,15 @@
 //! The root view: a title bar that clears the traffic lights, a repository
-//! sidebar, and the worktree list.
-//!
-//! This view owns no git logic. It holds UI state, dispatches work to
-//! [`crate::data`] on the background executor, and applies results back on the
-//! foreground — the same model/effect split the TUI uses.
-//!
-//! It also hosts the three modal dialogs from [`crate::dialogs`]: at most one
-//! is ever open (`self.dialog`), rendered above everything else via
-//! `gpui::deferred` so it is never clipped by the list beneath it. Dialogs
-//! themselves hold their pure state and presentational pieces in
-//! `crate::dialogs`; the interactive wiring (click handlers, background
-//! spawns, key guards) lives here, the same split [`crate::worktree_list`]
-//! uses for the main list.
-//!
-//! Four more pieces are wired in the same spirit — pure state/rendering
-//! elsewhere, interactive glue here:
-//! - [`crate::watcher::RepoWatcher`] keeps `self.rows` in sync with
-//!   filesystem changes outside the app (see [`WtmApp::sync_watcher`]).
-//! - [`crate::detail_panel`] renders whatever `self.details` holds for the
-//!   selected row; loading it is [`WtmApp::load_details_for_selection`].
-//! - [`crate::context_menu`] backs right-click menus on worktree and
-//!   repository rows, both funneling through one `ContextMenu<MenuTarget>`.
-//! - [`crate::settings`] renders the settings sheet as a fourth overlay,
-//!   mutually exclusive with `self.dialog` the same way the context menu and
-//!   the dialogs already are with each other.
-//! - [`crate::prefs`] is loaded once in `main.rs` and handed in; `self.prefs`
-//!   is the live copy this view mutates and persists on the "meaningful
-//!   change" triggers named on each setter below.
-//!
-//! ## Module layout
+//! sidebar, and the worktree list. Owns no git logic itself — it holds UI
+//! state, dispatches work to [`crate::data`] on the background executor,
+//! and applies results back on the foreground.
 //!
 //! This file is the table of contents: the `WtmApp` struct, its
 //! constructor, and the `Render`/`Focusable` impls that assemble a frame
-//! out of the pieces below. Everything else lives in a sibling module:
-//! - `loading` — repository activation, the two-pass reload, the
-//!   filesystem watcher, worktree-activity loading, and detail-panel data
-//!   loading.
-//! - `selection` — single- and multi-row selection, the type-to-filter
-//!   field, and re-sorting `rows` in place when the sort mode changes
-//!   without losing the selection across the reorder.
-//! - `commands` — the simpler action handlers: open/copy/terminal/reveal,
-//!   fetch, context menus, the settings sheet, and preference persistence.
-//! - `dialog_actions` — the Create/Remove/Prune dialogs' lifecycle and
-//!   background operations, the command palette, and bulk remove.
-//! - `dialog_forms` — the Create/Remove/Prune/bulk-remove dialogs' actual
-//!   rendering (the "Dialog rendering" section the monolithic file used to
-//!   keep separate from those dialogs' logic; that separation is now a
-//!   file boundary instead of a banner comment).
-//! - `chrome` — the sidebar, title bar, worktree list, and footer.
-//! - `layout` — pure, width-only functions deciding when the detail panel
-//!   auto-collapses, when the Files/Changes tabs' wide panel fits, and how
-//!   the footer's hint row degrades; `chrome`/`commands`/this file call
-//!   these and paint the result rather than re-deriving the arithmetic.
-//!
-//! A few small, genuinely cross-cutting pieces stay here rather than in any
-//! one submodule: `MenuTarget`, `StatusMessage`, and `BulkRemoveState` are
-//! named in this struct's own fields; `set_status` and `overlay_open` are
-//! called from nearly every module below; and `render_modal_backdrop` is
-//! shared by both dialog-rendering call sites.
+//! out of its sibling modules, each split by concern rather than by dialog
+//! or widget. `MenuTarget`, `StatusMessage`, and `BulkRemoveState` stay
+//! here because they're named in this struct's own fields; `set_status`,
+//! `overlay_open`, and `render_modal_backdrop` stay here because nearly
+//! every submodule calls them.
 
 mod chrome;
 mod commands;
@@ -95,6 +47,7 @@ use crate::dialogs::{
 };
 use crate::diff_view::{self, ChangesState};
 use crate::file_browser::{self, FileBrowserState, SelectedFileDiff};
+use crate::motion;
 use crate::palette::{self, PaletteState};
 use crate::prefs::{self, Appearance, Prefs};
 use crate::run_panel::{self, RunCommandState};
@@ -158,9 +111,6 @@ actions!(
         FetchRemote,
         /// Open the "Run Command" dialog for the selected worktree.
         RunCommand,
-        /// Open the selected worktree's branch on its remote host (GitHub/
-        /// GitLab/Bitbucket) in the system browser.
-        OpenRemote,
         /// Move keyboard focus to the next Tab stop. gpui-0.2.2 ships the
         /// tab-stop machinery (`Window::focus_next`, `elements/div.rs`'s
         /// `tab_stop`/`tab_index`/`tab_group`) but binds no key to it — see
@@ -192,19 +142,12 @@ struct StatusMessage {
 }
 
 /// State for the bulk-remove confirmation shown when Remove is invoked
-/// while more than one row is selected. [`Dialog`] (see [`crate::dialogs`])
-/// cannot express "remove N arbitrary rows" — its `Remove` variant holds
-/// exactly one [`WorktreeInfo`], and `dialogs.rs` is not owned by this
-/// task — so this lives here instead, mutually exclusive with `self.dialog`
-/// the same way `settings_open` and the palette are, and reusing
-/// `dialogs::render_candidate_row`/`dialogs::render_toggle` and
-/// `ui::modal_*` for its actual rendering rather than reinventing them.
+/// with more than one row selected. `Dialog::Remove` holds exactly one
+/// [`WorktreeInfo`], so this lives beside `self.dialog` (mutually exclusive
+/// with it) and reuses the dialogs' row/toggle rendering.
 ///
-/// `candidates` comes from `data::selection_candidates`, which already
-/// applies the same safety filter `wtm prune`'s candidate selection does —
-/// never the main worktree, never a protected branch — so everything in
-/// this list is something `data::run_prune` (the same executor the Prune
-/// dialog already uses) is actually willing to touch.
+/// `candidates` comes from `data::selection_candidates`, which applies the
+/// same never-main, never-protected filter as `wtm prune`.
 struct BulkRemoveState {
     candidates: Vec<PruneCandidate>,
     force: bool,
@@ -228,11 +171,9 @@ pub struct WtmApp {
     /// pills can show "unknown" instead of implying "clean".
     awaiting_status: bool,
     status: Option<StatusMessage>,
-    /// How `rows` is ordered — see [`SortMode`]. Session-only: `prefs.rs` is
-    /// not owned by this task, so there is nowhere to persist this across a
-    /// restart yet. Adding a `Prefs` field for it (and loading/saving it the
-    /// way `sidebar_visible`/`detail_panel_visible` already are) is a
-    /// follow-up for whoever does own that file.
+    /// How `rows` is ordered — see [`SortMode`]. Session-only: nothing
+    /// persists this across a restart yet, unlike `sidebar_visible`/
+    /// `detail_panel_visible`, which live in `Prefs`.
     sort_mode: SortMode,
     /// HEAD commit unix-time per worktree path, for `Recent`-mode sorting
     /// and each row's age display — loaded in the background after every
@@ -254,10 +195,9 @@ pub struct WtmApp {
     loading: bool,
     focus_handle: FocusHandle,
     /// Where focus lands when a confirmation dialog with no text field
-    /// opens (Remove, Prune, and the bulk-remove confirmation) — the
-    /// Cancel button in each, per COMPONENTS.md's modal-focus-management
-    /// requirement: "the safe/cancel action — never the destructive one."
-    /// One shared handle rather than a field on each of `RemoveState`/
+    /// opens (Remove, Prune, and the bulk-remove confirmation): the Cancel
+    /// button in each — the safe action, never the destructive one. One
+    /// shared handle rather than a field on each of `RemoveState`/
     /// `PruneState`/`BulkRemoveState`: `overlay_open` already guarantees at
     /// most one of those is ever showing, so there is never a collision,
     /// and keeping it here means `dialogs.rs`'s state constructors (and
@@ -304,10 +244,11 @@ pub struct WtmApp {
     /// nothing is selected.
     details: Option<WorktreeDetails>,
     /// The path `details` belongs to (or is currently loading for), so a
-    /// stale load for a previously selected row can be told apart from the
-    /// current one — mirrors `generation`, but as a separate counter,
-    /// because a manual reload and a selection change are independent
-    /// events that must not invalidate each other's in-flight work.
+    /// stale load for a row that has since fallen out of selection can be
+    /// told apart from the current one — mirrors `generation`, but as a
+    /// separate counter, because a manual reload and a selection change are
+    /// independent events that must not invalidate each other's in-flight
+    /// work.
     details_path: Option<PathBuf>,
     details_generation: u64,
     /// Which section of the detail panel is showing — see
@@ -337,7 +278,7 @@ pub struct WtmApp {
     changes_path: Option<PathBuf>,
     /// Right-click menu shared by worktree rows and sidebar repository rows
     /// — see [`MenuTarget`].
-    context_menu: ContextMenu<MenuTarget>,
+    context_menu: ContextMenu,
     /// What `context_menu` was opened for. Kept separately from
     /// `context_menu.target()` because the menu clears its own state
     /// *before* invoking `on_select` (see `crate::context_menu`'s dismissal
@@ -377,14 +318,11 @@ pub struct WtmApp {
     /// Commands recently run via the Run Command dialog, most-recent-first,
     /// keyed by repository (its main worktree root, `OpenRepo::path()`) so a
     /// build/test command typed in one repo doesn't clutter another's
-    /// suggestions. Session-only: `prefs.rs` is not owned by this task, so
-    /// there is nowhere to persist this across a restart yet — a follow-up
-    /// for whoever owns that file next.
+    /// suggestions. Session-only: nothing persists this across a restart yet.
     recent_commands: HashMap<PathBuf, Vec<String>>,
     /// The worktree list's own scroll position — `ui::scrollbar`/
-    /// `ui::scroll_fade_*` (Task 2: "the changes panel has no scrollbar,
-    /// check that") both need a live handle to read geometry off of, which
-    /// `uniform_list` only exposes once tracked (`UniformListScrollHandle`
+    /// `ui::scroll_fade_*` both need a live handle to read geometry off of,
+    /// which `uniform_list` only exposes once tracked (`UniformListScrollHandle`
     /// wraps a plain `ScrollHandle` — see `UniformListScrollState::base_handle`
     /// in the vendored `gpui-0.2.2` source).
     list_scroll: UniformListScrollHandle,
@@ -403,22 +341,13 @@ pub struct WtmApp {
     settings_scroll: ScrollHandle,
 }
 
-/// Sort registry entries into the order the sidebar displays them in.
+/// Sort registry entries into the order the sidebar displays them in:
+/// alphabetically by name (case-insensitive), path as tie-break.
 ///
-/// `Registry::entries()` (shared with the CLI) returns most-recently-opened
-/// first, which is genuinely useful there — the CLI uses it to pick a
-/// default repo at launch — so that contract stays put. But it means
-/// selecting a repo (which calls `registry::remember`, bumping
-/// `last_opened`) jumps that repo to the top of the *sidebar* under the
-/// user's cursor: a navigation list that rearranges itself because you used
-/// it. The sidebar sorts its own copy instead, alphabetically by name
-/// (case-insensitive) with the path as a tie-break so two repos sharing a
-/// name never swap — an order that is predictable, stays put when the list
-/// is long, and never moves under the user. `last_opened` is still recorded
-/// (it still picks the repo a fresh window opens); only *display* order
-/// changes here. Both call sites that populate `self.repos`
-/// (`loading::begin_activate_repo`, `commands::forget_repo`) route through
-/// this so the two cannot drift apart.
+/// `Registry::entries()` returns most-recently-opened first, which the CLI
+/// relies on; using that here would make selecting a repo (which bumps
+/// `last_opened`) jump it to the top under the user's cursor. Every
+/// assignment to `self.repos` routes through this.
 fn sidebar_sorted(mut entries: Vec<RepoEntry>) -> Vec<RepoEntry> {
     entries.sort_by(|a, b| {
         a.name
@@ -436,7 +365,7 @@ impl WtmApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let filter_input = cx.new(|cx| TextInput::new("Filter", window, cx));
+        let filter_input = cx.new(|cx| TextInput::new("Filter", cx));
         // Only ever calls back through `WtmApp`'s own methods — same
         // discipline `dialogs::CreateState::new` and `palette::PaletteState::new`
         // follow; see the latter's comment for why.
@@ -521,6 +450,21 @@ impl WtmApp {
         });
     }
 
+    /// `set_status(text, true)` plus the `cx.notify()` every call site
+    /// needs anyway — an error worth reading, never cleared by a
+    /// background refresh (see `apply_rows`'s doc on that guarantee).
+    fn set_error(&mut self, text: impl Into<String>, cx: &mut Context<Self>) {
+        self.set_status(text, true);
+        cx.notify();
+    }
+
+    /// `set_status(text, false)` plus `cx.notify()` — a purely
+    /// informational message.
+    fn set_info(&mut self, text: impl Into<String>, cx: &mut Context<Self>) {
+        self.set_status(text, false);
+        cx.notify();
+    }
+
     /// Whether any modal overlay currently owns the window: a dialog, the
     /// settings sheet, the context menu, the command palette, or the
     /// bulk-remove confirmation. List-navigation and dialog-opening
@@ -531,8 +475,8 @@ impl WtmApp {
     /// `on_key_down` (up/down/enter/escape) does not call
     /// `cx.stop_propagation()`, so without this guard the same keystroke
     /// could also dispatch as a `WtmApp` action (e.g. `SelectNext`) on the
-    /// list beneath it. `crate::context_menu` is not owned by this task, so
-    /// this is a defensive workaround rather than the real fix.
+    /// list beneath it — a defensive workaround here rather than a fix in
+    /// `crate::context_menu` itself.
     ///
     /// The palette's own `TextInput` is exactly the "focus handle mounted
     /// on the current frame" case `WtmApp::render`'s reclaim guard exists
@@ -579,9 +523,9 @@ impl WtmApp {
 /// confirmation, and (from `crate::run_panel`, outside this module) the Run
 /// Command dialog, so "click outside to dismiss" is one behavior, not
 /// several copies of it. `pub(crate)`, not private, specifically so
-/// `run_panel::render` — which cannot be a `dialog_forms.rs`-style method on
-/// `WtmApp` since that file is outside this task's ownership — can reuse it
-/// too.
+/// `run_panel::render` — which lives outside `app` and so cannot be a
+/// method on `WtmApp` the way the dialog-rendering methods are — can reuse
+/// it too.
 pub(crate) fn render_modal_backdrop(cx: &mut Context<WtmApp>) -> Stateful<Div> {
     ui::modal_backdrop()
         .id("dialog-backdrop")
@@ -589,6 +533,28 @@ pub(crate) fn render_modal_backdrop(cx: &mut Context<WtmApp>) -> Stateful<Div> {
     // `ui::modal_backdrop()` already carries `.occlude()` — see its doc —
     // so the worktree list behind every dialog is safe from both the
     // click and the scroll-wheel leak this function's own doc describes.
+}
+
+/// The two-layer entrance every modal card in this app uses: `DIALOG_IN` on
+/// the card itself, `FADE_QUICK` on the scrim behind it. `id` names the
+/// dialog (e.g. `"settings-dialog"`) and must be unique per modal — it
+/// becomes `"{id}-in"`/`"{id}-backdrop-in"` for the two animations' own ids.
+pub(crate) fn present_modal(
+    id: &'static str,
+    card: impl IntoElement + gpui::Styled + 'static,
+    cx: &mut Context<WtmApp>,
+) -> AnyElement {
+    let backdrop = render_modal_backdrop(cx).child(motion::dialog_in(
+        SharedString::from(format!("{id}-in")),
+        card,
+        cx,
+    ));
+    motion::fade_quick(
+        SharedString::from(format!("{id}-backdrop-in")),
+        backdrop,
+        cx,
+    )
+    .into_any_element()
 }
 
 impl Focusable for WtmApp {
@@ -628,32 +594,14 @@ impl Render for WtmApp {
         }
 
         // The list is the window's subject, so it holds focus by default —
-        // but only when no dialog is open. This must be gated on
-        // `self.dialog.is_none()`, not just on `contains_focused`:
-        // `FocusHandle::contains_focused` resolves containment against
-        // `window.rendered_frame` — the *previously painted* frame's
-        // dispatch tree — not the tree currently being built. The instant a
-        // dialog opens, `on_new_worktree` calls `window.focus(&branch_focus)`
-        // and schedules this render, but `branch_focus` doesn't exist
-        // anywhere in `rendered_frame` yet (that frame predates the
-        // dialog). `contains_focused` therefore reports `false` on that
-        // first render, and an unconditional reclaim here would immediately
-        // steal focus back to the root — on the very same render that was
-        // supposed to hand it to the field — before the new frame (which
-        // really does contain it) is ever committed. Once stolen, nothing
-        // hands it back, which is exactly the "field never gets focus, ⌘N
-        // types into nothing" bug. Skipping the reclaim entirely while a
-        // dialog is open sidesteps the stale-frame race: `close_dialog` and
+        // but only when no overlay is open. Gated on `overlay_open()`, not
+        // just `contains_focused`: that check resolves against the
+        // last-painted frame, which doesn't yet contain a focus
+        // handle an overlay just opened this render, so an unconditional
+        // reclaim would steal it back before the new frame (which does
+        // contain it) is ever committed. `close_dialog` and
         // `submit_create_dialog` return focus to the root explicitly
         // instead of leaning on this check to notice.
-        //
-        // Every later overlay this view grew — the settings sheet and the
-        // context menu — extends this same guard rather than reintroducing
-        // the bug: `self.settings_open` follows the dialog's pattern exactly
-        // (see `close_dialog`), and the context menu manages its own focus
-        // entirely internally (`crate::context_menu::ContextMenu::claim_focus`
-        // / its dismissal path), so it only needs to be *excluded* here, not
-        // handed anything back.
         if !self.overlay_open() && !self.focus_handle.contains_focused(window, cx) {
             window.focus(&self.focus_handle);
         }
@@ -710,42 +658,15 @@ impl Render for WtmApp {
             .on_action(cx.listener(Self::on_show_changes_tab))
             .on_action(cx.listener(Self::on_fetch_remote))
             .on_action(cx.listener(Self::on_run_command))
-            .on_action(cx.listener(Self::on_open_remote))
             .on_action(cx.listener(Self::on_focus_next))
             .on_action(cx.listener(Self::on_focus_prev))
             .size_full()
             .flex()
             .text_color(theme.text)
-            // Sets the *default* text family for the entire window: gpui's
-            // `TextStyle::default()` hardcodes `.SystemUIFont`, and nothing
-            // else in the tree ever calls `.font_family(theme.font_sans)` —
-            // every non-mono call site (row labels, dialog copy, section
-            // headers, button labels…) was silently painting in the
-            // platform UI font instead of the bundled Geist despite
-            // `assets::register_fonts` shipping it. Setting it once here
-            // lets gpui's text-style cascade (`Window::text_style_stack`,
-            // pushed by every descendant `Div::prepaint`) carry it to every
-            // normal child for free.
-            //
-            // This same refinement also reaches the four deferred/anchored
-            // overlays below (the dialogs/settings/palette/run-command
-            // `deferred(overlay)` and `context_menu.render`'s own internal
-            // `deferred(anchored(..))`): `gpui::Window::defer_draw` clones
-            // `text_style_stack` at the moment each is prepainted (see
-            // `gpui-0.2.2/src/window.rs`'s `defer_draw`/
-            // `prepaint_deferred_draws`), which happens *inside* this div's
-            // own `with_text_style` scope since both are `root`'s
-            // descendants in the normal top-down prepaint pass. `anchored()`
-            // never touches the text-style stack at all (verified against
-            // `gpui-0.2.2/src/elements/anchored.rs` — it only offsets
-            // layout), so it's fully transparent to this cascade.
-            //
-            // The one root that does NOT inherit from here is
-            // `ui::Tooltip`: gpui prepaints tooltips via a wholly separate
-            // `layout_as_root` call in `Window::draw_roots` (after —  not
-            // nested under — the main tree's `prepaint_as_root`/deferred
-            // passes), so it carries no snapshot of this stack at all and
-            // sets `theme.font_sans` itself.
+            // Sets the default text family for the whole window (and, via
+            // gpui's text-style cascade, every deferred/anchored overlay
+            // painted under it) — everything except `ui::Tooltip`, which
+            // gpui prepaints as a separate root and sets this itself.
             .font_family(theme.font_sans)
             // The root itself stays unpainted so the window's blurred backing
             // shows through the sidebar, the way a native source list does.
@@ -765,9 +686,7 @@ impl Render for WtmApp {
                     .child(self.render_list(cx))
                     .child(self.render_footer(window, cx)),
             )
-            .when(self.show_detail_panel(window), |this| {
-                this.child(self.render_detail_panel(window, cx))
-            })
+            .child(self.render_detail_panel(window, cx))
             // Rendered last and via `deferred` so it paints above the list
             // and sidebar regardless of source order, and is never clipped
             // by their `overflow_hidden`/scroll containers.

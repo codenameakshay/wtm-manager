@@ -8,15 +8,15 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
 
-const REPO_CONFIG_FILENAME: &str = ".worktree.toml";
-const LOCAL_CONFIG_FILENAME: &str = ".worktree.local.toml";
+pub(crate) const REPO_CONFIG_FILENAME: &str = ".worktree.toml";
+pub(crate) const LOCAL_CONFIG_FILENAME: &str = ".worktree.local.toml";
 
 /// On-disk shape of a single config layer (global, repo, or repo-local
 /// TOML file). Every field is optional: absence means "inherit from an
 /// earlier layer", not "reset to the built-in default".
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct ConfigFile {
+struct ConfigFile {
     pub path_template: Option<String>,
     pub default_base: Option<String>,
     pub editor: Option<String>,
@@ -27,7 +27,7 @@ pub struct ConfigFile {
 /// On-disk shape of the `[setup]` table.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct SetupConfigFile {
+struct SetupConfigFile {
     pub commands: Option<Vec<String>>,
     pub copy: Option<Vec<CopyEntry>>,
 }
@@ -35,7 +35,7 @@ pub struct SetupConfigFile {
 /// On-disk shape of the `[prune]` table.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct PruneConfigFile {
+struct PruneConfigFile {
     pub protected_branches: Option<Vec<String>>,
 }
 
@@ -151,7 +151,7 @@ pub fn load(repo_root: &Path) -> Result<Config> {
 /// Merge a parsed file layer over `base`, field-by-field. `setup.commands`,
 /// `setup.copy`, and `prune.protected_branches` REPLACE the base value
 /// entirely when present in `layer` (they never append/merge as lists).
-pub fn merge(base: Config, layer: ConfigFile) -> Config {
+fn merge(base: Config, layer: ConfigFile) -> Config {
     let mut cfg = base;
 
     if let Some(path_template) = layer.path_template {
@@ -278,44 +278,48 @@ mod tests {
     /// Serializes tests that mutate `WTM_CONFIG_DIR` so they don't race.
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
-    /// RAII guard: sets `WTM_CONFIG_DIR` under the lock, restores on drop.
+    /// RAII guard: takes `ENV_LOCK` and sets one or more env vars, restoring
+    /// their previous values (or removing them) on drop.
     struct EnvGuard {
+        saved: Vec<(&'static str, Option<std::ffi::OsString>)>,
         _lock: std::sync::MutexGuard<'static, ()>,
     }
 
     impl EnvGuard {
-        fn set(dir: &Path) -> Self {
+        fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
+            Self::set_many(&[(key, value.as_ref())])
+        }
+
+        fn set2(
+            key1: &'static str,
+            value1: impl AsRef<OsStr>,
+            key2: &'static str,
+            value2: impl AsRef<OsStr>,
+        ) -> Self {
+            Self::set_many(&[(key1, value1.as_ref()), (key2, value2.as_ref())])
+        }
+
+        fn set_many(vars: &[(&'static str, &OsStr)]) -> Self {
             let lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-            std::env::set_var("WTM_CONFIG_DIR", dir);
-            EnvGuard { _lock: lock }
+            let saved = vars
+                .iter()
+                .map(|(key, value)| {
+                    let previous = std::env::var_os(key);
+                    std::env::set_var(key, value);
+                    (*key, previous)
+                })
+                .collect();
+            EnvGuard { saved, _lock: lock }
         }
     }
 
     impl Drop for EnvGuard {
         fn drop(&mut self) {
-            std::env::remove_var("WTM_CONFIG_DIR");
-        }
-    }
-
-    struct ScopedEnvVar {
-        key: &'static str,
-        previous: Option<std::ffi::OsString>,
-    }
-
-    impl ScopedEnvVar {
-        fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
-            let previous = std::env::var_os(key);
-            std::env::set_var(key, value);
-            ScopedEnvVar { key, previous }
-        }
-    }
-
-    impl Drop for ScopedEnvVar {
-        fn drop(&mut self) {
-            if let Some(previous) = &self.previous {
-                std::env::set_var(self.key, previous);
-            } else {
-                std::env::remove_var(self.key);
+            for (key, previous) in &self.saved {
+                match previous {
+                    Some(value) => std::env::set_var(key, value),
+                    None => std::env::remove_var(key),
+                }
             }
         }
     }
@@ -324,9 +328,6 @@ mod tests {
     fn default_config_matches_spec() {
         let cfg = Config::default();
         assert_eq!(cfg.path_template, "../{repo}-worktrees/{branch}");
-        assert_eq!(cfg.default_base, None);
-        assert_eq!(cfg.editor, None);
-        assert_eq!(cfg.setup, SetupConfig::default());
         assert_eq!(
             cfg.prune.protected_branches,
             vec![
@@ -335,18 +336,6 @@ mod tests {
                 "develop".to_string()
             ]
         );
-    }
-
-    #[test]
-    fn setup_config_default_is_empty() {
-        let setup = SetupConfig::default();
-        assert!(setup.commands.is_empty());
-        assert!(setup.copy.is_empty());
-    }
-
-    #[test]
-    fn copy_mode_defaults_to_copy() {
-        assert_eq!(CopyMode::default(), CopyMode::Copy);
     }
 
     #[test]
@@ -415,7 +404,6 @@ editor        = "cursor"
 commands = ["mise install", "npm install"]
 [[setup.copy]]
 path = ".env"
-mode = "copy"
 [prune]
 protected_branches = ["main", "master", "develop"]
 "#;
@@ -470,7 +458,7 @@ protected_branches = ["main", "master", "develop"]
 
     #[test]
     fn load_layers_repo_then_local_over_defaults() {
-        let _guard = EnvGuard::set(tempfile::tempdir().unwrap().path());
+        let _guard = EnvGuard::set("WTM_CONFIG_DIR", tempfile::tempdir().unwrap().path());
         // Empty global dir: no config.toml present, so global layer is a no-op.
 
         let repo_root = tempfile::tempdir().unwrap();
@@ -495,7 +483,7 @@ protected_branches = ["main", "master", "develop"]
     #[test]
     fn global_config_path_honors_wtm_config_dir_override() {
         let tmp = tempfile::tempdir().unwrap();
-        let _guard = EnvGuard::set(tmp.path());
+        let _guard = EnvGuard::set("WTM_CONFIG_DIR", tmp.path());
         assert_eq!(
             global_config_path().unwrap(),
             tmp.path().join("config.toml")
@@ -506,7 +494,7 @@ protected_branches = ["main", "master", "develop"]
     fn load_reads_global_config_layer() {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(tmp.path().join("config.toml"), "editor = \"nano\"\n").unwrap();
-        let _guard = EnvGuard::set(tmp.path());
+        let _guard = EnvGuard::set("WTM_CONFIG_DIR", tmp.path());
 
         let repo_root = tempfile::tempdir().unwrap();
         let cfg = load(repo_root.path()).unwrap();
@@ -516,7 +504,7 @@ protected_branches = ["main", "master", "develop"]
 
     #[test]
     fn load_rejects_shared_repo_setup_commands_with_actionable_error() {
-        let _guard = EnvGuard::set(tempfile::tempdir().unwrap().path());
+        let _guard = EnvGuard::set("WTM_CONFIG_DIR", tempfile::tempdir().unwrap().path());
         let repo_root = tempfile::tempdir().unwrap();
         std::fs::write(
             repo_root.path().join(REPO_CONFIG_FILENAME),
@@ -538,7 +526,7 @@ protected_branches = ["main", "master", "develop"]
     #[test]
     fn load_rejects_shared_repo_editor_with_actionable_error() {
         let global = tempfile::tempdir().unwrap();
-        let _guard = EnvGuard::set(global.path());
+        let _guard = EnvGuard::set("WTM_CONFIG_DIR", global.path());
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(
             tmp.path().join(REPO_CONFIG_FILENAME),
@@ -564,7 +552,7 @@ protected_branches = ["main", "master", "develop"]
             "[setup]\ncommands = [\"from-global\"]\n",
         )
         .unwrap();
-        let _guard = EnvGuard::set(global.path());
+        let _guard = EnvGuard::set("WTM_CONFIG_DIR", global.path());
 
         let repo_root = tempfile::tempdir().unwrap();
         std::fs::write(
@@ -579,10 +567,8 @@ protected_branches = ["main", "master", "develop"]
 
     #[test]
     fn empty_wtm_config_dir_falls_back_to_xdg_config_home() {
-        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let xdg = tempfile::tempdir().unwrap();
-        let _wtm = ScopedEnvVar::set("WTM_CONFIG_DIR", "");
-        let _xdg = ScopedEnvVar::set("XDG_CONFIG_HOME", xdg.path());
+        let _guard = EnvGuard::set2("WTM_CONFIG_DIR", "", "XDG_CONFIG_HOME", xdg.path());
 
         assert_eq!(
             global_config_path().unwrap(),

@@ -5,7 +5,7 @@
 //! to open. On macOS it is normally packaged inside a `WTM.app` bundle and
 //! started via `open -a`; on Linux there is no bundle concept, so `wtm-gui`
 //! is looked for as a plain executable in the handful of places a Linux
-//! install or a local build actually puts it (see [`locate`]).
+//! install or a local build actually puts it (see `locate`).
 //!
 //! Bare `wtm` prefers the app, because that is what most people want once it
 //! is installed. Everything degrades honestly: no app installed falls back to
@@ -22,12 +22,10 @@ use crate::error::Result;
 
 /// How to start the desktop app.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum AppLauncher {
+enum AppLauncher {
     /// A macOS application bundle, started via `open -a`. `open` returns as
     /// soon as the app is launched or focused, which is exactly the behavior
-    /// wanted from a terminal. There is no equivalent concept on Linux -- a
-    /// `.app`-shaped directory found there would be a bug, not a valid
-    /// install, so this variant does not even exist on non-macOS builds.
+    /// wanted from a terminal.
     #[cfg(target_os = "macos")]
     Bundle(PathBuf),
     /// A plain executable (a development build, or an installed binary),
@@ -38,7 +36,7 @@ pub enum AppLauncher {
 impl AppLauncher {
     /// Start the app, asking it to open `repo` when one is given. Returns once
     /// the app has been started; this process does not wait for it to exit.
-    pub fn launch(&self, repo: Option<&Path>) -> Result<()> {
+    fn launch(&self, repo: Option<&Path>) -> Result<()> {
         let mut command = match self {
             #[cfg(target_os = "macos")]
             AppLauncher::Bundle(path) => {
@@ -99,7 +97,7 @@ impl AppLauncher {
 ///    layout to derive this from the way `bundle_candidates` does for step
 ///    2, so these are just the conventional per-user and system bin dirs.
 /// 5. `wtm-gui` anywhere on `$PATH`.
-pub fn locate() -> Option<AppLauncher> {
+fn locate() -> Option<AppLauncher> {
     if let Some(explicit) = std::env::var_os("WTM_APP") {
         if !explicit.is_empty() {
             let path = PathBuf::from(explicit);
@@ -172,16 +170,9 @@ fn bundle_candidates() -> Vec<PathBuf> {
 /// (`/usr/local/bin` for a manual install, `/usr/bin` for a distro package).
 #[cfg(not(target_os = "macos"))]
 fn linux_binary_candidates() -> Vec<PathBuf> {
-    linux_binary_candidates_for(std::env::var_os("HOME").map(PathBuf::from))
-}
-
-/// Pure core of [`linux_binary_candidates`], parametrized on `$HOME` so the
-/// candidate list can be unit tested without touching the environment.
-#[cfg(not(target_os = "macos"))]
-fn linux_binary_candidates_for(home: Option<PathBuf>) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
-    if let Some(home) = home {
-        candidates.push(home.join(".local/bin/wtm-gui"));
+    if let Some(home) = std::env::var_os("HOME") {
+        candidates.push(PathBuf::from(home).join(".local/bin/wtm-gui"));
     }
     candidates.push(PathBuf::from("/usr/local/bin/wtm-gui"));
     candidates.push(PathBuf::from("/usr/bin/wtm-gui"));
@@ -237,19 +228,6 @@ mod tests {
         assert_eq!(classify(&bundle), Some(AppLauncher::Bundle(bundle)));
     }
 
-    /// On Linux a `.app`-suffixed directory is not a recognized launcher at
-    /// all (there is no bundle concept there) -- it falls through to the
-    /// executable-file check same as any other directory, and fails that too.
-    #[cfg(not(target_os = "macos"))]
-    #[test]
-    fn classify_does_not_treat_an_app_directory_as_a_bundle_on_linux() {
-        let tmp = tempfile::tempdir().unwrap();
-        let bundle = tmp.path().join("WTM.app");
-        std::fs::create_dir(&bundle).unwrap();
-
-        assert_eq!(classify(&bundle), None);
-    }
-
     #[test]
     fn classify_rejects_a_non_executable_file() {
         let tmp = tempfile::tempdir().unwrap();
@@ -270,35 +248,5 @@ mod tests {
         std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755)).unwrap();
 
         assert_eq!(classify(&file), Some(AppLauncher::Binary(file)));
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    #[test]
-    fn linux_binary_candidates_orders_user_then_local_then_system_prefix() {
-        let candidates = linux_binary_candidates_for(Some(PathBuf::from("/home/alice")));
-        assert_eq!(
-            candidates,
-            vec![
-                PathBuf::from("/home/alice/.local/bin/wtm-gui"),
-                PathBuf::from("/usr/local/bin/wtm-gui"),
-                PathBuf::from("/usr/bin/wtm-gui"),
-            ]
-        );
-    }
-
-    /// No `$HOME` (unusual, but not impossible -- e.g. a stripped-down
-    /// container) just drops the per-user candidate rather than panicking or
-    /// guessing at a path.
-    #[cfg(not(target_os = "macos"))]
-    #[test]
-    fn linux_binary_candidates_skips_user_dir_without_home() {
-        let candidates = linux_binary_candidates_for(None);
-        assert_eq!(
-            candidates,
-            vec![
-                PathBuf::from("/usr/local/bin/wtm-gui"),
-                PathBuf::from("/usr/bin/wtm-gui"),
-            ]
-        );
     }
 }

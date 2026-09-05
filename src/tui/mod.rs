@@ -18,7 +18,7 @@ mod view;
 use std::collections::VecDeque;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -238,7 +238,7 @@ fn run_effect(
             let mut text = format!("pruned {} worktree(s)", report.removed);
             if !report.skipped.is_empty() {
                 text.push_str(&format!("; skipped (dirty): {}", report.skipped.join(", ")));
-            };
+            }
             if !report.failures.is_empty() {
                 text.push_str(&format!("; failed: {}", report.failures.join("; ")));
             }
@@ -343,34 +343,13 @@ fn suspended_wait_key<T>(terminal: &mut Tui, f: impl FnOnce() -> T) -> Result<T>
     Ok(out)
 }
 
-/// Copy `path` to the system clipboard: first available of pbcopy, wl-copy,
-/// `xclip -selection clipboard`, `xsel -ib`; otherwise fall back to an
-/// OSC 52 escape sequence written to the terminal.
+/// Copy `path` to the system clipboard via `crate::clipboard::copy`,
+/// falling back to an OSC 52 escape sequence written to the terminal when no
+/// clipboard tool is available.
 fn copy_to_clipboard(path: &Path) -> Result<&'static str> {
     let text = path.display().to_string();
-    let tools: [(&str, &[&str]); 4] = [
-        ("pbcopy", &[]),
-        ("wl-copy", &[]),
-        ("xclip", &["-selection", "clipboard"]),
-        ("xsel", &["-ib"]),
-    ];
-    for (tool, args) in tools {
-        let child = Command::new(tool)
-            .args(args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn();
-        let Ok(mut child) = child else {
-            continue; // Not installed; try the next tool.
-        };
-        if let Some(stdin) = child.stdin.as_mut() {
-            stdin.write_all(text.as_bytes())?;
-        }
-        drop(child.stdin.take());
-        if child.wait()?.success() {
-            return Ok(tool);
-        }
+    if let Ok(tool) = crate::clipboard::copy(&text) {
+        return Ok(tool);
     }
 
     // OSC 52: ask the terminal emulator itself to set the clipboard.
@@ -380,8 +359,7 @@ fn copy_to_clipboard(path: &Path) -> Result<&'static str> {
     Ok("OSC 52")
 }
 
-/// Minimal standard base64 (no padding shortcuts skipped) — enough for
-/// OSC 52 without pulling in a dependency.
+/// Standard base64 with padding — enough for OSC 52 without a dependency.
 fn base64(input: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(input.len().div_ceil(3) * 4);

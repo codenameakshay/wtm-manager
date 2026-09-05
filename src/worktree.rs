@@ -113,7 +113,7 @@ pub fn find(ctx: &RepoContext, name: &str) -> Result<WorktreeInfo> {
 /// you are standing in"). None if path is in no known worktree.
 pub fn containing(ctx: &RepoContext, path: &Path) -> Result<Option<WorktreeInfo>> {
     let infos = list(ctx, &ListOptions::default())?;
-    let probe = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let probe = crate::repo::canonicalize_lossy(path);
     Ok(infos
         .into_iter()
         .filter(|i| !i.is_missing && probe.starts_with(&i.path))
@@ -122,9 +122,9 @@ pub fn containing(ctx: &RepoContext, path: &Path) -> Result<Option<WorktreeInfo>
 
 /// Cap on dirty file paths stored in [`WorktreeDetails`] (the total count is
 /// always exact).
-pub const DETAIL_DIRTY_CAP: usize = 15;
+const DETAIL_DIRTY_CAP: usize = 15;
 /// Cap on recent commits stored in [`WorktreeDetails`].
-pub const DETAIL_COMMIT_CAP: usize = 10;
+const DETAIL_COMMIT_CAP: usize = 10;
 
 /// One line of recent history in [`WorktreeDetails`].
 #[derive(Debug, Clone)]
@@ -141,12 +141,22 @@ pub struct CommitLine {
 pub struct WorktreeDetails {
     /// Upstream branch shorthand (e.g. "origin/main"), when configured.
     pub upstream: Option<String>,
-    /// Dirty/untracked file paths, at most [`DETAIL_DIRTY_CAP`] entries.
+    /// Dirty/untracked file paths, at most `DETAIL_DIRTY_CAP` entries.
     pub dirty_files: Vec<String>,
     /// Exact total number of dirty/untracked entries.
     pub dirty_total: usize,
-    /// Most recent commits from HEAD, at most [`DETAIL_COMMIT_CAP`] entries.
+    /// Most recent commits from HEAD, at most `DETAIL_COMMIT_CAP` entries.
     pub commits: Vec<CommitLine>,
+}
+
+/// Dirty-status semantics shared everywhere `wtm` checks for uncommitted
+/// changes: untracked files count, ignored files and submodules don't.
+pub fn dirty_status_options() -> git2::StatusOptions {
+    let mut opts = git2::StatusOptions::new();
+    opts.include_untracked(true)
+        .include_ignored(false)
+        .exclude_submodules(true);
+    opts
 }
 
 /// Detail data for the worktree at `path`, read with git2 only (never a
@@ -165,13 +175,7 @@ pub fn details(path: &Path) -> Option<WorktreeDetails> {
         .and_then(|b| b.upstream().ok())
         .and_then(|u| u.name().ok().flatten().map(str::to_owned));
 
-    // Same dirty semantics as `compute_status`: untracked included, ignored
-    // and submodules excluded.
-    let mut status_opts = git2::StatusOptions::new();
-    status_opts
-        .include_untracked(true)
-        .include_ignored(false)
-        .exclude_submodules(true);
+    let mut status_opts = dirty_status_options();
     let (dirty_files, dirty_total) = match repo.statuses(Some(&mut status_opts)) {
         Ok(statuses) => {
             let files = statuses
@@ -218,30 +222,38 @@ struct ResolvedBase {
     names: Vec<String>,
 }
 
+/// Resolve `spec` to a commit oid in `repo`, along with the reference it
+/// went through (when any), for callers that also need its shorthand name.
+/// The error message is shared with [`crate::commands::add`]'s base
+/// validation so a bad `default_base` reads the same way everywhere.
+pub fn resolve_base_commit<'repo>(
+    repo: &'repo git2::Repository,
+    spec: &str,
+) -> Result<(git2::Oid, Option<git2::Reference<'repo>>)> {
+    let unresolved = || {
+        Error::Other(format!(
+            "configured base '{spec}' does not resolve to a commit"
+        ))
+    };
+    let (object, reference) = repo.revparse_ext(spec).map_err(|_| unresolved())?;
+    let commit = object
+        .peel(git2::ObjectType::Commit)
+        .map_err(|_| unresolved())?;
+    Ok((commit.id(), reference))
+}
+
 /// Resolve the merged-detection base in the MAIN repo. An explicit base is
 /// strict; only an absent base falls back to HEAD.
 fn resolve_base(repo: &git2::Repository, base: Option<&str>) -> Result<Option<ResolvedBase>> {
     if let Some(spec) = base {
-        let (object, reference) = repo.revparse_ext(spec).map_err(|_| {
-            Error::Other(format!(
-                "configured base '{spec}' does not resolve to a commit"
-            ))
-        })?;
-        let commit = object.peel(git2::ObjectType::Commit).map_err(|_| {
-            Error::Other(format!(
-                "configured base '{spec}' does not resolve to a commit"
-            ))
-        })?;
+        let (oid, reference) = resolve_base_commit(repo, spec)?;
         let mut names = vec![spec.to_string()];
         if let Some(short) = reference.as_ref().and_then(|r| r.shorthand().ok()) {
             if short != spec {
                 names.push(short.to_string());
             }
         }
-        return Ok(Some(ResolvedBase {
-            oid: commit.id(),
-            names,
-        }));
+        return Ok(Some(ResolvedBase { oid, names }));
     }
 
     let Some(head) = repo.head().ok() else {
@@ -271,45 +283,26 @@ fn compute_status(
 ) -> Option<WorktreeStatus> {
     let repo = git2::Repository::open(path).ok()?;
 
-    // Dirty: any status entry, untracked included, ignored and submodules
-    // excluded.
-    let mut status_opts = git2::StatusOptions::new();
-    status_opts
-        .include_untracked(true)
-        .include_ignored(false)
-        .exclude_submodules(true);
-    // `.len()` on the already-collected statuses gives the exact count for
-    // free — `compute_status` already pays for this scan, so there is no
-    // second pass just to count instead of merely testing non-emptiness.
-    let dirty_count = repo.statuses(Some(&mut status_opts)).ok()?.len();
+    let dirty_count = repo.statuses(Some(&mut dirty_status_options())).ok()?.len();
     let dirty = dirty_count > 0;
 
     let mut ahead = None;
     let mut behind = None;
-    let mut upstream_gone = false;
+    let mut gone = false;
     let mut tip: Option<git2::Oid> = None;
 
     if let Some(name) = branch {
         if let Ok(local) = repo.find_branch(name, git2::BranchType::Local) {
             tip = local.get().target();
-            match local.upstream() {
-                Ok(upstream) => {
-                    if let (Some(local_oid), Some(upstream_oid)) = (tip, upstream.get().target()) {
-                        if let Ok((a, b)) = repo.graph_ahead_behind(local_oid, upstream_oid) {
-                            ahead = Some(a);
-                            behind = Some(b);
-                        }
+            if let Ok(upstream) = local.upstream() {
+                if let (Some(local_oid), Some(upstream_oid)) = (tip, upstream.get().target()) {
+                    if let Ok((a, b)) = repo.graph_ahead_behind(local_oid, upstream_oid) {
+                        ahead = Some(a);
+                        behind = Some(b);
                     }
                 }
-                Err(e) if e.code() == git2::ErrorCode::NotFound => {
-                    // Upstream config present but the ref itself is gone.
-                    upstream_gone = repo
-                        .config()
-                        .and_then(|cfg| cfg.get_string(&format!("branch.{name}.merge")))
-                        .is_ok();
-                }
-                Err(_) => {}
             }
+            gone = upstream_gone(&repo, &local);
         }
     }
 
@@ -344,9 +337,27 @@ fn compute_status(
         dirty_count,
         ahead,
         behind,
-        upstream_gone,
+        upstream_gone: gone,
         merged,
     })
+}
+
+/// Does `branch` have upstream configuration (`branch.<name>.merge`) whose
+/// ref no longer exists? Shared with the GUI's branch listing so "upstream
+/// gone" means the same thing everywhere.
+pub fn upstream_gone(repo: &git2::Repository, branch: &git2::Branch) -> bool {
+    match branch.upstream() {
+        Ok(_) => false,
+        Err(e) if e.code() == git2::ErrorCode::NotFound => {
+            let Ok(Some(name)) = branch.name() else {
+                return false;
+            };
+            repo.config()
+                .and_then(|cfg| cfg.get_string(&format!("branch.{name}.merge")))
+                .is_ok()
+        }
+        Err(_) => false,
+    }
 }
 
 /// Info for the main working tree (always listed first, name "main").
@@ -389,7 +400,7 @@ fn linked_info(ctx: &RepoContext, main_repo: &git2::Repository, name: &str) -> W
     };
 
     let (path, is_missing) = match path {
-        Some(p) if p.exists() => (fs::canonicalize(&p).unwrap_or(p), false),
+        Some(p) if p.exists() => (crate::repo::canonicalize_lossy(&p), false),
         Some(p) => (p, true),
         None => (ctx.git_dir.join("worktrees").join(name), true),
     };
@@ -448,7 +459,7 @@ fn head_info(
 }
 
 /// Abbreviated (7+ chars, uniqueness-extended) object id via `short_id`.
-fn short_id(repo: &git2::Repository, oid: git2::Oid) -> Option<String> {
+pub fn short_id(repo: &git2::Repository, oid: git2::Oid) -> Option<String> {
     let object = repo.find_object(oid, None).ok()?;
     let buf = object.short_id().ok()?;
     buf.as_str().ok().map(str::to_owned)
@@ -457,44 +468,14 @@ fn short_id(repo: &git2::Repository, oid: git2::Oid) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::process::Command;
-
-    fn git(dir: &Path, args: &[&str]) {
-        let out = Command::new("git")
-            .args(["-c", "commit.gpgsign=false"])
-            .args(args)
-            .current_dir(dir)
-            .env("GIT_AUTHOR_NAME", "wtm test")
-            .env("GIT_AUTHOR_EMAIL", "wtm@example.invalid")
-            .env("GIT_COMMITTER_NAME", "wtm test")
-            .env("GIT_COMMITTER_EMAIL", "wtm@example.invalid")
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .env("GIT_CONFIG_SYSTEM", "/dev/null")
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .output()
-            .expect("failed to run git");
-        assert!(
-            out.status.success(),
-            "git {:?} failed:\n{}",
-            args,
-            String::from_utf8_lossy(&out.stderr)
-        );
-    }
-
-    fn commit_file(dir: &Path, file: &str) {
-        fs::write(dir.join(file), file).unwrap();
-        git(dir, &["add", "."]);
-        git(dir, &["commit", "-m", file]);
-    }
+    use crate::testgit::{commit_file, git, init_repo};
 
     /// tmp dir with `main/` containing an initialized repo (branch "main",
     /// one commit).
     fn fixture() -> (tempfile::TempDir, RepoContext) {
         let tmp = tempfile::TempDir::new().unwrap();
         let main = tmp.path().join("main");
-        fs::create_dir(&main).unwrap();
-        git(&main, &["init", "-b", "main"]);
-        commit_file(&main, "README.md");
+        init_repo(&main);
         let ctx = crate::repo::discover(Some(&main)).unwrap();
         (tmp, ctx)
     }

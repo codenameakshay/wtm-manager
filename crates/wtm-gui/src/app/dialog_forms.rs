@@ -9,7 +9,6 @@
 //! `cx.listener` callbacks wired to `dialog_actions`' methods.
 
 use super::*;
-use crate::motion;
 use crate::theme::{RADIUS_CONTROL, SPACE_12, SPACE_16, SPACE_2, SPACE_4, SPACE_6, SPACE_8};
 use crate::ui::{TEXT_BASE, TEXT_SM, TEXT_XS};
 
@@ -18,8 +17,15 @@ impl WtmApp {
     // Dialog rendering
     // -------------------------------------------------------------
 
-    pub(super) fn render_dialog(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    pub(super) fn render_dialog(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let theme = Theme::of(cx);
+        if matches!(self.dialog, Some(Dialog::Create(_))) && self.active.is_none() {
+            // No repo to render the Create form against — close it instead
+            // of returning `None` and leaving a phantom dialog blocking
+            // every list action.
+            self.dialog = None;
+            return None;
+        }
         match self.dialog.as_ref()? {
             Dialog::Create(state) => {
                 let repo = self.active.as_ref()?;
@@ -59,12 +65,7 @@ impl WtmApp {
             ))
             .child(body);
 
-        // SURFACES §7: the card enters with `DIALOG_IN`, the scrim behind it
-        // with the cheaper `FADE_QUICK` — two independently animated layers,
-        // not one flat cross-fade.
-        let backdrop =
-            render_modal_backdrop(cx).child(motion::dialog_in("create-dialog-in", card, cx));
-        motion::fade_quick("create-dialog-backdrop-in", backdrop, cx).into_any_element()
+        present_modal("create-dialog", card, cx)
     }
 
     fn render_create_form(
@@ -183,10 +184,9 @@ impl WtmApp {
 
     /// The Base field's ref picker itself: `ui::popover` — the same
     /// `surface_overlay` + `shadow_popover` treatment the command palette
-    /// and context menu use for "this sits above the rest of the dialog"
-    /// (COMPONENTS.md: elevation is `shadow_*` + `border`/`border_strong`
-    /// from the theme, never gpui's built-in `shadow_lg()` ramp, which
-    /// isn't tuned for this palette) — so it reads as a floating result
+    /// and context menu use for "this sits above the rest of the dialog",
+    /// via the theme's `shadow_*` + `border`/`border_strong` rather than
+    /// gpui's built-in `shadow_lg()` ramp — so it reads as a floating result
     /// list even though (see the module doc below) it's laid out in
     /// ordinary flow directly under the field rather than absolutely
     /// positioned over what comes after it.
@@ -294,10 +294,10 @@ impl WtmApp {
                     }),
             )
             .child(
-                // SURFACES §7: progress/log views are mono on
-                // `surface_inset`, newest line pinned in view. The mono face
-                // itself lives on each `render_log_entry` line (its own
-                // doc), so this well only owns the surface/radius.
+                // Progress/log views are mono on `surface_inset`, newest
+                // line pinned in view. The mono face itself lives on each
+                // `render_log_entry` line (its own doc), so this well only
+                // owns the surface/radius.
                 div()
                     .id("create-log")
                     .flex()
@@ -397,10 +397,8 @@ impl WtmApp {
             ));
 
         if is_main {
-            // Never a filled button and no `Primary` in this dialog at all
-            // (SURFACES §7) — the destructive dialogs get a `Danger` commit
-            // or, as here, no commit at all. Wrapped in `inline_error` so
-            // the refusal is icon-plus-text, not color alone.
+            // Wrapped in `inline_error` so the refusal is icon-plus-text,
+            // not color alone.
             body = body.child(ui::inline_error(
                 "The main worktree can't be removed — it's the repository itself.",
                 theme,
@@ -408,19 +406,10 @@ impl WtmApp {
         } else {
             if dirty {
                 body = body
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(SPACE_6))
-                            .child(ui::icon(icons::WARNING, 12.0, theme.warning))
-                            .child(
-                                div()
-                                    .text_size(px(TEXT_SM))
-                                    .text_color(theme.warning)
-                                    .child("This worktree has uncommitted changes."),
-                            ),
-                    )
+                    .child(uncommitted_changes_warning(
+                        "This worktree has uncommitted changes.",
+                        theme,
+                    ))
                     .child(
                         dialogs::render_toggle(
                             "remove-force",
@@ -467,7 +456,7 @@ impl WtmApp {
 
         // Destructive dialog: never a filled `Primary` here — `Cancel` stays
         // `Secondary`, the commit action is `Danger`, and that's the only
-        // fill in the view (SURFACES §7 / COMPONENTS.md's button hierarchy).
+        // fill in the view.
         let mut footer = ui::modal_footer(theme).child(
             // `.track_focus` — not the internal auto-tab_index handle
             // `ui::button` gives it — so `open_remove_dialog_for` can
@@ -500,9 +489,7 @@ impl WtmApp {
                 theme,
             ))
             .child(body);
-        let backdrop =
-            render_modal_backdrop(cx).child(motion::dialog_in("remove-dialog-in", card, cx));
-        motion::fade_quick("remove-dialog-backdrop-in", backdrop, cx).into_any_element()
+        present_modal("remove-dialog", card, cx)
     }
 
     fn render_prune_dialog(
@@ -542,9 +529,9 @@ impl WtmApp {
                 .on_click(cx.listener(|this, _, _window, cx| this.toggle_prune_force(cx))),
             )
             .child(
-                // SURFACES §7: the destructive dialogs give the affected
-                // list real room — a proud `surface_raised` plate per row
-                // (see `dialogs::render_candidate_row`), not a bare wash.
+                // The affected list gets real room — a proud
+                // `surface_raised` plate per row (see
+                // `dialogs::render_candidate_row`), not a bare wash.
                 div()
                     .id("prune-candidates")
                     .flex()
@@ -598,9 +585,7 @@ impl WtmApp {
                 theme,
             ))
             .child(body);
-        let backdrop =
-            render_modal_backdrop(cx).child(motion::dialog_in("prune-dialog-in", card, cx));
-        motion::fade_quick("prune-dialog-backdrop-in", backdrop, cx).into_any_element()
+        present_modal("prune-dialog", card, cx)
     }
 
     // -------------------------------------------------------------
@@ -643,19 +628,10 @@ impl WtmApp {
 
         if has_dirty {
             body = body
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(SPACE_6))
-                        .child(ui::icon(icons::WARNING, 12.0, theme.warning))
-                        .child(
-                            div()
-                                .text_size(px(TEXT_SM))
-                                .text_color(theme.warning)
-                                .child("Some selected worktrees have uncommitted changes."),
-                        ),
-                )
+                .child(uncommitted_changes_warning(
+                    "Some selected worktrees have uncommitted changes.",
+                    theme,
+                ))
                 .child(
                     dialogs::render_toggle(
                         "bulk-remove-force",
@@ -670,9 +646,8 @@ impl WtmApp {
                 );
         }
 
-        // SURFACES §7: real room for the affected list — a proud
-        // `surface_raised` plate per row, same as the Prune dialog's own
-        // candidate list.
+        // Real room for the affected list — a proud `surface_raised` plate
+        // per row, same as the Prune dialog's own candidate list.
         body = body.child(
             div()
                 .id("bulk-remove-list")
@@ -734,20 +709,15 @@ impl WtmApp {
                 theme,
             ))
             .child(body);
-        let backdrop =
-            render_modal_backdrop(cx).child(motion::dialog_in("bulk-remove-dialog-in", card, cx));
-        motion::fade_quick("bulk-remove-dialog-backdrop-in", backdrop, cx).into_any_element()
+        present_modal("bulk-remove-dialog", card, cx)
     }
 }
 
-/// A labeled `TextInput` field: a small muted label above the field itself.
-/// SURFACES §7: "Fields: label at `TEXT_SM`/`text_muted` above an inset well
-/// at `RADIUS_CONTROL`" — the label half of that is this function's whole
-/// job; the well itself is `TextInput`'s own paint (`crate::text_input`,
-/// out of this task's file scope). Returns a concrete `Div`, not `impl
-/// IntoElement`, so callers with a conditional trailing child (the Base
-/// field's floating ref picker) can keep chaining `.when(..)`/`.child(..)`
-/// on the result.
+/// A labeled `TextInput` field: a small muted label above the field itself
+/// — the well at `RADIUS_CONTROL` is `TextInput`'s own paint
+/// (`crate::text_input`). Returns a concrete `Div`, not `impl IntoElement`,
+/// so callers with a conditional trailing child (the Base field's floating
+/// ref picker) can keep chaining `.when(..)`/`.child(..)` on the result.
 fn labeled_field(label: &str, input: Entity<TextInput>, theme: &Theme) -> Div {
     div()
         .flex()
@@ -760,6 +730,22 @@ fn labeled_field(label: &str, input: Entity<TextInput>, theme: &Theme) -> Div {
                 .child(label.to_string()),
         )
         .child(input)
+}
+
+/// A warning-colored icon-plus-text line for a dialog body — used by both
+/// the single-target and bulk Remove dialogs to flag uncommitted changes.
+fn uncommitted_changes_warning(text: &'static str, theme: &Theme) -> impl IntoElement {
+    div()
+        .flex()
+        .items_center()
+        .gap(px(SPACE_6))
+        .child(ui::icon(icons::WARNING, 12.0, theme.warning))
+        .child(
+            div()
+                .text_size(px(TEXT_SM))
+                .text_color(theme.warning)
+                .child(text),
+        )
 }
 
 /// Small muted placeholder text for a dialog's list area (loading, no
@@ -788,13 +774,11 @@ fn prune_empty_hint(state: &PruneState, theme: &Theme) -> impl IntoElement {
         .child(text)
 }
 
-/// States, in words, how many worktrees a destructive action affects —
-/// SURFACES §7: "the remove/prune dialogs are the destructive ones... the
-/// count is stated in words above the action bar." `verb` is the plain
-/// infinitive ("prune", "remove"). Shared by the Prune and bulk-remove
-/// confirmations, the two dialogs that can ever act on more than one
-/// worktree at once; the single-target Remove dialog already names its one
-/// worktree in the modal header, so it has no need of this.
+/// States, in words, how many worktrees a destructive action affects.
+/// `verb` is the plain infinitive ("prune", "remove"). Shared by the Prune
+/// and bulk-remove confirmations, the two dialogs that can ever act on more
+/// than one worktree at once; the single-target Remove dialog already names
+/// its one worktree in the modal header, so it has no need of this.
 fn destructive_count_line(count: usize, verb: &str, theme: &Theme) -> impl IntoElement {
     div()
         .text_size(px(TEXT_SM))

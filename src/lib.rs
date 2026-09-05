@@ -4,8 +4,12 @@
 //! Reads go through `git2` (never a spawned `git` process); mutations shell
 //! out to the user's `git` binary so hooks and behavior match exactly.
 
+#[cfg(not(unix))]
+compile_error!("wtm supports macOS and Linux only");
+
 pub mod cdfile;
 pub mod cli;
+pub mod clipboard;
 pub mod commands;
 pub mod config;
 pub mod error;
@@ -16,8 +20,7 @@ pub mod registry;
 pub mod repo;
 pub mod setup;
 pub mod template;
+#[cfg(test)]
+pub(crate) mod testgit;
 pub mod tui;
 pub mod worktree;
-
-pub use error::{Error, Result};
-pub use model::{WorktreeInfo, WorktreeStatus};

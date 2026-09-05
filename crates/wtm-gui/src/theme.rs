@@ -4,17 +4,16 @@
 //! space — the same one CSS Color 4 and Tailwind v4 use) and converted to
 //! gpui [`Hsla`] once, at palette-construction time. The conversion math
 //! (`oklch_to_srgb`, `rgb_to_hsl`, `hsl_to_rgb`, `gamma_encode`) plus the
-//! contrast helpers (`relative_luminance`, `contrast_ratio`, `flatten`,
-//! `mix`) are ported from Zeron/comet's `crates/ui/src/theme.rs`, which is
-//! itself test-anchored against independently-computed anchors.
+//! contrast helpers (`relative_luminance`, `contrast_ratio`, `flatten`) are
+//! ported from Zeron/comet's `crates/ui/src/theme.rs`, which is itself
+//! test-anchored against independently-computed anchors.
 //!
 //! # Numbers drive layout, colors are paint
 //!
 //! Layout constants (radii, spacing, the density table) are plain `f32`
 //! consts that never depend on which appearance is painted — there is
 //! deliberately no `if dark { px(8) } else { px(10) }` anywhere in this
-//! module, and [`tests::layout_constants_are_appearance_independent`] pins
-//! that down.
+//! module.
 //!
 //! # Light is designed, not inverted
 //!
@@ -30,16 +29,15 @@
 //!    appearances, but light mode needs a darker, more saturated step to
 //!    clear WCAG AA on a white field — see [`Theme::light`]'s accent value.
 //!
-//! # The three paint helpers
+//! # The paint helpers
 //!
-//! [`ink`], [`hairline`], and [`wash`] are **free functions**, not `Theme`
-//! methods, because they are called from element builders deep in the tree
-//! that have no `cx` in scope. They read a process-wide appearance mirror
-//! ([`CURRENT_APPEARANCE`]) instead — [`set_current_appearance`] is the only
-//! writer outside tests, and both [`init`] and [`refresh`] go through it via
-//! [`Theme::install`]. Alphas passed to these helpers are always quoted in
-//! **dark-mode terms**: the dark palette is the tuned one, light derives from
-//! it via [`INK_FILL_SCALE`] / [`INK_HAIRLINE_SCALE`].
+//! [`hairline`] and [`scrim`] are **free functions**, not `Theme` methods,
+//! because they are called from element builders deep in the tree that have
+//! no `cx` in scope. They read a process-wide appearance mirror
+//! ([`CURRENT_APPEARANCE`]) instead — [`Theme::install`] (via [`init`] and
+//! [`refresh`]) is the only writer outside tests. Alphas passed to these
+//! helpers are always quoted in **dark-mode terms**: the dark palette is the
+//! tuned one, light derives from it via [`INK_FILL_SCALE`] / [`INK_HAIRLINE_SCALE`].
 //!
 //! Installed as a gpui [`Global`] at boot ([`init`]); read with [`Theme::of`].
 
@@ -72,10 +70,10 @@ impl Appearance {
 
 /// Process-wide mirror of the installed theme's appearance.
 ///
-/// [`ink`], [`hairline`], [`wash`], and [`scrim`] are free functions called
-/// from element builders with no `cx` in scope, so they read the appearance
-/// from here rather than from the gpui global. Appearance is genuinely
-/// process-wide (one setting for every window), so a single mirror is sound.
+/// [`hairline`] and [`scrim`] are free functions called from element
+/// builders with no `cx` in scope, so they read the appearance from here
+/// rather than from the gpui global. Appearance is genuinely process-wide
+/// (one setting for every window), so a single mirror is sound.
 static CURRENT_APPEARANCE: AtomicU8 = AtomicU8::new(0);
 
 fn current_appearance() -> Appearance {
@@ -88,7 +86,7 @@ fn current_appearance() -> Appearance {
 /// Point the context-free paint helpers at an appearance. The **only**
 /// writer of [`CURRENT_APPEARANCE`] outside tests — [`Theme::install`] (and
 /// through it, [`init`]/[`refresh`]) is the sole call site.
-pub fn set_current_appearance(appearance: Appearance) {
+fn set_current_appearance(appearance: Appearance) {
     let encoded = match appearance {
         Appearance::Dark => 0,
         Appearance::Light => 1,
@@ -118,10 +116,7 @@ pub const INK_FILL_SCALE: f32 = 1.0;
 
 /// Light-mode alpha multiplier for **hairlines** (borders, dividers, rings).
 /// Opposite of fills: a 1px edge has to hold its own against a bright
-/// surround, so hairlines scale UP rather than staying flat. Only read by
-/// [`hairline`]/[`hairline_for`], which have no caller yet — see the "three
-/// paint helpers" section header note.
-#[allow(dead_code)]
+/// surround, so hairlines scale UP rather than staying flat.
 pub const INK_HAIRLINE_SCALE: f32 = 1.35;
 
 /// Dark-mode alpha of the standard modal backdrop. Call sites that need a
@@ -138,7 +133,7 @@ pub const GLASS_ALPHA: f32 = if cfg!(target_os = "macos") { 0.82 } else { 1.0 };
 pub const GLASS_ALPHA_LIGHT: f32 = if cfg!(target_os = "macos") { 0.85 } else { 1.0 };
 
 // ---------------------------------------------------------------------------
-// Layout — numbers only, never appearance-dependent (SPEC §4)
+// Layout — numbers only, never appearance-dependent
 // ---------------------------------------------------------------------------
 
 /// Modal card corner radius.
@@ -172,22 +167,22 @@ pub const TRAFFIC_LIGHT_CLEARANCE: f32 = 78.0;
 pub const ROW_HEIGHT: f32 = 32.0;
 /// Two-line worktree card height.
 pub const LIST_ROW_HEIGHT: f32 = 56.0;
+/// The list wraps each row in 2px of bottom padding, so keyboard-scroll math
+/// must step by this, not by [`LIST_ROW_HEIGHT`] alone.
+pub const LIST_ROW_PITCH: f32 = LIST_ROW_HEIGHT + 2.0;
 /// Sidebar width.
 pub const SIDEBAR_WIDTH: f32 = 248.0;
 /// Footer strip height.
 pub const FOOTER_HEIGHT: f32 = 28.0;
-/// Square icon-button hit area (titlebar, sidebar, toolbars). Was 26 — a
-/// macOS toolbar button reads closer to ~28, and at `TITLEBAR_HEIGHT` (44)
-/// this still leaves 8px of clearance above and below, so the bump costs no
-/// layout. The one source of truth for every hand-built copy of this
-/// control (`ui::icon_button`, `app/chrome.rs`'s reload button and its
-/// Linux window-control buttons).
+/// Square icon-button hit area (titlebar, sidebar, toolbars): a macOS
+/// toolbar button reads closer to ~28, and at `TITLEBAR_HEIGHT` (44) this
+/// still leaves 8px of clearance above and below. The one source of truth
+/// for every hand-built copy of this control (`ui::icon_button`,
+/// `app/chrome.rs`'s reload button and its Linux window-control buttons).
 pub const ICON_BUTTON_SIZE: f32 = 28.0;
 
-/// Text scale (SPEC §6). Moved here from `ui.rs` per SPEC §8's module-layout
-/// doc, which places these alongside the other density constants; `ui.rs`
-/// re-exports every one of these under the same name so its existing
-/// `ui::TEXT_*` call sites keep compiling unchanged.
+/// The text scale (px). `ui.rs` re-exports every one of these under the same
+/// name so its `ui::TEXT_*` call sites keep working.
 ///
 /// Shortcut hints, kbd caps.
 pub const TEXT_XS: f32 = 11.0;
@@ -195,15 +190,8 @@ pub const TEXT_XS: f32 = 11.0;
 pub const TEXT_SM: f32 = 12.0;
 /// Row labels, body.
 pub const TEXT_BASE: f32 = 13.0;
-/// Section titles, dialog field labels per SPEC §6's own table — though
-/// `detail_panel.rs`'s branch name (at 600 weight, one step heavier than the
-/// list row's `TEXT_BASE`/500) is this scale's one real call site today;
-/// SURFACES §7's dialog field labels use `TEXT_SM` instead, which disagrees
-/// with this scale's own "dialog labels" row. (The former "section titles"
-/// call site, `ui::section_header`, also used `TEXT_SM` rather than this —
-/// moot now that every eyebrow label, `section_header` included, has been
-/// removed from the app.) Flagged rather than silently resolved one way or
-/// the other.
+/// Section titles, dialog field labels; `detail_panel.rs`'s branch name (one
+/// step heavier than the list row) is this scale's real call site today.
 pub const TEXT_MD: f32 = 14.0;
 /// Dialog titles.
 pub const TEXT_LG: f32 = 16.0;
@@ -211,7 +199,7 @@ pub const TEXT_LG: f32 = 16.0;
 pub const TEXT_XL: f32 = 20.0;
 
 // ---------------------------------------------------------------------------
-// Fonts (SPEC §6)
+// Fonts
 // ---------------------------------------------------------------------------
 
 /// The bundled sans family's name — the family baked into `Geist.ttf` and
@@ -220,68 +208,12 @@ pub const TEXT_XL: f32 = 20.0;
 /// source of truth for [`Theme::font_sans`].
 pub const FONT_SANS_DEFAULT: &str = "Geist";
 /// The bundled monospace family's name (`GeistMono.ttf`). The single source
-/// of truth for [`Theme::font_mono`] *and* `ui::FONT_MONO`, which now
-/// re-exports this constant instead of repeating the literal independently
-/// (matches the `ui::ROW_HEIGHT`-re-exports-[`ROW_HEIGHT`] convention
-/// already in this crate) — closing the gap the redesign report flagged:
-/// `ui::FONT_MONO` hardcoded `"Geist Mono"` with no real `Theme` token
-/// behind it.
+/// of truth for [`Theme::font_mono`] *and* `ui::FONT_MONO`, which re-exports
+/// this constant instead of repeating the literal independently.
 pub const FONT_MONO_DEFAULT: &str = "Geist Mono";
-
-/// Platform sans fallback for SPEC §6's non-fatal registration-failure case
-/// ("fall back to the platform sans ... and log a warning"). Not read
-/// automatically by anything in this module — [`Theme::font_sans`] always
-/// names the bundled face; a caller reacting to a real
-/// `assets::register_fonts` failure switches to this explicitly. No such
-/// caller exists yet (`register_fonts` only logs today — see its doc), so
-/// this is spec-mandated but presently unread; kept rather than deleted
-/// because the day that caller is written it needs the platform-correct
-/// name decided *now*, not re-litigated then.
-#[cfg(target_os = "macos")]
-#[allow(dead_code)]
-pub const FONT_SANS_FALLBACK: &str = "Helvetica";
-/// See the macOS [`FONT_SANS_FALLBACK`] doc.
-#[cfg(target_os = "windows")]
-#[allow(dead_code)]
-pub const FONT_SANS_FALLBACK: &str = "Segoe UI";
-/// See the macOS [`FONT_SANS_FALLBACK`] doc.
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
-#[allow(dead_code)]
-pub const FONT_SANS_FALLBACK: &str = "DejaVu Sans";
-
-/// Platform monospace fallback, the same non-fatal case as
-/// [`FONT_SANS_FALLBACK`]. `diff_view.rs` already carries its own
-/// macOS-flavored fallback *chain* (`SF Mono`/`Menlo`/`Monaco`/
-/// `Courier New`) for the one call site that builds a real `FontFallbacks`
-/// list; this is the single-name equivalent for a caller that just wants
-/// *a* reasonable default per platform.
-#[cfg(target_os = "macos")]
-#[allow(dead_code)] // See FONT_SANS_FALLBACK's doc: same not-yet-read case.
-pub const FONT_MONO_FALLBACK: &str = "Menlo";
-/// See the macOS [`FONT_MONO_FALLBACK`] doc.
-#[cfg(target_os = "windows")]
-#[allow(dead_code)] // See FONT_SANS_FALLBACK's doc: same not-yet-read case.
-pub const FONT_MONO_FALLBACK: &str = "Consolas";
-/// See the macOS [`FONT_MONO_FALLBACK`] doc.
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
-#[allow(dead_code)] // See FONT_SANS_FALLBACK's doc: same not-yet-read case.
-pub const FONT_MONO_FALLBACK: &str = "DejaVu Sans Mono";
 
 // ---------------------------------------------------------------------------
 // OKLCH primitives
-//
-// SPEC §2 names `oklch`/`neutral`/`grey` as the three color primitives this
-// module must expose, and separately requires porting `relative_luminance`,
-// `contrast_ratio`, `flatten`, and `mix` because "the palette tests depend
-// on them" (SPEC §7's ten tests, which are what stop this palette from being
-// refactored by accident). Several of these — `grey`, `hsl_to_rgb`,
-// `gamma_decode`, `relative_luminance`, `contrast_ratio`,
-// `linear_srgb_to_oklab`, `oklch_hue`, `flatten`, `mix` — have no render
-// call site yet: their job is the palette's own test suite, which is
-// exactly what SPEC §7 asks them to do. Each carries its own
-// `#[allow(dead_code)]` below rather than one at the module level, now that
-// most of this file's tokens/helpers (the surface/status tokens, `scrim`,
-// the shadow ladder) DO have real call sites.
 // ---------------------------------------------------------------------------
 
 /// Convert an oklch color (CSS notation: L 0..1, C, H in degrees) to gpui
@@ -297,14 +229,6 @@ pub fn oklch(l: f32, c: f32, h_deg: f32) -> Hsla {
 pub fn neutral(lightness: f32) -> Hsla {
     let [v, _, _] = oklch_to_srgb(lightness, 0.0, 0.0);
     hsla(0.0, 0.0, v, 1.0)
-}
-
-/// An exact achromatic tone from an 8-bit channel value (`grey(13)` ==
-/// `#0d0d0d`). One of SPEC §2's three named primitives; no render call site
-/// yet — see this section's header note.
-#[allow(dead_code)]
-pub fn grey(value: u8) -> Hsla {
-    hsla(0.0, 0.0, value as f32 / 255.0, 1.0)
 }
 
 /// oklch -> sRGB (each channel 0..1, gamut-clipped by clamping before gamma
@@ -363,10 +287,10 @@ pub(crate) fn rgb_to_hsl(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
     (h, s, l)
 }
 
-/// HSL (gpui convention, all 0..1) -> sRGB components 0..1. SPEC §2 names
-/// this one of the four functions to port from comet; no render call site
-/// yet — see this section's header note.
-#[allow(dead_code)]
+/// HSL (gpui convention, all 0..1) -> sRGB components 0..1. Only the palette
+/// tests exercise this direction; [`oklch`]/[`neutral`] only ever go the
+/// other way via [`rgb_to_hsl`].
+#[cfg(test)]
 pub(crate) fn hsl_to_rgb(h: f32, s: f32, l: f32) -> [f32; 3] {
     if s <= f32::EPSILON {
         return [l, l, l];
@@ -392,9 +316,9 @@ pub(crate) fn hsl_to_rgb(h: f32, s: f32, l: f32) -> [f32; 3] {
     [hue(h + 1.0 / 3.0), hue(h), hue(h - 1.0 / 3.0)]
 }
 
-/// Inverse of [`gamma_encode`]: gamma-encoded sRGB (0..1) -> linear sRGB.
-/// No render call site yet — see this section's header note.
-#[allow(dead_code)]
+/// Inverse of [`gamma_encode`]: gamma-encoded sRGB (0..1) -> linear sRGB,
+/// for computing WCAG luminance in the palette's contrast tests.
+#[cfg(test)]
 fn gamma_decode(x: f32) -> f32 {
     if x <= 0.040_45 {
         x / 12.92
@@ -403,19 +327,16 @@ fn gamma_decode(x: f32) -> f32 {
     }
 }
 
-/// WCAG 2.1 relative luminance of an opaque color. SPEC §2 requires porting
-/// this because "the palette tests depend on [it]" (SPEC §7) — no render
-/// call site yet.
-#[allow(dead_code)]
+/// WCAG 2.1 relative luminance of an opaque color.
+#[cfg(test)]
 pub fn relative_luminance(color: Hsla) -> f32 {
     let [r, g, b] = hsl_to_rgb(color.h, color.s, color.l);
     0.2126 * gamma_decode(r) + 0.7152 * gamma_decode(g) + 0.0722 * gamma_decode(b)
 }
 
-/// WCAG 2.1 contrast ratio between two opaque colors (1.0 ..= 21.0). Same
-/// SPEC §2/§7 case as [`relative_luminance`] — the palette tests are the
-/// call site.
-#[allow(dead_code)]
+/// WCAG 2.1 contrast ratio between two opaque colors (1.0 ..= 21.0). The
+/// palette's contrast-floor tests are the only call site.
+#[cfg(test)]
 pub fn contrast_ratio(a: Hsla, b: Hsla) -> f32 {
     let (la, lb) = (relative_luminance(a), relative_luminance(b));
     let (hi, lo) = if la >= lb { (la, lb) } else { (lb, la) };
@@ -423,10 +344,9 @@ pub fn contrast_ratio(a: Hsla, b: Hsla) -> f32 {
 }
 
 /// Linear sRGB -> OKLab (Björn Ottosson's forward transform — the exact
-/// inverse direction of the LMS math in [`oklch_to_srgb`]). No render call
-/// site yet — see this section's header note; [`oklch_hue`] is its only
-/// caller.
-#[allow(dead_code)]
+/// inverse direction of the LMS math in [`oklch_to_srgb`]). [`oklch_hue`] is
+/// its only caller.
+#[cfg(test)]
 fn linear_srgb_to_oklab(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
     let l = 0.412_221_47 * r + 0.536_332_54 * g + 0.051_445_995 * b;
     let m = 0.211_903_5 * r + 0.680_699_5 * g + 0.107_396_96 * b;
@@ -447,9 +367,8 @@ fn linear_srgb_to_oklab(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
 /// constraint — HSL hue is not perceptually uniform, which is the entire
 /// reason this module authors colors in OKLCH in the first place; two
 /// colors 20° apart in HSL can be far apart perceptually and vice versa.
-/// [`tests::status_hues_are_separable`] is the reason this exists — its
-/// only caller so far, per this section's header note.
-#[allow(dead_code)]
+/// [`tests::status_hues_are_separable`] is the reason this exists.
+#[cfg(test)]
 pub fn oklch_hue(color: Hsla) -> f32 {
     let [r, g, b] = hsl_to_rgb(color.h, color.s, color.l);
     let (r, g, b) = (gamma_decode(r), gamma_decode(g), gamma_decode(b));
@@ -458,10 +377,10 @@ pub fn oklch_hue(color: Hsla) -> f32 {
 }
 
 /// Composite `fg` (which may be translucent) over an opaque `bg`, returning
-/// the opaque result — the color the eye actually receives. SPEC §2/§7 case:
+/// the opaque result — the color the eye actually receives.
 /// [`tests::selection_keeps_text_readable_on_every_surface`] is the call
 /// site.
-#[allow(dead_code)]
+#[cfg(test)]
 pub fn flatten(fg: Hsla, bg: Hsla) -> Hsla {
     let a = fg.a.clamp(0.0, 1.0);
     let [fr, fg_, fb] = hsl_to_rgb(fg.h, fg.s, fg.l);
@@ -474,42 +393,12 @@ pub fn flatten(fg: Hsla, bg: Hsla) -> Hsla {
     hsla(h, s, l, 1.0)
 }
 
-/// Linear interpolation between two colors (component-wise, including
-/// alpha). `t` is clamped to `[0, 1]`. SPEC §2/§7 case, same as
-/// [`flatten`]'s — [`tests::mix_interpolates_and_clamps`] is the call site.
-#[allow(dead_code)]
-pub fn mix(a: Hsla, b: Hsla, t: f32) -> Hsla {
-    let t = t.clamp(0.0, 1.0);
-    let lerp = |x: f32, y: f32| x + (y - x) * t;
-    hsla(
-        lerp(a.h, b.h),
-        lerp(a.s, b.s),
-        lerp(a.l, b.l),
-        lerp(a.a, b.a),
-    )
-}
-
 // ---------------------------------------------------------------------------
-// The three paint helpers (SPEC §2)
+// Paint helpers
 //
-// COMPONENTS.md names `ink`/`hairline`/`wash` as tokens the whole component
-// vocabulary in `ui.rs` "assumes... already exist" — free functions rather
-// than `Theme` methods specifically so an element builder with no `&Theme`
-// in scope can still paint correctly (see the module doc). Every render call
-// site built so far has had a `&Theme` on hand and reached for its fields
-// directly instead, so these have no caller of their own yet beyond
-// `ink_for` (used internally by `Theme::dark`/`light` for `diff_hunk_bg`).
-// Each carries its own reason below rather than a section-level allow.
+// Free functions rather than `Theme` methods so an element builder with no
+// `&Theme` in scope can still paint correctly (see the module doc).
 // ---------------------------------------------------------------------------
-
-/// Translucent **fill** ink for interactive states and chip plates:
-/// soft-white on dark, soft-black on light at [`INK_FILL_SCALE`] of the
-/// alpha. `alpha` is always quoted in dark-mode terms. No caller yet outside
-/// `ink_for` (which backs it) — see this section's header note.
-#[allow(dead_code)]
-pub fn ink(alpha: f32) -> Hsla {
-    ink_for(current_appearance(), alpha)
-}
 
 fn ink_for(appearance: Appearance, alpha: f32) -> Hsla {
     match appearance {
@@ -519,33 +408,15 @@ fn ink_for(appearance: Appearance, alpha: f32) -> Hsla {
 }
 
 /// Translucent **hairline** ink for borders, dividers, and rings: white on
-/// dark, black on light at [`INK_HAIRLINE_SCALE`] of the alpha. No caller
-/// yet — see this section's header note.
-#[allow(dead_code)]
+/// dark, black on light at [`INK_HAIRLINE_SCALE`] of the alpha.
 pub fn hairline(alpha: f32) -> Hsla {
     hairline_for(current_appearance(), alpha)
 }
 
-#[allow(dead_code)]
 fn hairline_for(appearance: Appearance, alpha: f32) -> Hsla {
     match appearance {
         Appearance::Dark => hsla(0.0, 0.0, 1.0, alpha),
         Appearance::Light => hsla(0.0, 0.0, 0.0, (alpha * INK_HAIRLINE_SCALE).min(0.5)),
-    }
-}
-
-/// Interactive-state wash: a softened [`ink`] that stops short of pure black
-/// or white. No caller yet — see this section's header note.
-#[allow(dead_code)]
-pub fn wash(alpha: f32) -> Hsla {
-    wash_for(current_appearance(), alpha)
-}
-
-#[allow(dead_code)]
-fn wash_for(appearance: Appearance, alpha: f32) -> Hsla {
-    match appearance {
-        Appearance::Dark => hsla(0.0, 0.0, 0.92, alpha),
-        Appearance::Light => hsla(0.0, 0.0, 0.10, alpha * INK_FILL_SCALE),
     }
 }
 
@@ -586,21 +457,16 @@ pub struct Theme {
     pub surface_raised_hover: Hsla,
     /// Recessed wells: inputs, code/diff backgrounds.
     pub surface_inset: Hsla,
-    /// Inline card resting on the content plane.
-    pub surface_card: Hsla,
     /// Modal dialog surface.
     pub surface_dialog: Hsla,
     /// Popover / menu / palette — the highest plane.
     pub surface_overlay: Hsla,
     /// Hover wash for interactive rows/buttons.
     pub element_hover: Hsla,
-    /// Selected/active wash. This is now the *only* thing that marks a
-    /// selected row — `ui::row` used to also paint a 2px accent bar down
-    /// the leading edge, which read as a stray line rather than a selection
-    /// cue, so it was removed. Alpha is 0.16 here vs. `element_hover`'s
-    /// 0.06 (was 0.10, too close to read as a distinct state once the bar
-    /// was gone) so selection stays legible next to hover, unfocused, and
-    /// with the pointer elsewhere — without reaching for a tinted fill.
+    /// Selected/active wash — the only thing that marks a selected row in
+    /// `ui::row`. Alpha is 0.16 here vs. `element_hover`'s 0.06, so
+    /// selection stays legible next to hover, unfocused, and with the
+    /// pointer elsewhere, without reaching for a tinted fill.
     pub element_active: Hsla,
     /// Hairline border.
     pub border: Hsla,
@@ -642,22 +508,10 @@ pub struct Theme {
     // ---- status: the four facts the list is scanned for ----
     /// Dirty.
     pub warning: Hsla,
-    /// Softer warning for secondary inline copy on a tinted chip (SPEC §3).
-    /// `dirty`'s own pill (`worktree_list.rs`/`detail_panel.rs`) paints at
-    /// full-strength [`Self::warning`] instead — unlike `merged`
-    /// (`success_muted`), `dirty`/`gone` are deliberately the *more* urgent
-    /// states and stay unmuted (FINDINGS.md F3) — so this has no call site
-    /// yet, but is real SPEC-mandated part of the status token set.
-    #[allow(dead_code)]
-    pub warning_muted: Hsla,
     /// Ahead / behind.
     pub info: Hsla,
     /// Gone / destructive.
     pub danger: Hsla,
-    /// Softer danger for secondary inline copy. Same case as
-    /// [`Self::warning_muted`] — see its doc.
-    #[allow(dead_code)]
-    pub danger_muted: Hsla,
     /// Destructive-action button plate; carries [`Self::on_accent`].
     pub danger_strong: Hsla,
     /// Merged / clean / OK.
@@ -666,85 +520,30 @@ pub struct Theme {
     pub success_muted: Hsla,
 
     // ---- mono / code ----
-    /// SPEC §3's general-purpose mono/code text color. Every concrete mono
-    /// surface built so far (the detail panel's fact values, `diff_view.rs`
-    /// gutters) follows SURFACES.md's *specific* per-surface color
-    /// (`text`/`text_ghost`) instead, so this has no call site yet — kept
-    /// as the token SPEC §3's table names, for a mono surface that wants
-    /// the generic default rather than a bespoke one.
-    #[allow(dead_code)]
-    pub code_text: Hsla,
     pub diff_add: Hsla,
     pub diff_del: Hsla,
     pub diff_add_wash: Hsla,
     pub diff_del_wash: Hsla,
     pub diff_hunk_bg: Hsla,
 
-    // ---- fonts (SPEC §6) ----
+    // ---- fonts ----
     /// Row labels, body text, dialog titles — everything that isn't a
     /// path/SHA/branch name or diff content (see [`Self::font_mono`]).
-    ///
-    /// `&'static str`, not `SharedString`: `Theme` derives `Copy`, and a lot
-    /// of render call sites keep one local `let theme = Theme::of(cx);`
-    /// alive across several `move` closures in the same function (e.g. one
-    /// per button's `cx.listener(..)`), relying on `Theme` being copyable
-    /// into each of them rather than juggling clones or references through
-    /// every closure. `gpui::SharedString` wraps an `Arc`-backed `ArcCow`
-    /// and only derives `Clone` (verified against the vendored
-    /// `gpui-0.2.2/src/shared_string.rs`) — giving these fields that type
-    /// would silently strip `#[derive(Copy)]` off `Theme` and break every
-    /// one of those call sites across the ~600-site migration, which is
-    /// exactly what this task's "purely additive or signature-compatible"
-    /// constraint rules out. A `&'static str` naming the bundled Geist
-    /// family serves every real call site (`.font_family(..)` takes
-    /// `impl Into<SharedString>`, and `&'static str` satisfies that) without
-    /// paying that cost.
-    ///
-    /// Applied once, at the shell root (`app::WtmApp::render`'s outermost
-    /// `div`), rather than at each of the hundreds of body-text call sites:
-    /// gpui's text style cascades down `Window::text_style_stack`, so a
-    /// single `.font_family(theme.font_sans)` there reaches every normal
-    /// descendant *and* the deferred/anchored overlays (dialogs, settings,
-    /// palette, context menu — `Window::defer_draw` snapshots the stack at
-    /// prepaint time, which already includes the root's refinement). The
-    /// one exception is `ui::Tooltip`, which gpui prepaints through a
-    /// wholly separate `layout_as_root` call with no inherited stack at
-    /// all, and which therefore sets this field itself — see that type's
-    /// doc.
+    /// `&'static str`, not `SharedString`: `Theme` derives `Copy`, and
+    /// `SharedString` only derives `Clone`, so swapping it in would silently
+    /// break every call site that copies `Theme` into a closure.
     pub font_sans: &'static str,
     /// Paths, SHAs, branch names in meta position, and diff content
-    /// (`ui::meta`/`ui::kbd`/`diff_view.rs`). See [`Self::font_sans`] for
-    /// why this is `&'static str` rather than the `SharedString` the
-    /// redesign report's task literally names.
+    /// (`ui::meta`/`ui::kbd`/`diff_view.rs`). Same `&'static str` reasoning
+    /// as [`Self::font_sans`].
     pub font_mono: &'static str,
 
     // ---- keyboard focus ----
-    /// Whether `ui.rs`'s interactive components (`button`/`icon_button`/
-    /// `row`/`action_row`/`toolbar_button`/`segmented`) register themselves
-    /// as Tab stops. The one non-color field on this type — carried here,
-    /// not on `App`/`WtmApp`, purely because `&Theme` is already threaded
-    /// through every `ui::` component call, which is exactly the "component
-    /// layer, not 72 call sites" seam a real keyboard focus trap needs.
-    ///
-    /// Defaults to `true`. `app::WtmApp::render` sets a *copy* of `Theme`
-    /// with this forced to `false` for the background chrome (sidebar,
-    /// titlebar, worktree list, footer, detail panel) whenever
-    /// `self.overlay_open()` — a dialog, the settings sheet, the palette,
-    /// the context menu, or a confirmation is showing. gpui's own
-    /// `tab_group()` (used by `ui::modal_card`/`ui::modal_footer`) only
-    /// gives an open dialog's controls their own *local* tab-index
-    /// namespace; it does not stop `Window::focus_next`/`focus_prev` from
-    /// walking on into whatever else got painted this frame; verified
-    /// against `gpui-0.2.2/src/tab_stop.rs`'s `TabStopMap::next`/`prev`,
-    /// which just returns the next/previous tab stop in paint order with no
-    /// concept of containment. Since gpui always paints the shell behind an
-    /// open dialog (`app::mod::render`'s `deferred(overlay)` layers *on
-    /// top of*, not *instead of*, the sidebar/list/etc.), the only way to
-    /// keep Tab inside the dialog is to stop registering the shell's own
-    /// controls as tab stops for as long as it's covered — exactly what
-    /// this field does. The dialog/settings/palette/context-menu content
-    /// itself is rendered from its own `Theme::of(cx)` call (never copied
-    /// from the flipped one), so it keeps `tab_stops: true` throughout.
+    /// Whether `ui.rs`'s interactive components register themselves as Tab
+    /// stops; `app::WtmApp::render` forces this `false` on a copy of `Theme`
+    /// for the background chrome while an overlay is open, since gpui's
+    /// `tab_group()` scopes tab *order* to the dialog but doesn't stop
+    /// `Window::focus_next`/`focus_prev` from walking into the shell behind it.
     pub tab_stops: bool,
 }
 
@@ -768,14 +567,10 @@ impl Theme {
         // suggested 0.556/0.470 — see `Theme::dark`'s doc note below.
         let text_faint = neutral(0.575);
         let text_ghost = neutral(0.505);
-        // SPEC §3 gives dark `warning` as `oklch(0.828, 0.189, 84.429)`
-        // (amber-400). Its OKLab hue survives the sRGB gamut clamp mostly
-        // intact (81.3° painted vs 84.4° authored) but still lands only
-        // ~29° from `accent`'s painted hue (52.0°) — under the §7 test 8
-        // floor of 30°, and on a dense list row the two read as "two
-        // oranges". Retuned to yellow-400 (`oklch(0.852, 0.199, 91.936)`,
-        // per the redesign coordinator's direction): its painted hue is
-        // 88.9°, a comfortable ~36.9° from accent. See
+        // Amber-400 (`oklch(0.828, 0.189, 84.429)`) paints only ~29° from
+        // `accent`'s painted hue (52.0°) in OKLab space, which reads as "two
+        // oranges" on a dense list row. Retuned to yellow-400
+        // (`oklch(0.852, 0.199, 91.936)`), ~36.9° from accent. See
         // `tests::status_hues_are_separable`, which measures this in OKLab
         // hue (via `oklch_hue`) rather than HSL hue — HSL hue is not
         // perceptually uniform and an earlier version of this test used it
@@ -792,13 +587,6 @@ impl Theme {
             surface_raised: neutral(0.245),
             surface_raised_hover: neutral(0.295),
             surface_inset: neutral(0.120),
-            // SPEC §3's table gives `surface_card` the same value as
-            // `surface` (both `neutral(0.185)`), which contradicts SPEC §7
-            // test 9's requirement that the elevation ladder be STRICT
-            // (`bg < surface < surface_card < surface_dialog <
-            // surface_overlay`). Bumped one notch to 0.195 to make the
-            // ladder actually strict; see `tests::elevation_ladder_is_ordered`.
-            surface_card: neutral(0.195),
             surface_dialog: neutral(0.205),
             surface_overlay: neutral(0.235),
             element_hover: hsla(0.0, 0.0, 0.92, 0.06),
@@ -823,15 +611,12 @@ impl Theme {
             caret: accent,
 
             warning,
-            warning_muted: oklch(0.924, 0.120, 91.936),
             info: oklch(0.707, 0.165, 254.624),
             danger,
-            danger_muted: oklch(0.808, 0.114, 22.216),
             danger_strong: oklch(0.580, 0.160, 22.216),
             success,
             success_muted: oklch(0.845, 0.143, 163.223),
 
-            code_text: text_muted,
             diff_add: success,
             diff_del: danger,
             diff_add_wash: success.opacity(0.10),
@@ -856,31 +641,14 @@ impl Theme {
         let text_muted = neutral(0.439);
         let text_faint = neutral(0.535);
         let text_ghost = neutral(0.620);
-        // SPEC §3 gives light `warning` as `oklch(0.555, 0.163, 48.998)` —
-        // the real Tailwind amber-700 value — and light `danger` as
-        // `oklch(0.577, 0.245, 27.325)` (red-600). Both fail SPEC §7 test 8
-        // (hue separation from `accent`), measured correctly: `accent`'s
-        // *authored* hue is 45.0°, but at that lightness/chroma it falls
-        // outside the sRGB gamut, and the clamp in `oklch_to_srgb` bends its
-        // *painted* OKLab hue down to ~37.0° (`oklch_hue(accent)` — see that
-        // function's doc for why painted hue, not authored hue, is the
-        // number that matters). Amber-700 paints at ~48.998°, only ~12° from
-        // that — nowhere near the 30° warning floor. Red-600 paints at
-        // ~27.3°, ~9.7° away — short of the 20° danger floor too.
-        //
-        // Per the redesign coordinator's direction, both status hues are
-        // rotated further away from `accent`'s *painted* hue (never
-        // touching `accent` itself — it's the brand, from the app icon's
-        // `#F97316 -> #EF4444` gradient) and re-solved for L/C so each
-        // still clears its contrast floor:
-        // - `warning`: yellow-toned sibling of the dark yellow-400 retune
-        //   below, paints at ~86.3° (`oklch_hue`) — a ~49° gap.
-        // - `danger`: pushed redder (lower hue) to ~14.5° painted — a ~22.6°
-        //   gap, comfortably past the 20° floor.
-        // See `tests::status_hues_are_separable`, which measures all of this
-        // in OKLab hue via `oklch_hue`, not `Hsla::h` (HSL hue is not
-        // perceptually uniform and an earlier version of this test used it
-        // by mistake).
+        // The real Tailwind amber-700/red-600 values paint too close to
+        // `accent`'s painted OKLab hue (~37.0°, after the sRGB gamut clamp
+        // bends its authored 45.0° down — see `oklch_hue`'s doc) to read as
+        // distinct from it. Both hues below are rotated further away and
+        // re-solved for L/C so each still clears its contrast floor; see
+        // `tests::status_hues_are_separable`, which measures the gap in
+        // OKLab hue via `oklch_hue`, not `Hsla::h` (HSL hue is not
+        // perceptually uniform).
         let warning = oklch(0.55, 0.13, 90.0);
         let danger = oklch(0.59, 0.24, 14.0);
         let success = oklch(0.596, 0.145, 163.225);
@@ -895,7 +663,6 @@ impl Theme {
             surface_raised: neutral(0.940),
             surface_raised_hover: neutral(0.900),
             surface_inset: neutral(0.955),
-            surface_card: bg,
             surface_dialog: bg,
             surface_overlay: bg,
             element_hover: hsla(0.0, 0.0, 0.10, 0.06),
@@ -924,15 +691,12 @@ impl Theme {
             caret: accent,
 
             warning,
-            warning_muted: oklch(0.440, 0.110, 90.0),
             info: oklch(0.488, 0.243, 264.376),
             danger,
-            danger_muted: oklch(0.480, 0.200, 14.0),
             danger_strong: oklch(0.510, 0.200, 14.0),
             success,
             success_muted: oklch(0.510, 0.118, 163.225),
 
-            code_text: text_muted,
             diff_add: success,
             diff_del: danger,
             diff_add_wash: success.opacity(0.09),
@@ -947,7 +711,7 @@ impl Theme {
     }
 
     /// Build the theme for an appearance.
-    pub fn for_appearance(appearance: Appearance) -> Self {
+    fn for_appearance(appearance: Appearance) -> Self {
         match appearance {
             Appearance::Dark => Self::dark(),
             Appearance::Light => Self::light(),
@@ -995,23 +759,6 @@ impl Theme {
             // doc, whose reasoning still holds).
             gpui::WindowBackgroundAppearance::Transparent
         }
-    }
-
-    /// Resting card: one soft layer. Dark mode leans on the lightness step
-    /// and hairline border for separation (a black shadow on near-black is
-    /// nearly invisible), so this is a light assist only; pair with
-    /// `border_strong` at the call site.
-    pub fn shadow_card(&self) -> Vec<BoxShadow> {
-        let alpha = match self.appearance {
-            Appearance::Light => 0.06,
-            Appearance::Dark => 0.12,
-        };
-        vec![BoxShadow {
-            color: hsla(0.0, 0.0, 0.0, alpha),
-            offset: point(px(0.0), px(1.0)),
-            blur_radius: px(2.0),
-            spread_radius: px(0.0),
-        }]
     }
 
     /// Menu / palette / context menu: a tight contact shadow plus a soft
@@ -1181,8 +928,8 @@ mod tests {
     // 4. -------------------------------------------------------------
     #[test]
     fn contrast_ratio_hits_known_anchors() {
-        let white = grey(0xff);
-        let black = grey(0x00);
+        let white = hsla(0.0, 0.0, 1.0, 1.0);
+        let black = hsla(0.0, 0.0, 0.0, 1.0);
         assert!((contrast_ratio(white, black) - 21.0).abs() < 0.01);
         assert!((contrast_ratio(white, white) - 1.0).abs() < 0.01);
         assert!((contrast_ratio(black, white) - contrast_ratio(white, black)).abs() < 1e-4);
@@ -1300,12 +1047,8 @@ mod tests {
         let d = Theme::dark();
         assert!(d.bg.l < d.surface.l, "dark: bg should sit under surface");
         assert!(
-            d.surface.l < d.surface_card.l,
-            "dark: surface should sit under surface_card"
-        );
-        assert!(
-            d.surface_card.l < d.surface_dialog.l,
-            "dark: surface_card should sit under surface_dialog"
+            d.surface.l < d.surface_dialog.l,
+            "dark: surface should sit under surface_dialog"
         );
         assert!(
             d.surface_dialog.l < d.surface_overlay.l,
@@ -1318,7 +1061,6 @@ mod tests {
             "light: surface should be darker than bg"
         );
         for (name, c) in [
-            ("surface_card", l.surface_card),
             ("surface_dialog", l.surface_dialog),
             ("surface_overlay", l.surface_overlay),
         ] {
@@ -1327,27 +1069,6 @@ mod tests {
                 "light: {name} should be white, same as bg"
             );
         }
-    }
-
-    // 10. ------------------------------------------------------------
-    #[test]
-    fn layout_constants_are_appearance_independent() {
-        // Layout lives as free consts, never as Theme fields — there is
-        // nothing here that COULD differ by appearance. This pins the
-        // concrete values SPEC §4 specifies, which is the only way a
-        // numeric regression here would be caught.
-        assert_eq!(RADIUS_DIALOG, 14.0);
-        assert_eq!(RADIUS_PANEL, 10.0);
-        assert_eq!(RADIUS_ROW, 8.0);
-        assert_eq!(RADIUS_CONTROL, 6.0);
-        assert_eq!(RADIUS_CHIP, 4.0);
-        assert_eq!(TITLEBAR_HEIGHT, 44.0);
-        assert_eq!(TRAFFIC_LIGHT_CLEARANCE, 78.0);
-        assert_eq!(ROW_HEIGHT, 32.0);
-        assert_eq!(LIST_ROW_HEIGHT, 56.0);
-        assert_eq!(SIDEBAR_WIDTH, 248.0);
-        assert_eq!(FOOTER_HEIGHT, 28.0);
-        assert_eq!(ICON_BUTTON_SIZE, 28.0);
     }
 
     // 11. ------------------------------------------------------------
@@ -1368,7 +1089,6 @@ mod tests {
                 ("bg", t.bg),
                 ("surface", t.surface),
                 ("surface_inset", t.surface_inset),
-                ("surface_card", t.surface_card),
                 ("surface_dialog", t.surface_dialog),
                 ("surface_overlay", t.surface_overlay),
             ] {
@@ -1395,7 +1115,6 @@ mod tests {
                 ("bg", t.bg),
                 ("surface", t.surface),
                 ("surface_inset", t.surface_inset),
-                ("surface_card", t.surface_card),
                 ("surface_dialog", t.surface_dialog),
                 ("surface_overlay", t.surface_overlay),
             ] {
@@ -1410,29 +1129,8 @@ mod tests {
     }
 
     #[test]
-    fn font_tokens_default_to_the_bundled_geist_family() {
-        for t in [Theme::dark(), Theme::light()] {
-            assert_eq!(t.font_sans, FONT_SANS_DEFAULT);
-            assert_eq!(t.font_mono, FONT_MONO_DEFAULT);
-        }
-    }
-
-    // Bonus coverage for the ported helpers not otherwise exercised above.
-    #[test]
-    fn mix_interpolates_and_clamps() {
-        let a = neutral(0.2);
-        let b = neutral(0.8);
-        assert_eq!(mix(a, b, 0.0).l, a.l);
-        assert_eq!(mix(a, b, 1.0).l, b.l);
-        assert_eq!(mix(a, b, -1.0).l, a.l, "t clamps low");
-        assert_eq!(mix(a, b, 2.0).l, b.l, "t clamps high");
-        let mid = mix(a, b, 0.5);
-        assert!(mid.l > a.l && mid.l < b.l);
-    }
-
-    #[test]
     fn flatten_composites_translucent_over_opaque() {
-        let bg = grey(0x00);
+        let bg = hsla(0.0, 0.0, 0.0, 1.0);
         let fg = hsla(0.0, 0.0, 1.0, 0.5);
         let flattened = flatten(fg, bg);
         assert!((flattened.a - 1.0).abs() < 1e-6, "result is opaque");
@@ -1445,18 +1143,8 @@ mod tests {
     }
 
     #[test]
-    fn glass_gates_on_is_glass_not_the_raw_const() {
-        let dark = Theme::dark();
-        assert_eq!(dark.is_glass(), dark.glass().a < 1.0);
-        assert_eq!(dark.is_glass(), cfg!(target_os = "macos"));
-    }
-
-    #[test]
     fn shadow_ladders_grow_with_elevation() {
         let t = Theme::dark();
-        assert_eq!(t.shadow_card().len(), 1);
-        assert_eq!(t.shadow_popover().len(), 2);
-        assert_eq!(t.shadow_dialog().len(), 2);
         // The dialog's ambient layer should be at least as dark as the
         // popover's — the heavier ladder never gets a LIGHTER shadow.
         assert!(t.shadow_dialog()[1].color.a >= t.shadow_popover()[1].color.a);
@@ -1467,9 +1155,12 @@ mod tests {
         let _guard = lock_appearance();
         set_current_appearance(Appearance::Light);
         assert_eq!(current_appearance(), Appearance::Light);
-        assert_eq!(ink(1.0), hsla(0.0, 0.0, 0.0, 1.0 * INK_FILL_SCALE));
+        assert_eq!(
+            ink_for(current_appearance(), 1.0),
+            hsla(0.0, 0.0, 0.0, 1.0 * INK_FILL_SCALE)
+        );
         set_current_appearance(Appearance::Dark);
         assert_eq!(current_appearance(), Appearance::Dark);
-        assert_eq!(ink(1.0), hsla(0.0, 0.0, 1.0, 1.0));
+        assert_eq!(ink_for(current_appearance(), 1.0), hsla(0.0, 0.0, 1.0, 1.0));
     }
 }

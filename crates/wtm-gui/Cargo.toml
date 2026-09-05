@@ -40,14 +40,9 @@ notify-debouncer-full = "0.7.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 # Grapheme-cluster-aware truncation (`detail_panel::truncate_tail`/
-# `truncate_path_tail`): git permits emoji, CJK, and combining accents in
-# branch names and paths, and those can span multiple `char`s per rendered
-# glyph (a base letter plus a combining accent, an emoji plus a variation
-# selector or ZWJ). Truncating by `.chars()` alone (the previous
-# implementation) never panics — `char` boundaries are always safe to slice
-# on — but it can still cut a grapheme cluster in half, leaving a bare
-# combining mark or a broken emoji on screen. Already resolved transitively
-# (gpui pulls it in), so this adds no new crate to the dependency tree.
+# `truncate_path_tail`): git permits emoji, CJK, and combining accents that
+# span multiple `char`s per rendered glyph, so truncating by `.chars()` alone
+# can cut a glyph in half. Already resolved transitively (gpui pulls it in).
 unicode-segmentation = "1.13"
 
 [dev-dependencies]
@@ -64,12 +59,8 @@ gpui = { version = "0.2.2", features = ["runtime_shaders", "test-support"] }
 [package.metadata.deb]
 maintainer = "codenameakshay <akshaymaurya3006@gmail.com>"
 copyright = "2026, wtm contributors"
-# The crate is dual MIT/Apache-2.0 (see `license` above); cargo-deb wants one
-# file for the package's machine-readable copyright text, so this points at
-# LICENSE-MIT specifically and skips its own "MIT License" title + copyright
-# lines (1-4) since those are already captured by `copyright` above. The
-# actual dual-licensing terms are unaffected — this only controls what text
-# gets embedded in usr/share/doc/wtm-gui/copyright.
+# cargo-deb wants one file for the package's copyright text; this skips
+# LICENSE-MIT's title + copyright lines (1-4), already captured by `copyright` above.
 license-file = ["../../LICENSE-MIT", "4"]
 section = "devel"
 priority = "optional"
@@ -92,15 +83,6 @@ assets = [
 	["resources/linux/icons/hicolor/256x256/apps/dev.wtm.app.png", "usr/share/icons/hicolor/256x256/apps/dev.wtm.app.png", "644"],
 	["resources/linux/icons/hicolor/512x512/apps/dev.wtm.app.png", "usr/share/icons/hicolor/512x512/apps/dev.wtm.app.png", "644"],
 ]
-# `$auto` runs cargo-deb's own ldd-equivalent over the built binary and maps
-# each *directly linked* shared library to the Debian package that ships it
-# (libc6, libgcc-s1, zlib1g, libxcb1, libxkbcommon0, libxkbcommon-x11-0, as
-# verified with `ldd`+`dpkg -S` on a release build in wtm-linux-build) — so
-# it's preferred over hand-listing those. It cannot see libvulkan1 or
-# libwayland-client0 though: gpui's Linux backend `dlopen`s both at startup
-# (confirmed via `strings`/`nm -D` showing `dlopen` + the two .so names, with
-# neither appearing as a direct ELF dependency in `ldd`), so there is no
-# link-time trace of them for $auto to find. Without libvulkan1 the app
-# cannot open a window at all; without libwayland-client0 it just can't run
-# under Wayland. Both are added by hand for that reason.
+# gpui dlopen's libvulkan1 and libwayland-client0 at runtime, so $auto's
+# ldd-based dependency scan can't see them; added by hand.
 depends = "$auto, libvulkan1, libwayland-client0"

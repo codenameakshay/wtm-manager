@@ -67,7 +67,7 @@ fn hermetic_env_pairs(home: &Path, wtm_config: &Path) -> Vec<(&'static str, Stri
 }
 
 /// A hermetic `wtm` command bound to the given HOME and wtm config dir.
-pub fn wtm_with(home: &Path, wtm_config: &Path) -> Command {
+fn wtm_with(home: &Path, wtm_config: &Path) -> Command {
     let mut cmd = Command::cargo_bin("wtm").expect("wtm binary should build");
     cmd.timeout(Duration::from_secs(60));
     for key in SCRUBBED_ENV {
@@ -76,20 +76,6 @@ pub fn wtm_with(home: &Path, wtm_config: &Path) -> Command {
     for (key, value) in hermetic_env_pairs(home, wtm_config) {
         cmd.env(key, value);
     }
-    cmd
-}
-
-/// A hermetic `wtm` command with a throwaway HOME and an empty wtm config
-/// dir. The temp dirs are intentionally kept alive until process exit (via
-/// `mem::forget`) so the command can outlive this function. Prefer
-/// [`TestRepo::wtm`] whenever a fixture repo exists.
-pub fn wtm() -> Command {
-    let home = TempDir::new().expect("create hermetic HOME");
-    let config = TempDir::new().expect("create hermetic WTM_CONFIG_DIR");
-    fs::create_dir_all(home.path().join(".config")).expect("create .config in hermetic HOME");
-    let cmd = wtm_with(home.path(), config.path());
-    std::mem::forget(home);
-    std::mem::forget(config);
     cmd
 }
 
@@ -112,17 +98,13 @@ pub struct TestRepo {
 impl TestRepo {
     /// New repo named `repo` on branch `main` with one seed commit.
     pub fn new() -> Self {
-        Self::with_repo_name("repo")
-    }
-
-    pub fn with_repo_name(name: &str) -> Self {
         let tmp = TempDir::new().expect("create tempdir");
         // Canonicalize up front so every derived path compares equal on
         // macOS (/tmp vs /private/tmp).
         let base = tmp.path().canonicalize().expect("canonicalize tempdir");
         let home = base.join("home");
         let wtm_config = base.join("wtm-config");
-        let root = base.join(name);
+        let root = base.join("repo");
         fs::create_dir_all(home.join(".config")).expect("create hermetic HOME");
         fs::create_dir_all(&wtm_config).expect("create hermetic WTM_CONFIG_DIR");
         fs::create_dir_all(&root).expect("create repo dir");
@@ -153,15 +135,10 @@ impl TestRepo {
     /// Where the default template `../{repo}-worktrees/{branch}` puts a
     /// worktree for `name`.
     pub fn default_worktree_path(&self, name: &str) -> PathBuf {
-        let repo_name = self
-            .root
-            .file_name()
-            .expect("repo root has a name")
-            .to_string_lossy();
         self.root
             .parent()
             .expect("repo root has a parent")
-            .join(format!("{repo_name}-worktrees"))
+            .join("repo-worktrees")
             .join(name)
     }
 

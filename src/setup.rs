@@ -1,23 +1,11 @@
 //! Post-create automation: copy or symlink files from the main worktree into
 //! a freshly created worktree, then run configured setup commands.
 //!
-//! Two entry points share the copy step (`copy_entry`) and differ only in
-//! how command output reaches the user: [`run`] inherits the child's
-//! stdout/stderr straight into the CLI's own (a terminal, or whatever the
-//! caller redirected them to), while [`run_streaming`] captures both and
-//! reports them line-by-line through a callback for callers with no stdio to
-//! inherit into (the GUI). They are deliberately NOT unified into one
-//! implementation: inheriting stdio keeps the CLI's stdout/stderr streams
-//! separate (so e.g. `wtm add feat > out.txt` still puts the setup command's
-//! stdout in `out.txt`), whereas streaming necessarily merges both into one
-//! sequence of lines — folding that back through `run`'s stderr would
-//! silently change where a setup command's stdout ends up for CLI users.
+//! `run` inherits the child's stdout/stderr; `run_streaming` captures both
+//! and reports them line-by-line through a callback (for the GUI), keeping
+//! the CLI's own stdout/stderr streams undisturbed.
 
 use std::fs;
-#[cfg(not(unix))]
-use std::fs::OpenOptions;
-#[cfg(not(unix))]
-use std::io;
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Component, Path};
 use std::process::{Command, Stdio};
@@ -173,7 +161,7 @@ fn run_command_streaming(
 /// sending each line to `tx`. Invalid UTF-8 is replaced rather than failing
 /// the read: setup command output is diagnostic text for a human, not a
 /// payload that must round-trip exactly.
-fn forward_lines(reader: impl Read, tx: mpsc::Sender<String>) {
+pub fn forward_lines(reader: impl Read, tx: mpsc::Sender<String>) {
     let mut reader = BufReader::new(reader);
     let mut buf = Vec::new();
     loop {
@@ -235,10 +223,7 @@ fn copy_entry(
         )));
     }
 
-    #[cfg(unix)]
     let created = materialize_at(&main_root, &worktree, rel_path, rel, mode)?;
-    #[cfg(not(unix))]
-    let created = materialize_path_based(&main_root, &worktree, rel_path, rel, mode)?;
     if !created && !quiet {
         eprintln!("wtm: skipping '{rel}': already exists in the new worktree");
     }
@@ -268,103 +253,6 @@ fn validate_relative_path(path: &str) -> Result<&Path> {
     Ok(path)
 }
 
-#[cfg(not(unix))]
-fn materialize_path_based(
-    main_root: &Path,
-    worktree: &Path,
-    rel: &Path,
-    display: &str,
-    mode: CopyMode,
-) -> Result<bool> {
-    let source = main_root.join(rel);
-    let dest = worktree.join(rel);
-    ensure_destination_contained(worktree, rel, display)?;
-    if fs::symlink_metadata(&dest).is_ok() {
-        return Ok(false);
-    }
-    if let Some(parent) = dest.parent() {
-        fs::create_dir_all(parent)?;
-        ensure_destination_contained(worktree, rel, display)?;
-    }
-    match mode {
-        CopyMode::Copy => copy_recursive(&source, &dest)?,
-        CopyMode::Symlink => {
-            return Err(Error::Other(format!(
-                "symlink mode for '{display}' is not supported on this platform"
-            )))
-        }
-    }
-    Ok(true)
-}
-
-#[cfg(not(unix))]
-fn ensure_destination_contained(worktree: &Path, rel: &Path, display: &str) -> Result<()> {
-    let mut current = worktree.to_path_buf();
-    for component in rel.components() {
-        if let Component::Normal(component) = component {
-            current.push(component);
-            match fs::symlink_metadata(&current) {
-                Ok(meta) if meta.file_type().is_symlink() => {
-                    return Err(Error::Setup(format!(
-                        "setup.copy path '{display}' escapes the new worktree through a symlink"
-                    )));
-                }
-                Ok(_) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => break,
-                Err(e) => return Err(Error::Io(e)),
-            }
-        }
-    }
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn copy_recursive(source: &Path, dest: &Path) -> Result<()> {
-    let meta = fs::symlink_metadata(source)?;
-    if meta.file_type().is_symlink() {
-        return Err(Error::Setup(format!(
-            "setup.copy source '{}' contains a symlink",
-            source.display()
-        )));
-    }
-    if meta.is_dir() {
-        fs::create_dir(dest)?;
-        for entry in fs::read_dir(source)? {
-            let entry = entry?;
-            copy_recursive(&entry.path(), &dest.join(entry.file_name()))?;
-        }
-        fs::set_permissions(dest, meta.permissions())?;
-    } else if meta.is_file() {
-        copy_file_no_follow(source, dest, meta.permissions())?;
-    } else {
-        return Err(Error::Setup(format!(
-            "setup.copy source '{}' is not a regular file or directory",
-            source.display()
-        )));
-    }
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn copy_file_no_follow(source: &Path, dest: &Path, permissions: fs::Permissions) -> Result<()> {
-    let mut source_options = OpenOptions::new();
-    source_options.read(true);
-    let mut dest_options = OpenOptions::new();
-    dest_options.write(true).create_new(true);
-    let mut input = source_options.open(source)?;
-    if !input.metadata()?.is_file() {
-        return Err(Error::Setup(format!(
-            "setup.copy source '{}' is not a regular file",
-            source.display()
-        )));
-    }
-    let mut output = dest_options.open(dest)?;
-    io::copy(&mut input, &mut output)?;
-    output.set_permissions(permissions)?;
-    Ok(())
-}
-
-#[cfg(unix)]
 fn materialize_at(
     main_root: &Path,
     worktree: &Path,
@@ -408,7 +296,6 @@ fn materialize_at(
     Ok(true)
 }
 
-#[cfg(unix)]
 fn copy_recursive_at(
     source: &Path,
     dest_parent: &std::os::fd::OwnedFd,
@@ -451,7 +338,6 @@ fn copy_recursive_at(
     Ok(())
 }
 
-#[cfg(unix)]
 fn copy_file_at(
     source: &Path,
     dest_parent: &std::os::fd::OwnedFd,
@@ -494,7 +380,6 @@ fn copy_file_at(
     Ok(())
 }
 
-#[cfg(unix)]
 fn open_dir_path(path: &Path) -> Result<std::os::fd::OwnedFd> {
     use std::os::fd::FromRawFd;
     use std::os::unix::ffi::OsStrExt;
@@ -513,7 +398,6 @@ fn open_dir_path(path: &Path) -> Result<std::os::fd::OwnedFd> {
     Ok(unsafe { std::os::fd::OwnedFd::from_raw_fd(raw) })
 }
 
-#[cfg(unix)]
 fn open_or_create_dir_at(
     parent: &std::os::fd::OwnedFd,
     name: &std::ffi::OsStr,
@@ -531,7 +415,6 @@ fn open_or_create_dir_at(
     }
 }
 
-#[cfg(unix)]
 fn open_dir_at(
     parent: &std::os::fd::OwnedFd,
     name: &std::ffi::OsStr,
@@ -552,7 +435,6 @@ fn open_dir_at(
     Ok(unsafe { std::os::fd::OwnedFd::from_raw_fd(raw) })
 }
 
-#[cfg(unix)]
 fn mkdir_at(
     parent: &std::os::fd::OwnedFd,
     name: &std::ffi::OsStr,
@@ -567,7 +449,6 @@ fn mkdir_at(
     Ok(())
 }
 
-#[cfg(unix)]
 fn entry_exists_at(parent: &std::os::fd::OwnedFd, name: &std::ffi::OsStr) -> Result<bool> {
     use std::os::fd::AsRawFd;
 
@@ -593,7 +474,6 @@ fn entry_exists_at(parent: &std::os::fd::OwnedFd, name: &std::ffi::OsStr) -> Res
     }
 }
 
-#[cfg(unix)]
 fn symlink_at(target: &Path, parent: &std::os::fd::OwnedFd, name: &std::ffi::OsStr) -> Result<()> {
     use std::os::fd::AsRawFd;
     use std::os::unix::ffi::OsStrExt;
@@ -607,12 +487,10 @@ fn symlink_at(target: &Path, parent: &std::os::fd::OwnedFd, name: &std::ffi::OsS
     Ok(())
 }
 
-#[cfg(unix)]
 fn path_c_string(name: &std::ffi::OsStr) -> Result<std::ffi::CString> {
     path_c_string_io(name).map_err(Error::Io)
 }
 
-#[cfg(unix)]
 fn path_c_string_io(name: &std::ffi::OsStr) -> std::io::Result<std::ffi::CString> {
     use std::os::unix::ffi::OsStrExt;
 
@@ -648,13 +526,11 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
     fn set_mode(path: &Path, mode: u32) {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
     }
 
-    #[cfg(unix)]
     fn symlink(path: &Path, target: &Path) {
         std::os::unix::fs::symlink(target, path).unwrap();
     }
@@ -663,7 +539,6 @@ mod tests {
     fn copies_file_with_contents_and_permissions() {
         let (_tmp, main, wt) = fixture();
         fs::write(main.join(".env"), "SECRET=1\n").unwrap();
-        #[cfg(unix)]
         set_mode(&main.join(".env"), 0o600);
 
         let config = make_config(
@@ -676,7 +551,6 @@ mod tests {
         run(&config, &main, &wt, true).unwrap();
 
         assert_eq!(fs::read_to_string(wt.join(".env")).unwrap(), "SECRET=1\n");
-        #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             let mode = fs::metadata(wt.join(".env")).unwrap().permissions().mode();
@@ -716,51 +590,22 @@ mod tests {
     }
 
     #[test]
-    fn rejects_absolute_copy_paths() {
-        let (_tmp, main, wt) = fixture();
-        let config = make_config(
-            vec![CopyEntry {
-                path: "/tmp/outside".to_string(),
-                mode: CopyMode::Copy,
-            }],
-            vec![],
-        );
+    fn rejects_invalid_copy_paths() {
+        for path in ["/tmp/outside", "../outside", ""] {
+            let (_tmp, main, wt) = fixture();
+            let config = make_config(
+                vec![CopyEntry {
+                    path: path.to_string(),
+                    mode: CopyMode::Copy,
+                }],
+                vec![],
+            );
 
-        let err = run(&config, &main, &wt, true).unwrap_err();
-        assert_setup_error(err, "relative path");
+            let err = run(&config, &main, &wt, true).unwrap_err();
+            assert_setup_error(err, "relative path");
+        }
     }
 
-    #[test]
-    fn rejects_parent_traversal_copy_paths() {
-        let (_tmp, main, wt) = fixture();
-        let config = make_config(
-            vec![CopyEntry {
-                path: "../outside".to_string(),
-                mode: CopyMode::Copy,
-            }],
-            vec![],
-        );
-
-        let err = run(&config, &main, &wt, true).unwrap_err();
-        assert_setup_error(err, "relative path");
-    }
-
-    #[test]
-    fn rejects_empty_copy_paths() {
-        let (_tmp, main, wt) = fixture();
-        let config = make_config(
-            vec![CopyEntry {
-                path: String::new(),
-                mode: CopyMode::Copy,
-            }],
-            vec![],
-        );
-
-        let err = run(&config, &main, &wt, true).unwrap_err();
-        assert_setup_error(err, "relative path");
-    }
-
-    #[cfg(unix)]
     #[test]
     fn rejects_copy_sources_that_resolve_outside_main_root() {
         let (_tmp, main, wt) = fixture();
@@ -780,7 +625,6 @@ mod tests {
         assert_setup_error(err, "escapes the main worktree");
     }
 
-    #[cfg(unix)]
     #[test]
     fn rejects_destination_parent_symlinks() {
         let (_tmp, main, wt) = fixture();
@@ -801,7 +645,6 @@ mod tests {
         assert_setup_error(err, "escapes the new worktree");
     }
 
-    #[cfg(unix)]
     #[test]
     fn rejects_symlink_children_during_recursive_copy() {
         let (_tmp, main, wt) = fixture();
@@ -822,7 +665,6 @@ mod tests {
         assert_setup_error(err, "contains a symlink");
     }
 
-    #[cfg(unix)]
     #[test]
     fn rejects_symlink_cycles_during_recursive_copy() {
         let (_tmp, main, wt) = fixture();
@@ -841,7 +683,6 @@ mod tests {
         assert_setup_error(err, "contains a symlink");
     }
 
-    #[cfg(unix)]
     #[test]
     fn symlink_points_to_absolute_source() {
         let (_tmp, main, wt) = fixture();
@@ -867,7 +708,6 @@ mod tests {
         assert_eq!(fs::read_to_string(&link).unwrap(), "SECRET=1\n");
     }
 
-    #[cfg(unix)]
     #[test]
     fn symlink_mode_rejects_directory_sources() {
         let (_tmp, main, wt) = fixture();
@@ -885,7 +725,6 @@ mod tests {
         assert_setup_error(err, "regular file");
     }
 
-    #[cfg(unix)]
     #[test]
     fn symlink_mode_rejects_sources_outside_main_root() {
         let (_tmp, main, wt) = fixture();
