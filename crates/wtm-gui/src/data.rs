@@ -112,7 +112,7 @@ pub fn remove_worktree(repo: &OpenRepo, info: &WorktreeInfo, force: bool) -> Res
 /// Which worktrees `prune` would sweep, given the repo's protected branches.
 pub fn prune_candidates(
     repo: &OpenRepo,
-    rows: Vec<WorktreeInfo>,
+    rows: &[WorktreeInfo],
     merged: bool,
     gone: bool,
 ) -> Vec<prune::PruneCandidate> {

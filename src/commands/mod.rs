@@ -72,12 +72,7 @@ fn launch_app(global: &GlobalArgs) -> Result<()> {
     if app::try_launch(global)? {
         return Ok(());
     }
-    // Name the locations `app::locate` actually searches (besides the
-    // `$WTM_APP` override, which is a development/testing escape hatch, not
-    // a real install location worth telling a user about here) -- macOS has
-    // a bundle concept Linux doesn't, and vice versa for the fixed
-    // per-user/system binary directories, so the two platforms get distinct
-    // messages rather than one that is only ever half-true.
+    // macOS and Linux install the app in different places, so each gets its own message.
     let message = if cfg!(target_os = "macos") {
         "the wtm desktop app is not installed (expected WTM.app in /Applications or \
          ~/Applications, or a `wtm-gui` binary next to `wtm` or on PATH); run `wtm tui` \
@@ -109,19 +104,13 @@ pub(crate) fn resolve_target(
     match name {
         Some(n) => worktree::find(ctx, n),
         None => {
-            let items = worktree::list(
-                ctx,
-                &ListOptions {
-                    with_status: false,
-                    base: None,
-                },
-            )?;
+            let items = worktree::list(ctx, &ListOptions::default())?;
             pick(&items, command)
         }
     }
 }
 
-/// Interactive fuzzy picker over worktree display names.
+/// Interactive picker over worktree display names.
 ///
 /// Allowed only when BOTH stdin and stderr are terminals; stdout is
 /// deliberately not required to be one (the shell wrapper captures stdout).

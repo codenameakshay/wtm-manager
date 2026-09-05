@@ -17,22 +17,19 @@ pub fn run(args: &PathArgs, global: &GlobalArgs) -> Result<()> {
         Some(name) => worktree::find(&ctx, name)?.path,
         None => {
             let cwd = std::env::current_dir()?;
-            if global.repo.is_none() {
-                if let Ok(repo) = git2::Repository::discover(&cwd) {
-                    if let Some(root) = repo.workdir() {
-                        println!(
-                            "{}",
-                            root.canonicalize()
-                                .unwrap_or_else(|_| root.to_path_buf())
-                                .display()
-                        );
-                        return Ok(());
-                    }
-                }
-            }
-            match worktree::containing(&ctx, &cwd)? {
-                Some(wt) => wt.path,
-                None => ctx.main_root.clone(),
+            let discovered = if global.repo.is_none() {
+                git2::Repository::discover(&cwd)
+                    .ok()
+                    .and_then(|git_repo| git_repo.workdir().map(repo::canonicalize_lossy))
+            } else {
+                None
+            };
+            match discovered {
+                Some(root) => root,
+                None => match worktree::containing(&ctx, &cwd)? {
+                    Some(wt) => wt.path,
+                    None => ctx.main_root.clone(),
+                },
             }
         }
     };

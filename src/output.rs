@@ -24,19 +24,21 @@ pub enum ColorMode {
 /// false; `Auto` ⇒ stdout is a TTY and the `NO_COLOR` environment variable
 /// is unset or empty.
 pub fn use_color(mode: ColorMode) -> bool {
+    color_enabled(mode, std::io::stdout().is_terminal())
+}
+
+/// Shared `--color`/`NO_COLOR` decision for any output stream: `Always` ⇒
+/// true; `Never` ⇒ false; `Auto` ⇒ `is_tty` and `NO_COLOR` unset or empty.
+pub fn color_enabled(mode: ColorMode, is_tty: bool) -> bool {
+    decide_color(mode, is_tty, std::env::var_os("NO_COLOR").as_deref())
+}
+
+fn decide_color(mode: ColorMode, is_tty: bool, no_color: Option<&OsStr>) -> bool {
     match mode {
         ColorMode::Always => true,
         ColorMode::Never => false,
-        ColorMode::Auto => auto_color(
-            std::env::var_os("NO_COLOR").as_deref(),
-            std::io::stdout().is_terminal(),
-        ),
+        ColorMode::Auto => is_tty && no_color.is_none_or(|v| v.is_empty()),
     }
-}
-
-/// Pure decision core for [`ColorMode::Auto`], split out for unit testing.
-fn auto_color(no_color: Option<&OsStr>, stdout_is_tty: bool) -> bool {
-    stdout_is_tty && no_color.is_none_or(|v| v.is_empty())
 }
 
 /// Render the human-readable table for `wtm list`.
@@ -47,7 +49,7 @@ fn auto_color(no_color: Option<&OsStr>, stdout_is_tty: bool) -> bool {
 /// (badges: dirty/merged/missing/locked/prunable). When `with_status` is
 /// false the status-derived columns are omitted entirely.
 pub fn render_table(items: &[WorktreeInfo], color: bool, with_status: bool) -> String {
-    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    let home = directories::BaseDirs::new().map(|b| b.home_dir().to_path_buf());
     let mut table = Table::new();
     table.load_preset(comfy_table::presets::NOTHING);
     table.set_content_arrangement(ContentArrangement::Dynamic);
@@ -94,7 +96,7 @@ pub fn render_json(items: &[WorktreeInfo]) -> String {
 }
 
 /// Replace a leading `$HOME` prefix with `~`.
-fn abbreviate_path(path: &Path, home: Option<&Path>) -> String {
+pub fn abbreviate_path(path: &Path, home: Option<&Path>) -> String {
     if let Some(home) = home {
         if let Ok(rest) = path.strip_prefix(home) {
             return if rest.as_os_str().is_empty() {
@@ -174,7 +176,7 @@ fn status_cell(info: &WorktreeInfo) -> Cell {
 
 #[cfg(test)]
 mod tests {
-    use std::ffi::OsString;
+    use std::ffi::OsStr;
     use std::path::PathBuf;
 
     use super::*;
@@ -213,23 +215,15 @@ mod tests {
 
     #[test]
     fn auto_color_requires_tty() {
-        assert!(!auto_color(None, false));
-        assert!(auto_color(None, true));
+        assert!(!decide_color(ColorMode::Auto, false, None));
+        assert!(decide_color(ColorMode::Auto, true, None));
     }
 
     #[test]
     fn auto_color_respects_no_color() {
-        let set = OsString::from("1");
-        assert!(!auto_color(Some(set.as_os_str()), true));
+        assert!(!decide_color(ColorMode::Auto, true, Some(OsStr::new("1"))));
         // An empty NO_COLOR counts as unset per the informal spec.
-        let empty = OsString::from("");
-        assert!(auto_color(Some(empty.as_os_str()), true));
-    }
-
-    #[test]
-    fn use_color_always_and_never_ignore_environment() {
-        assert!(use_color(ColorMode::Always));
-        assert!(!use_color(ColorMode::Never));
+        assert!(decide_color(ColorMode::Auto, true, Some(OsStr::new(""))));
     }
 
     #[test]

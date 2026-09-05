@@ -1698,7 +1698,7 @@ fn parent_label(path: &std::path::Path) -> String {
 /// `crate::dialogs`'s own prune tests already use, rather than only
 /// reachable through a live `WtmApp`.
 fn prunable_count(repo: &OpenRepo, rows: &[WorktreeInfo]) -> usize {
-    data::prune_candidates(repo, rows.to_vec(), false, false).len()
+    data::prune_candidates(repo, rows, false, false).len()
 }
 
 /// The window controls Linux draws in its own title bar when the compositor

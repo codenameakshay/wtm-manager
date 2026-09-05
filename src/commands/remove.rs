@@ -1,7 +1,7 @@
 //! `wtm remove` — remove a worktree, with dirty/main/cwd safety checks.
 //!
-//! The safety-checked removal itself lives in the private `remove_worktree` core so that
-//! the CLI command and the TUI `d` action share one implementation.
+//! The safety-checked removal itself lives in `remove_worktree`, shared by
+//! the CLI command, the TUI `d` action, and the GUI.
 
 use std::path::Path;
 
@@ -109,18 +109,16 @@ fn contains_cwd(path: &Path) -> bool {
     let Ok(cwd) = std::env::current_dir() else {
         return false;
     };
-    let cwd = cwd.canonicalize().unwrap_or(cwd);
-    let target = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let cwd = crate::repo::canonicalize_lossy(&cwd);
+    let target = crate::repo::canonicalize_lossy(path);
     cwd.starts_with(&target)
 }
 
 /// Uncommitted changes (including untracked, excluding ignored/submodules)?
 pub fn is_dirty(path: &Path) -> Result<bool> {
     let repo = git2::Repository::open(path)?;
-    let mut opts = git2::StatusOptions::new();
-    opts.include_untracked(true)
-        .include_ignored(false)
-        .exclude_submodules(true);
-    let dirty = !repo.statuses(Some(&mut opts))?.is_empty();
+    let dirty = !repo
+        .statuses(Some(&mut crate::worktree::dirty_status_options()))?
+        .is_empty();
     Ok(dirty)
 }

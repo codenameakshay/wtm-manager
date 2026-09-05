@@ -36,6 +36,16 @@ pub fn run(cwd: &Path, args: &[&str]) -> Result<()> {
     }
 }
 
+/// Run `git <args>` with cwd = `cwd`, returning the captured output
+/// regardless of exit status. Errors only if the process cannot be spawned.
+pub fn run_capture(cwd: &Path, args: &[&str]) -> Result<std::process::Output> {
+    Ok(Command::new("git")
+        .args(args)
+        .current_dir(cwd)
+        .stdin(Stdio::null())
+        .output()?)
+}
+
 /// `git worktree add <path> <branch>` (existing branch). Captures output in
 /// quiet mode and streams it otherwise.
 pub fn worktree_add(main_root: &Path, path: &Path, branch: &str, quiet: bool) -> Result<()> {
@@ -119,40 +129,14 @@ fn run_with_output_policy(cwd: &Path, args: &[&str], quiet: bool) -> Result<()> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testgit::{git, init_repo};
     use std::fs;
     use std::path::PathBuf;
-    use std::process::Command;
-
-    fn git(dir: &Path, args: &[&str]) {
-        let out = Command::new("git")
-            .args(["-c", "commit.gpgsign=false"])
-            .args(args)
-            .current_dir(dir)
-            .env("GIT_AUTHOR_NAME", "wtm test")
-            .env("GIT_AUTHOR_EMAIL", "wtm@example.invalid")
-            .env("GIT_COMMITTER_NAME", "wtm test")
-            .env("GIT_COMMITTER_EMAIL", "wtm@example.invalid")
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .env("GIT_CONFIG_SYSTEM", "/dev/null")
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .output()
-            .expect("failed to run git");
-        assert!(
-            out.status.success(),
-            "git {:?} failed:\n{}",
-            args,
-            String::from_utf8_lossy(&out.stderr)
-        );
-    }
 
     fn fixture() -> (tempfile::TempDir, PathBuf) {
         let tmp = tempfile::TempDir::new().unwrap();
         let main = tmp.path().join("main");
-        fs::create_dir(&main).unwrap();
-        git(&main, &["init", "-b", "main"]);
-        fs::write(main.join("README.md"), "readme\n").unwrap();
-        git(&main, &["add", "."]);
-        git(&main, &["commit", "-m", "initial"]);
+        init_repo(&main);
         (tmp, main)
     }
 

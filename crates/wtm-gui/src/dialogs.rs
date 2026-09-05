@@ -676,8 +676,7 @@ impl PruneState {
     /// runs directly on every toggle change instead of round-tripping
     /// through the background executor.
     pub fn recompute(&mut self, repo: &OpenRepo, rows: &[WorktreeInfo]) {
-        self.candidates =
-            crate::data::prune_candidates(repo, rows.to_vec(), self.merged, self.gone);
+        self.candidates = crate::data::prune_candidates(repo, rows, self.merged, self.gone);
     }
 }
 

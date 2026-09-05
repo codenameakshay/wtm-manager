@@ -50,7 +50,7 @@ pub fn run(args: &PruneArgs, global: &GlobalArgs) -> Result<()> {
     )?;
 
     let candidates = candidates(
-        items,
+        &items,
         &config.prune.protected_branches,
         args.merged,
         args.gone,
@@ -106,7 +106,7 @@ pub fn run(args: &PruneArgs, global: &GlobalArgs) -> Result<()> {
 /// when the corresponding flag is set. `verbose` prints a stderr note for
 /// each protected skip (CLI only; the TUI and GUI pass false to stay pure).
 pub fn candidates(
-    items: Vec<WorktreeInfo>,
+    items: &[WorktreeInfo],
     protected: &[String],
     merged: bool,
     gone: bool,
@@ -149,7 +149,7 @@ pub fn candidates(
 
         let delete_branch = (is_merged || is_gone) && info.branch.is_some() && !info.is_missing;
         selected.push(PruneCandidate {
-            info,
+            info: info.clone(),
             reasons,
             delete_branch,
         });
@@ -289,17 +289,7 @@ pub fn execute(
 mod tests {
     use super::*;
     use crate::model::WorktreeStatus;
-    use std::process::Command;
-
-    fn init_repo(path: &std::path::Path) {
-        std::fs::create_dir(path).unwrap();
-        assert!(Command::new("git")
-            .args(["init", "-q"])
-            .current_dir(path)
-            .status()
-            .unwrap()
-            .success());
-    }
+    use crate::testgit::init_repo;
 
     fn candidate(path: std::path::PathBuf, name: &str) -> PruneCandidate {
         PruneCandidate {
