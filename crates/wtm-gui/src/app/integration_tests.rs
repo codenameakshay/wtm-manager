@@ -353,11 +353,23 @@ fn run_until<T: 'static>(
     view: &Entity<T>,
     mut predicate: impl FnMut(&T) -> bool,
 ) {
+    // Tick one task at a time so the predicate is checked between tasks
+    // (a full drain would let the follow-up reload clear the status). When
+    // the dispatcher parks it may only be waiting on a timer — the
+    // drain-stream loop polls its channel every 16ms under `cfg(test)` — so
+    // move the virtual clock to the next timer instead of failing; a state
+    // that never arrives still fails with a message, not a hang.
+    let executor = cx.executor().clone();
+    let dispatcher = executor.dispatcher.as_test().unwrap();
+    let mut nudges = 0;
     while !view.read_with(cx, |v, _| predicate(v)) {
-        assert!(
-            cx.executor().tick(),
-            "dispatcher fully parked before the expected state was ever reached"
-        );
+        if !executor.tick() {
+            nudges += 1;
+            assert!(
+                nudges < 100_000 && dispatcher.advance_clock_to_next_delayed(),
+                "dispatcher fully parked before the expected state was ever reached"
+            );
+        }
     }
 }
 
@@ -886,6 +898,85 @@ fn prune_computes_candidates_and_reports_removed_and_skipped_honestly(cx: &mut T
             .iter()
             .any(|w| w.display_name() == "missing-branch"),
         "the stale registry entry for the missing worktree must be cleaned up"
+    );
+}
+
+/// A watcher notification that lands while a prune is running in the
+/// background must only mark the repository stale, not start a reload
+/// itself — `on_watcher_change` guards on `prune_in_flight` exactly like it
+/// guards on `loading`. The prune's own completion (`report_prune`) must be
+/// the one reload that actually runs.
+#[gpui::test]
+fn watcher_changes_during_a_prune_only_mark_stale_and_reload_once_at_the_end(
+    cx: &mut TestAppContext,
+) {
+    let fx = Fixture::new();
+    let merged_a = fx.add_worktree("merged-a");
+    let merged_b = fx.add_worktree("merged-b");
+
+    let repo = fx.open();
+    let (view, cx) = open_app(cx, Some(repo));
+    cx.run_until_parked();
+
+    cx.simulate_keystrokes("cmd-shift-p");
+    view.update_in(cx, |app, _window, cx| app.toggle_prune_merged(cx));
+    view.read_with(cx, |app, _| {
+        let Some(Dialog::Prune(state)) = &app.dialog else {
+            panic!("prune dialog must be open");
+        };
+        assert!(
+            !state.candidates.is_empty(),
+            "the merged toggle must surface merged-a/merged-b as candidates"
+        );
+    });
+
+    view.update_in(cx, |app, _window, cx| app.confirm_prune_dialog(cx));
+    // Record the generation right after confirming, before letting the
+    // dispatcher drive the background prune forward at all.
+    let gen0 = view.read_with(cx, |app, _| app.generation);
+
+    view.update_in(cx, |app, _window, cx| {
+        app.on_watcher_change(cx);
+        app.on_watcher_change(cx);
+        app.on_watcher_change(cx);
+    });
+    view.read_with(cx, |app, _| {
+        assert!(app.prune_in_flight, "the prune must still be running");
+        assert!(
+            app.repository_stale,
+            "each watcher event must still record the stale bit"
+        );
+        assert_eq!(
+            app.generation, gen0,
+            "no reload may start while a prune is in flight"
+        );
+    });
+
+    // Now let the background prune actually finish. Like the run-command
+    // dialog's own streaming test, the drain loop waits for channel events
+    // on the background executor via a polling timer, so the cooperative
+    // dispatcher needs its clock advanced to make that timer fire
+    // deterministically instead of parking forever.
+    cx.run_until_parked();
+    cx.executor().advance_clock(Duration::from_secs(2));
+
+    view.read_with(cx, |app, _| {
+        assert!(!app.prune_in_flight, "the prune must have finished");
+        assert!(app.dialog.is_none());
+        assert!(
+            !app.repository_stale,
+            "the completion's own reload must consume the stale bit"
+        );
+        assert!(
+            app.generation > gen0,
+            "exactly the prune's own completion reload must have run"
+        );
+    });
+    assert!(!merged_a.is_dir(), "merged-a must have been pruned");
+    assert!(!merged_b.is_dir(), "merged-b must have been pruned");
+    assert!(
+        fx.worktree_path("feature-x").is_dir(),
+        "feature-x is merged but dirty, so an unforced prune must leave it"
     );
 }
 

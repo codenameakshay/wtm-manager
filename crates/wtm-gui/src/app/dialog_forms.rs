@@ -556,6 +556,9 @@ impl WtmApp {
                     theme,
                 ))
             })
+            .when(state.busy, |this| {
+                this.child(progress_line(state.done, state.candidates.len(), theme))
+            })
             .child({
                 let footer = ui::modal_footer(theme).child(
                     // Same `track_focus`/`dialog_safe_focus` pairing as
@@ -672,6 +675,9 @@ impl WtmApp {
         // last thing seen before committing to the destructive action, not
         // just the intro line above the list.
         body = body.child(destructive_count_line(count, "remove", theme));
+        if state.busy {
+            body = body.child(progress_line(state.done, count, theme));
+        }
 
         let footer = ui::modal_footer(theme).child(
             // Same `track_focus`/`dialog_safe_focus` pairing as the Remove
@@ -779,6 +785,15 @@ fn prune_empty_hint(state: &PruneState, theme: &Theme) -> impl IntoElement {
 /// and bulk-remove confirmations, the two dialogs that can ever act on more
 /// than one worktree at once; the single-target Remove dialog already names
 /// its one worktree in the modal header, so it has no need of this.
+/// "Removing n of N…" while a prune or bulk remove runs, so a long one
+/// visibly makes progress instead of looking hung.
+fn progress_line(done: usize, total: usize, theme: &Theme) -> impl IntoElement {
+    div()
+        .text_size(px(TEXT_SM))
+        .text_color(theme.text_muted)
+        .child(format!("Removing {done} of {total}…"))
+}
+
 fn destructive_count_line(count: usize, verb: &str, theme: &Theme) -> impl IntoElement {
     div()
         .text_size(px(TEXT_SM))

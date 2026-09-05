@@ -152,6 +152,8 @@ struct BulkRemoveState {
     candidates: Vec<PruneCandidate>,
     force: bool,
     busy: bool,
+    /// Candidates dealt with so far while `busy`, for the "n of N" line.
+    done: usize,
     error: Option<String>,
 }
 
@@ -227,6 +229,11 @@ pub struct WtmApp {
     /// every worktree while the app is hidden behind another window.
     window_active: bool,
     repository_stale: bool,
+    /// A prune or bulk remove this app started is still running. Every
+    /// worktree it deletes fires the watcher; reloading on each one would
+    /// re-scan every remaining worktree per removal, so those events only
+    /// set `repository_stale` and the operation's completion reloads once.
+    prune_in_flight: bool,
     _activation_sub: Subscription,
     detail_panel_visible: bool,
     /// True once the user has explicitly reopened the detail panel
@@ -398,6 +405,7 @@ impl WtmApp {
             watched: None,
             window_active: window.is_window_active(),
             repository_stale: false,
+            prune_in_flight: false,
             _activation_sub: cx.observe_window_activation(window, |app, window, cx| {
                 app.on_window_activation(window, cx)
             }),

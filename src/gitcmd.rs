@@ -90,10 +90,13 @@ pub fn worktree_prune(main_root: &Path) -> Result<()> {
     run(main_root, &["worktree", "prune"])
 }
 
-/// `git branch -D <name>` (only ever called after explicit user opt-in).
-/// Captures output.
-pub fn branch_delete(main_root: &Path, name: &str) -> Result<()> {
-    run(main_root, &["branch", "-D", name])
+/// `git branch -D <names...>` (only ever called after explicit user opt-in).
+/// One spawn for any number of branches; git reports each failure and keeps
+/// going, so a non-zero exit means at least one was not deleted.
+pub fn branch_delete(main_root: &Path, names: &[&str]) -> Result<()> {
+    let mut args = vec!["branch", "-D"];
+    args.extend_from_slice(names);
+    run(main_root, &args)
 }
 
 /// Run `git <args>` with cwd = `cwd`, inheriting stdout/stderr so the user
@@ -182,7 +185,7 @@ mod tests {
     fn branch_delete_removes_branch() {
         let (_tmp, main) = fixture();
         git(&main, &["branch", "dead"]);
-        branch_delete(&main, "dead").unwrap();
+        branch_delete(&main, &["dead"]).unwrap();
         assert!(run(&main, &["rev-parse", "--verify", "refs/heads/dead"]).is_err());
     }
 

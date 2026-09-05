@@ -234,7 +234,7 @@ fn run_effect(
             Ok(Some(msg))
         }
         Effect::Prune { candidates, force } => {
-            let report = prune::execute(ctx, &candidates, force, false);
+            let report = prune::execute(ctx, &candidates, force, false, &|_| {});
             let mut text = format!("pruned {} worktree(s)", report.removed);
             if !report.skipped.is_empty() {
                 text.push_str(&format!("; skipped (dirty): {}", report.skipped.join(", ")));

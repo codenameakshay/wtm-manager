@@ -675,6 +675,8 @@ pub struct PruneState {
     pub force: bool,
     pub candidates: Vec<PruneCandidate>,
     pub busy: bool,
+    /// Candidates dealt with so far while `busy`, for the "n of N" line.
+    pub done: usize,
 }
 
 impl PruneState {
@@ -685,6 +687,7 @@ impl PruneState {
             force: false,
             candidates: Vec::new(),
             busy: false,
+            done: 0,
         }
     }
 
