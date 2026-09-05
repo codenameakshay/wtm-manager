@@ -20,8 +20,6 @@
 //! `WorktreeDetails::commits` (see `wtm::worktree::CommitLine`) only carries
 //! an abbreviated commit id and its first summary line — no author or
 //! timestamp — so the commit rows below show sha + subject only.
-//! [`relative_time`] is still provided as a tested, ready-to-use formatter
-//! for the day `CommitLine` grows a timestamp field.
 
 use gpui::prelude::*;
 use gpui::{div, px, AnyElement, FontWeight, SharedString};
@@ -71,11 +69,9 @@ pub enum DetailTab {
 /// gpui 0.2.2 has a text-measurement caching bug that makes `.truncate()`
 /// silently never ellipsize inside a flex chain that gets measured more
 /// than once during layout (nearly every real chain, once panels/rows nest
-/// a couple of levels deep) — this is a pre-existing limitation, not
-/// something the redesign introduced (the pre-redesign `assets/app.png`
-/// already shows Path hard-clipping the same way). It is not fixed in a
-/// newer release either: 0.2.2 is the newest `gpui` on crates.io as of this
-/// writing, so there is no upgrade path out of it.
+/// a couple of levels deep). It is not fixed in a newer release either:
+/// 0.2.2 is the newest `gpui` on crates.io as of this writing, so there is
+/// no upgrade path out of it.
 ///
 /// The mechanism (`gpui-0.2.2/src/elements/text.rs`,
 /// `TextLayout::layout`'s measured-layout closure): the text element caches
@@ -105,8 +101,8 @@ pub enum DetailTab {
 /// so the pixel budget is knowable arithmetic, not a flex unknown — see
 /// `FACT_VALUE_WIDTH`/`COMMIT_SHA_WIDTH`/`COMMIT_SUBJECT_WIDTH` below.
 /// `.truncate()` stays on each value as a backstop (it still *clips*
-/// correctly even when it can't ellipsize), it is just no longer the
-/// primary truncation mechanism.
+/// correctly even when it can't ellipsize) rather than as the primary
+/// truncation mechanism.
 ///
 /// Where the panel width is genuinely fluid instead of fixed (a worktree
 /// row's path, a sidebar repo's path, the footer's hint line — none of
@@ -130,21 +126,19 @@ const LABEL_WIDTH: f32 = 88.0;
 /// edges, minus `LABEL_WIDTH` and its `SPACE_8` gap to the value.
 const FACT_VALUE_WIDTH: f32 = WIDTH - SPACE_16 * 2.0 - LABEL_WIDTH - SPACE_8;
 
-/// How many characters fit inside [`FACT_VALUE_WIDTH`] — ~7.2px/character
-/// (the same ~0.6em `FONT_MONO`-at-`TEXT_SM` approximation
-/// `diff_view::GUTTER_CHAR_WIDTH` documents; gpui has no API to measure
-/// real shaped text outside of an actual layout pass) over 192px is ≈26.7
-/// characters, rounded down one further for margin. Used two ways:
-/// `truncate_path_tail` applies it to Path specifically (FINDINGS-2.md G2),
-/// which wants a *leading* ellipsis so the readable tail of the path
-/// survives; `fact_row` applies it (via `truncate_tail`, trailing ellipsis)
-/// to every other value, since — per `LABEL_WIDTH`'s doc — gpui's own
-/// `.truncate()`/`text_ellipsis()` does not reliably render an ellipsis
-/// glyph even once given a definite width to measure against, only
-/// `LABEL_WIDTH`-style upfront clipping. Both stay a *little* conservative
-/// on purpose (rounded down, not to the nearest fit) because this is an
-/// approximation, not a measurement — better to end one character short of
-/// the edge than one character over it.
+/// How many characters fit inside [`FACT_VALUE_WIDTH`] — `ui::CHAR_WIDTH_APPROX`
+/// px/character (gpui has no API to measure real shaped text outside of an
+/// actual layout pass) over 192px is ≈26.7 characters, rounded down one
+/// further for margin. Used two ways: `truncate_path_tail` applies it to
+/// Path specifically, which wants a *leading* ellipsis so the readable tail
+/// of the path survives; `fact_row` applies it (via `truncate_tail`,
+/// trailing ellipsis) to every other value, since — per `LABEL_WIDTH`'s
+/// doc — gpui's own `.truncate()`/`text_ellipsis()` does not reliably
+/// render an ellipsis glyph even once given a definite width to measure
+/// against, only `LABEL_WIDTH`-style upfront clipping. Both stay a *little*
+/// conservative on purpose (rounded down, not to the nearest fit) because
+/// this is an approximation, not a measurement — better to end one
+/// character short of the edge than one character over it.
 const FACT_VALUE_MAX_CHARS: usize = 25;
 
 /// Fixed width of a commit row's sha column (`render_commit_row`) — see
@@ -169,9 +163,8 @@ const COMMIT_SUBJECT_WIDTH: f32 = WIDTH - SPACE_16 * 2.0 - COMMIT_SHA_WIDTH - SP
 const COMMIT_SUBJECT_MAX_CHARS: usize = 26;
 
 /// The Details tab's content: the fact list, status pills, and recent
-/// commits. Unchanged from before this panel grew Files/Changes tabs beside
-/// it — `chrome::render_detail_panel` now supplies the outer frame and tab
-/// bar this used to build itself.
+/// commits. `chrome::render_detail_panel` supplies the outer frame and tab
+/// bar around it.
 pub fn render_details(
     info: &WorktreeInfo,
     details: Option<&WorktreeDetails>,
@@ -181,8 +174,7 @@ pub fn render_details(
     // groups, so their gap is `SPACE_16` — double each section's own
     // internal `SPACE_8` gap between its own rows, per `better-layout` §1
     // ("the gap between groups must be at least 2x the gap within a
-    // group"). Per-row borders were the old way of marking that separation;
-    // dropped in favor of the gap alone (SURFACES §4).
+    // group"), rather than per-row borders.
     div()
         .flex_1()
         .min_w_0()
@@ -216,10 +208,10 @@ pub fn render_header(info: &WorktreeInfo, theme: &Theme) -> impl IntoElement {
         .border_b_1()
         .border_color(theme.border)
         .child(
-            // SURFACES §4: branch at `TEXT_MD`/600 — one step heavier than
-            // the list row's `TEXT_BASE`/500, since this is the one place
-            // the panel states its subject. `.id(..)` because `.tooltip(..)`
-            // is `StatefulInteractiveElement`-only (gpui 0.2.2).
+            // Branch at `TEXT_MD`/600 — one step heavier than the list
+            // row's `TEXT_BASE`/500, since this is the one place the panel
+            // states its subject. `.id(..)` because `.tooltip(..)` is
+            // `StatefulInteractiveElement`-only (gpui 0.2.2).
             div()
                 .id("detail-header-name")
                 .flex_1()
@@ -231,11 +223,7 @@ pub fn render_header(info: &WorktreeInfo, theme: &Theme) -> impl IntoElement {
                 .child(info.display_name().to_string())
                 .tooltip(ui::tooltip(info.display_name().to_string())),
         )
-        // The `main` badge used to be hand-rolled here (and, identically,
-        // in `worktree_list::render_row`) — both now route through
-        // `ui::badge`, deleting the duplicate SURFACES' "Non-negotiables"
-        // calls out by name.
-        .when(info.is_main, |this| this.child(ui::badge("main", theme)))
+        .when(info.is_main, |this| this.child(ui::main_badge(theme)))
         .when(info.is_locked, |this| {
             this.child(ui::icon(icons::LOCK, 11.0, theme.text_ghost))
         })
@@ -259,16 +247,13 @@ fn render_facts(
         .gap(px(SPACE_8))
         .child(fact_row(
             "Path",
-            // Truncates from the *start*, keeping the readable tail
-            // (SURFACES §3/FINDINGS.md F2 — this part was already right).
-            // What F2 adds is the tooltip: the panel-width-limited string
-            // above is what paints, `full_path` is what the tooltip shows.
-            // `FACT_VALUE_MAX_CHARS` (not a bare `40` — see FINDINGS-2.md
-            // G2) is sized to the value column's real available pixels, so
-            // this never overflows into a second, blind clip downstream.
+            // Truncates from the *start*, keeping the readable tail. The
+            // panel-width-limited string above is what paints; `full_path`
+            // (moved into the tooltip below, since nothing else needs it
+            // after this) is what the tooltip shows.
             truncate_path_tail(&full_path, FACT_VALUE_MAX_CHARS),
             true,
-            Some(full_path.clone().into()),
+            Some(full_path.into()),
             theme,
         ))
         .child(fact_row(
@@ -278,36 +263,28 @@ fn render_facts(
             None,
             theme,
         ))
-        .child(render_upstream_row(details, theme))
-        .child(render_remote_row(details, theme))
+        .child(render_detail_row("Upstream", details, theme, |d| {
+            d.upstream.clone().unwrap_or_else(|| "-".to_string())
+        }))
+        .child(render_detail_row("Remote", details, theme, |d| {
+            remote_name(d.upstream.as_deref())
+                .unwrap_or("-")
+                .to_string()
+        }))
         .child(render_ahead_behind_row(info, theme))
 }
 
-fn render_upstream_row(details: Option<&WorktreeDetails>, theme: &Theme) -> AnyElement {
+/// One `Upstream`/`Remote`-shaped fact row: a skeleton while `details` is
+/// still loading, otherwise `extract`'s value through [`fact_row`].
+fn render_detail_row(
+    label: &'static str,
+    details: Option<&WorktreeDetails>,
+    theme: &Theme,
+    extract: impl Fn(&WorktreeDetails) -> String,
+) -> AnyElement {
     match details {
-        None => skeleton_fact_row("Upstream", theme).into_any_element(),
-        Some(details) => fact_row(
-            "Upstream",
-            details.upstream.clone().unwrap_or_else(|| "-".to_string()),
-            true,
-            None,
-            theme,
-        )
-        .into_any_element(),
-    }
-}
-
-fn render_remote_row(details: Option<&WorktreeDetails>, theme: &Theme) -> AnyElement {
-    match details {
-        None => skeleton_fact_row("Remote", theme).into_any_element(),
-        Some(details) => fact_row(
-            "Remote",
-            remote_name(details.upstream.as_deref()).unwrap_or_else(|| "-".to_string()),
-            true,
-            None,
-            theme,
-        )
-        .into_any_element(),
+        None => skeleton_fact_row(label, theme).into_any_element(),
+        Some(details) => fact_row(label, extract(details), true, None, theme).into_any_element(),
     }
 }
 
@@ -329,16 +306,12 @@ fn render_ahead_behind_row(info: &WorktreeInfo, theme: &Theme) -> impl IntoEleme
 }
 
 /// One label/value line: a `TEXT_SM` `text_muted` label, a `TEXT_SM`
-/// `text`-colored value — SURFACES §4's "labels muted, values full text"
-/// pairing, a deliberate reversal of this row's pre-redesign weighting
-/// (label `text_tertiary`, value `text_secondary`, i.e. the *label* used to
-/// be the quieter of the two either way but the value never reached full
-/// `text` weight). A definition list's actual information is the value; it
-/// should read at full weight while its label recedes.
+/// `text`-colored value. A definition list's actual information is the
+/// value; it should read at full weight while its label recedes.
 ///
 /// `mono` renders the value in [`ui::FONT_MONO`] — every value here that is
-/// a path, sha, or ref name (SPEC §6) sets it. `tooltip`, when given,
-/// carries the value's untruncated text (FINDINGS.md F2).
+/// a path, sha, or ref name sets it. `tooltip`, when given, carries the
+/// value's untruncated text.
 fn fact_row(
     label: &'static str,
     value: impl Into<SharedString>,
@@ -356,9 +329,7 @@ fn fact_row(
     let shown = truncate_tail(&value, FACT_VALUE_MAX_CHARS);
     // Every value gets a way to read its full text: the caller's own
     // tooltip when it passed one (Path already does), otherwise whatever
-    // `truncate_tail` actually shortened — FINDINGS.md F2 / this phase's
-    // "keep every tooltip" rule, extended to every fact row instead of
-    // just Path.
+    // `truncate_tail` actually shortened.
     let tooltip = tooltip.or_else(|| (shown != value).then(|| value.clone()));
     div()
         .w_full()
@@ -405,8 +376,6 @@ fn fact_row(
 
 /// A muted placeholder bar in place of a fact whose value is still loading,
 /// so the panel never shows a blank gap where an upstream or remote will be.
-/// `ui::skeleton` (SURFACES §4: "loading uses `ui::skeleton`, not a
-/// spinner") replaces what used to be a hand-rolled `item_wash` bar here.
 fn skeleton_fact_row(label: &'static str, theme: &Theme) -> impl IntoElement {
     div()
         .w_full()
@@ -431,10 +400,9 @@ fn skeleton_fact_row(label: &'static str, theme: &Theme) -> impl IntoElement {
 
 /// Status pills, in the same order and with the same vocabulary as
 /// `worktree_list`'s row pills, so the list and the panel never disagree
-/// about what a badge means. Gets its own room around it (SURFACES §4) via
-/// the `SPACE_16` gap `render_details` puts between this and its neighbor
-/// sections — double this row's own `SPACE_8` pill-to-pill gap, the same
-/// `better-layout` §1 ratio `render_details` documents.
+/// about what a badge means. Gets its own room around it via the
+/// `SPACE_16` gap `render_details` puts between this and its neighbor
+/// sections — double this row's own `SPACE_8` pill-to-pill gap.
 fn render_status(info: &WorktreeInfo, theme: &Theme) -> impl IntoElement {
     div()
         .flex_none()
@@ -457,36 +425,17 @@ fn status_pills(info: &WorktreeInfo, theme: &Theme) -> Vec<AnyElement> {
             .into_any_element()];
     };
 
-    let mut pills = Vec::new();
-    if status.dirty {
-        // Same "N dirty" wording as `worktree_list`'s row pill — the user's
-        // ask ("show that number somewhere") applies here too, and the list
-        // and the panel must never disagree about what the pill means.
-        pills.push(
-            ui::pill(
-                crate::worktree_list::dirty_pill_label(status.dirty_count),
-                theme.warning,
-            )
-            .into_any_element(),
-        );
-    }
-    if let Some(ahead) = status.ahead.filter(|n| *n > 0) {
-        pills.push(ui::pill(format!("{ahead} ahead"), theme.success).into_any_element());
-    }
-    if let Some(behind) = status.behind.filter(|n| *n > 0) {
-        pills.push(ui::pill(format!("{behind} behind"), theme.info).into_any_element());
-    }
-    if status.upstream_gone {
-        pills.push(ui::pill("gone", theme.danger).into_any_element());
-    }
-    if status.merged {
-        // FINDINGS.md F3 — see `worktree_list::status_pills`' identical fix
-        // for the full rationale: `success_muted` keeps `merged`
-        // recognizably in the `success` family instead of reading as the
-        // same grey as the meta text around it.
-        pills.push(ui::pill("merged", theme.success_muted).into_any_element());
-    }
-    pills
+    crate::worktree_list::status_pill_specs(status, theme)
+        .into_iter()
+        .map(|spec| match spec.color {
+            Some(color) => ui::pill(spec.label, color).into_any_element(),
+            None => div()
+                .text_size(px(ui::TEXT_SM))
+                .text_color(theme.text_ghost)
+                .child(spec.label)
+                .into_any_element(),
+        })
+        .collect()
 }
 
 /// A skeleton while `details` loads, an honest empty state when the
@@ -550,9 +499,9 @@ fn render_commit_list(commits: &[CommitLine], theme: &Theme) -> impl IntoElement
 
 /// One compact commit row: sha in `FONT_MONO`/`text_ghost`, subject in full
 /// `text` weight, truncated to a single line with the untruncated subject in
-/// a tooltip (SURFACES §4, FINDINGS.md F2). `CommitLine` carries no author
-/// or timestamp (see the module doc comment), so those columns are
-/// intentionally absent rather than faked.
+/// a tooltip. `CommitLine` carries no author or timestamp (see the module
+/// doc comment), so those columns are intentionally absent rather than
+/// faked.
 fn render_commit_row(commit: &CommitLine, theme: &Theme) -> impl IntoElement {
     let subject = if commit.summary.is_empty() {
         "(no message)".to_string()
@@ -598,8 +547,8 @@ fn render_commit_row(commit: &CommitLine, theme: &Theme) -> impl IntoElement {
 /// The remote name is the segment before the first `/` in the upstream
 /// shorthand (`"origin/main"` -> `"origin"`). `WorktreeDetails` has no
 /// separate remote field, so this is derived rather than duplicated data.
-fn remote_name(upstream: Option<&str>) -> Option<String> {
-    upstream.and_then(|u| u.split_once('/').map(|(remote, _)| remote.to_string()))
+fn remote_name(upstream: Option<&str>) -> Option<&str> {
+    upstream.and_then(|u| u.split_once('/').map(|(remote, _)| remote))
 }
 
 /// Condense a long path to fit a target width, keeping the readable tail —
@@ -619,13 +568,12 @@ fn remote_name(upstream: Option<&str>) -> Option<String> {
 /// screen. Grapheme clusters are the smallest unit that's always safe to
 /// cut between.
 pub(crate) fn truncate_path_tail(path: &str, max_chars: usize) -> String {
-    let graphemes: Vec<&str> = path.graphemes(true).collect();
-    let len = graphemes.len();
+    let len = path.graphemes(true).count();
     if len <= max_chars {
         return path.to_string();
     }
     let tail_len = max_chars.saturating_sub(1); // room for the leading ellipsis
-    let tail: String = graphemes[len - tail_len..].concat();
+    let tail: String = path.graphemes(true).skip(len - tail_len).collect();
     format!("…{tail}")
 }
 
@@ -643,117 +591,18 @@ pub(crate) fn truncate_path_tail(path: &str, max_chars: usize) -> String {
 /// Grapheme-cluster-safe, for the same reason [`truncate_path_tail`] is —
 /// see its doc.
 pub(crate) fn truncate_tail(s: &str, max_chars: usize) -> String {
-    let graphemes: Vec<&str> = s.graphemes(true).collect();
-    let len = graphemes.len();
+    let len = s.graphemes(true).count();
     if len <= max_chars {
         return s.to_string();
     }
     let head_len = max_chars.saturating_sub(1); // room for the trailing ellipsis
-    let head: String = graphemes[..head_len].concat();
+    let head: String = s.graphemes(true).take(head_len).collect();
     format!("{head}…")
-}
-
-/// Format a Unix timestamp as a short relative-time label ("just now", "5m",
-/// "3h", "2d", "3w", "5mo", "2y"), given the current time as a Unix
-/// timestamp. `now` is a parameter rather than read from the clock so this
-/// stays pure and testable. `unix_secs` in the future relative to `now`
-/// (clock skew, or simply a bad timestamp) clamps to "just now" instead of
-/// computing — and printing — a negative duration.
-//
-// No call site yet: `CommitLine` (see the module doc above) carries no
-// timestamp for this to format. Kept — allowed, not deleted — because it is
-// already written, tested, and exactly what a commit row needs the day
-// `CommitLine` grows one; deleting a correct, documented formatter only to
-// retype it later would be pure churn.
-#[allow(dead_code)]
-pub fn relative_time(unix_secs: i64, now: i64) -> String {
-    let delta = now.saturating_sub(unix_secs);
-    if delta < 60 {
-        return "just now".to_string();
-    }
-
-    const MINUTE: i64 = 60;
-    const HOUR: i64 = 60 * MINUTE;
-    const DAY: i64 = 24 * HOUR;
-    const WEEK: i64 = 7 * DAY;
-    const MONTH: i64 = 30 * DAY;
-    const YEAR: i64 = 365 * DAY;
-
-    if delta < HOUR {
-        format!("{}m", delta / MINUTE)
-    } else if delta < DAY {
-        format!("{}h", delta / HOUR)
-    } else if delta < WEEK {
-        format!("{}d", delta / DAY)
-    } else if delta < MONTH {
-        format!("{}w", delta / WEEK)
-    } else if delta < YEAR {
-        format!("{}mo", delta / MONTH)
-    } else {
-        format!("{}y", delta / YEAR)
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    const NOW: i64 = 1_700_000_000;
-
-    #[test]
-    fn zero_delta_is_just_now() {
-        assert_eq!(relative_time(NOW, NOW), "just now");
-    }
-
-    #[test]
-    fn future_timestamp_clamps_to_just_now() {
-        // Clock skew: the commit's timestamp is ahead of `now`. Must not
-        // panic or print a negative duration.
-        assert_eq!(relative_time(NOW + 3600, NOW), "just now");
-        assert_eq!(relative_time(i64::MAX, NOW), "just now");
-    }
-
-    #[test]
-    fn seconds_are_just_now() {
-        assert_eq!(relative_time(NOW - 1, NOW), "just now");
-        assert_eq!(relative_time(NOW - 59, NOW), "just now");
-    }
-
-    #[test]
-    fn minute_boundary() {
-        assert_eq!(relative_time(NOW - 60, NOW), "1m");
-        assert_eq!(relative_time(NOW - 3599, NOW), "59m");
-    }
-
-    #[test]
-    fn hour_boundary() {
-        assert_eq!(relative_time(NOW - 3600, NOW), "1h");
-        assert_eq!(relative_time(NOW - 86399, NOW), "23h");
-    }
-
-    #[test]
-    fn day_boundary() {
-        assert_eq!(relative_time(NOW - 86400, NOW), "1d");
-        assert_eq!(relative_time(NOW - (7 * 86400 - 1), NOW), "6d");
-    }
-
-    #[test]
-    fn week_boundary() {
-        assert_eq!(relative_time(NOW - 7 * 86400, NOW), "1w");
-        assert_eq!(relative_time(NOW - (30 * 86400 - 1), NOW), "4w");
-    }
-
-    #[test]
-    fn month_boundary() {
-        assert_eq!(relative_time(NOW - 30 * 86400, NOW), "1mo");
-        assert_eq!(relative_time(NOW - (365 * 86400 - 1), NOW), "12mo");
-    }
-
-    #[test]
-    fn year_boundary() {
-        assert_eq!(relative_time(NOW - 365 * 86400, NOW), "1y");
-        assert_eq!(relative_time(NOW - 2 * 365 * 86400, NOW), "2y");
-    }
 
     #[test]
     fn short_path_is_unchanged() {
@@ -876,11 +725,8 @@ mod tests {
 
     #[test]
     fn remote_name_splits_on_first_slash() {
-        assert_eq!(remote_name(Some("origin/main")), Some("origin".to_string()));
-        assert_eq!(
-            remote_name(Some("origin/feature/x")),
-            Some("origin".to_string())
-        );
+        assert_eq!(remote_name(Some("origin/main")), Some("origin"));
+        assert_eq!(remote_name(Some("origin/feature/x")), Some("origin"));
         assert_eq!(remote_name(None), None);
     }
 }

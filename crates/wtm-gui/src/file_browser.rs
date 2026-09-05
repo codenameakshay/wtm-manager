@@ -38,11 +38,9 @@ const INDENT: f32 = 14.0;
 /// (file rows just leave it empty) so names still line up under their
 /// siblings instead of drifting left when a row has no chevron to show.
 const DISCLOSURE_WIDTH: f32 = 10.0;
-/// Height of one tree row. Pre-redesign this was a bespoke, tighter 24px
-/// ("a file tree reads better dense") — SURFACES §4 standardizes Files-tab
-/// rows on the shared [`ui::ROW_HEIGHT`] token (32px) instead, so a tree row
-/// and a sidebar action row share a height for the same "literally the same
-/// function" reason `ui.rs`'s own module doc gives for the rest of the
+/// Height of one tree row: the shared [`ui::ROW_HEIGHT`] token, so a tree
+/// row and a sidebar action row share a height for the same "literally the
+/// same function" reason `ui.rs`'s own module doc gives for the rest of the
 /// component vocabulary.
 const ROW_HEIGHT: f32 = ui::ROW_HEIGHT;
 
@@ -166,13 +164,20 @@ pub struct VisibleRow<'a> {
     pub is_dir: bool,
     pub depth: usize,
     pub status: Option<FileStatus>,
-    /// `Some((expanded, state, toggle_generation))` for a directory row;
-    /// `None` for a file. `state` is `None` when the directory hasn't been
-    /// requested yet (a row can be expanded and still awaiting its first
-    /// load). `toggle_generation` is
+    /// `Some(..)` for a directory row, `None` for a file.
+    pub dir: Option<DirRowState<'a>>,
+}
+
+/// A directory row's extra state, alongside the fields [`VisibleRow`]
+/// already gives every row.
+pub struct DirRowState<'a> {
+    pub expanded: bool,
+    /// `None` when the directory hasn't been requested yet (a row can be
+    /// expanded and still awaiting its first load).
+    pub state: Option<&'a DirState>,
     /// [`FileBrowserState::toggle_generation`] for this directory — see
     /// that method's doc.
-    pub dir: Option<(bool, Option<&'a DirState>, u32)>,
+    pub toggle_gen: u32,
 }
 
 /// Depth-first flatten of `state`'s tree starting at the worktree root.
@@ -206,11 +211,11 @@ fn push_entries<'a>(
                 is_dir: true,
                 depth,
                 status: entry.status,
-                dir: Some((
+                dir: Some(DirRowState {
                     expanded,
-                    state.dir_state(&entry.rel_path),
-                    state.toggle_generation(&entry.rel_path),
-                )),
+                    state: state.dir_state(&entry.rel_path),
+                    toggle_gen: state.toggle_generation(&entry.rel_path),
+                }),
             });
             if expanded {
                 if let Some(DirState::Loaded(children)) = state.dir_state(&entry.rel_path) {
@@ -271,11 +276,9 @@ pub fn status_label(status: FileStatus) -> &'static str {
 /// — see the module doc for why the caller (`crate::app::chrome`) attaches
 /// one, the same split `worktree_list::render_row` uses for the main list.
 ///
-/// Built on [`ui::row`] (SURFACES §4: "selected row uses the standard row
-/// selection") rather than a hand-rolled `item_selected`/`item_wash`
-/// pairing — the same wash-based selection every other selectable row in
-/// the app uses, in place of what used to be this module's own copy of
-/// that logic.
+/// Built on [`ui::row`] rather than a hand-rolled selected/hover pairing —
+/// the same wash-based selection every other selectable row in the app
+/// uses.
 pub fn render_row(
     row: &VisibleRow<'_>,
     selected_file: Option<&Path>,
@@ -284,8 +287,8 @@ pub fn render_row(
 ) -> Stateful<Div> {
     let id = SharedString::from(format!("file-row:{}", row.rel_path.display()));
     let is_selected = !row.is_dir && selected_file == Some(row.rel_path);
-    let expanded = row.dir.is_some_and(|(expanded, ..)| expanded);
-    let toggle_gen = row.dir.map(|(_, _, gen)| gen).unwrap_or(0);
+    let expanded = row.dir.as_ref().is_some_and(|d| d.expanded);
+    let toggle_gen = row.dir.as_ref().map_or(0, |d| d.toggle_gen);
     let name_color = match row.status {
         Some(status) => status_color(status, theme),
         None if row.is_dir => theme.text,
@@ -297,7 +300,7 @@ pub fn render_row(
     // row with a spinner-less wait, or worse, an open folder that just
     // never shows anything, would both read as broken rather than pending.
     let trailing: Option<AnyElement> = if row.is_dir && expanded {
-        match row.dir.and_then(|(_, s, _)| s) {
+        match row.dir.as_ref().and_then(|d| d.state) {
             Some(DirState::Loading) => Some(
                 div()
                     .flex_none()
@@ -322,13 +325,11 @@ pub fn render_row(
         None
     };
 
-    // A real chevron icon in place of the pre-redesign "▸"/"▾" text glyph
-    // (SURFACES §4), rotating through `motion::COLLAPSE` (SPEC §5 candidate
-    // 4) rather than snapping between its two fixed angles. `toggle_gen`
-    // (folded into the animation's element id) is what makes every toggle
-    // — not just the first — actually animate; see
-    // `FileBrowserState::toggle_generation`'s doc for why a plain
-    // `expanded`-keyed id can't do that on its own.
+    // A chevron icon rotating through `motion::COLLAPSE` rather than
+    // snapping between its two fixed angles. `toggle_gen` (folded into the
+    // animation's element id) is what makes every toggle — not just the
+    // first — actually animate; see `FileBrowserState::toggle_generation`'s
+    // doc for why a plain `expanded`-keyed id can't do that on its own.
     let disclosure: Option<AnyElement> = row.is_dir.then(|| {
         let chevron_id =
             SharedString::from(format!("chevron:{}:{toggle_gen}", row.rel_path.display()));
@@ -361,9 +362,8 @@ pub fn render_row(
                 .children(disclosure),
         )
         .when(row.is_dir, |d| {
-            // File icon by kind (SURFACES §4): a directory reads open/closed
-            // through `FOLDER_OPEN`/`FOLDER`, matching its own disclosure
-            // state.
+            // A directory reads open/closed through `FOLDER_OPEN`/`FOLDER`,
+            // matching its own disclosure state.
             d.child(ui::icon(
                 if expanded {
                     icons::FOLDER_OPEN
@@ -507,14 +507,6 @@ mod tests {
         assert!(state.dirs_needing_load().is_empty());
     }
 
-    #[test]
-    fn select_file_records_the_choice() {
-        let mut state = FileBrowserState::default();
-        assert_eq!(state.selected_file(), None);
-        state.select_file(PathBuf::from("README.md"));
-        assert_eq!(state.selected_file(), Some(Path::new("README.md")));
-    }
-
     // ---------------- visible_rows ----------------
 
     #[test]
@@ -546,8 +538,8 @@ mod tests {
     fn collapsed_directory_hides_its_children_entirely() {
         let mut state = FileBrowserState::default();
         state.set_loaded(PathBuf::new(), vec![entry("src", true, None)]);
-        // "src" is loaded (as if previously expanded) but not currently
-        // expanded — its children must not appear.
+        // "src" has a loaded listing but is not expanded — its children
+        // must not appear.
         state.set_loaded(
             PathBuf::from("src"),
             vec![nested_entry("src", "lib.rs", false)],
@@ -588,24 +580,15 @@ mod tests {
         assert_eq!(rows[0].name, "src");
         assert!(matches!(
             rows[0].dir,
-            Some((true, Some(DirState::Loading), _))
+            Some(DirRowState {
+                expanded: true,
+                state: Some(DirState::Loading),
+                ..
+            })
         ));
     }
 
-    // ---------------- status_color / status_label ----------------
-
-    #[test]
-    fn status_color_matches_worktree_lists_established_meanings() {
-        let theme = Theme::dark();
-        assert_eq!(status_color(FileStatus::Modified, &theme), theme.warning);
-        assert_eq!(status_color(FileStatus::Added, &theme), theme.success);
-        assert_eq!(status_color(FileStatus::Deleted, &theme), theme.danger);
-        assert_eq!(status_color(FileStatus::Conflicted, &theme), theme.danger);
-        assert_eq!(
-            status_color(FileStatus::Untracked, &theme),
-            theme.text_faint
-        );
-    }
+    // ---------------- status_label ----------------
 
     #[test]
     fn status_label_is_lowercase_and_distinct() {

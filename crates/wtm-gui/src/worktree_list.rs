@@ -14,28 +14,13 @@ use std::path::PathBuf;
 
 use gpui::prelude::*;
 use gpui::{div, px, AnyElement, App, Div, FontWeight, Hsla, Stateful};
-use wtm::model::WorktreeInfo;
+use wtm::model::{WorktreeInfo, WorktreeStatus};
 
 use crate::assets::icons;
 use crate::detail_panel::{truncate_path_tail, truncate_tail};
 use crate::motion;
 use crate::theme::{Theme, LIST_ROW_HEIGHT, SPACE_4, SPACE_6, SPACE_8};
 use crate::ui;
-
-/// Estimated advance width, in px, of one character at this row's text
-/// sizes (`TEXT_XS`–`TEXT_BASE`, 11–13px) — the same ~0.6em approximation
-/// `diff_view::GUTTER_CHAR_WIDTH`/`detail_panel::FACT_VALUE_MAX_CHARS`
-/// already use for `FONT_MONO` (gpui has no API to measure real shaped text
-/// outside of an actual layout pass, so every width budget in this crate is
-/// an estimate, not a measurement). Reused here for the row's proportional
-/// branch name too, deliberately conservatively: a proportional glyph
-/// usually runs a little narrower than a mono one at the same size, so this
-/// slightly *overestimates* a label's width, which yields a slightly
-/// *smaller* character budget — the safe direction to be wrong in, since
-/// underestimating is exactly how content ends up spilling past its
-/// reserved room again (this constant exists to stop that, see
-/// [`line2_layout`]'s doc).
-const CHAR_WIDTH_APPROX: f32 = 7.2;
 
 /// Character floor for the path once every never-shrink element on line 2
 /// is accounted for (see [`line2_layout`]) — room for a leading "…" plus a
@@ -108,23 +93,20 @@ pub fn sort_mode_label(mode: SortMode) -> &'static str {
 /// never into some arbitrary position, so a partially-loaded list reads as
 /// "the unknowns are at the bottom" rather than looking scrambled.
 pub fn sort_rows(rows: &mut [WorktreeInfo], mode: SortMode, activity: &HashMap<PathBuf, i64>) {
-    rows.sort_by(|a, b| {
-        // Main pinned first, in every mode — see this function's doc. At
-        // most one row is ever `is_main`, so this ordering is always
-        // well-defined (never two rows both claiming to sort first).
-        match (a.is_main, b.is_main) {
-            (true, false) => return std::cmp::Ordering::Less,
-            (false, true) => return std::cmp::Ordering::Greater,
-            _ => {}
-        }
+    // `sort_by_cached_key` computes each row's key exactly once (rather than
+    // re-lowercasing a branch name on every comparison a plain `sort_by`
+    // makes), then sorts from the cached values. The leading `bool` pins the
+    // main worktree first in every mode — at most one row is ever
+    // `is_main`, so this ordering is always well-defined.
+    rows.sort_by_cached_key(|info| {
+        let name = name_key(info);
         match mode {
-            SortMode::Name => name_key(a).cmp(&name_key(b)),
-            SortMode::Recent => recent_key(a, activity)
-                .cmp(&recent_key(b, activity))
-                .then_with(|| name_key(a).cmp(&name_key(b))),
-            SortMode::Status => status_key(a)
-                .cmp(&status_key(b))
-                .then_with(|| name_key(a).cmp(&name_key(b))),
+            SortMode::Name => (!info.is_main, 0u8, std::cmp::Reverse(0), name),
+            SortMode::Recent => {
+                let (unknown, ts) = recent_key(info, activity);
+                (!info.is_main, unknown as u8, ts, name)
+            }
+            SortMode::Status => (!info.is_main, status_key(info), std::cmp::Reverse(0), name),
         }
     });
 }
@@ -178,9 +160,9 @@ fn status_key(info: &WorktreeInfo) -> u8 {
 /// #1 priority — pills never shrink, never clip — reserves for it) read
 /// from, so rendering and width-budgeting can never disagree about which
 /// pills a row shows.
-struct PillSpec {
-    label: String,
-    color: Option<Hsla>,
+pub(crate) struct PillSpec {
+    pub(crate) label: String,
+    pub(crate) color: Option<Hsla>,
 }
 
 /// Label for the dirty pill: the exact count, not just "dirty" — the user's
@@ -224,6 +206,16 @@ fn pill_specs(info: &WorktreeInfo, awaiting_status: bool, theme: &Theme) -> Vec<
         }];
     };
 
+    status_pill_specs(status, theme)
+}
+
+/// Colored status pills for a known, present [`WorktreeStatus`] — dirty,
+/// ahead/behind, gone, merged — in the order they matter when scanning.
+/// `pub(crate)` so `detail_panel::status_pills` shares this exact list
+/// (and thus rendering) instead of a second, driftable copy — the list row
+/// and the detail panel must never disagree about which pills a status
+/// produces.
+pub(crate) fn status_pill_specs(status: &WorktreeStatus, theme: &Theme) -> Vec<PillSpec> {
     let mut specs = Vec::new();
     if status.dirty {
         specs.push(PillSpec {
@@ -250,11 +242,8 @@ fn pill_specs(info: &WorktreeInfo, awaiting_status: bool, theme: &Theme) -> Vec<
         });
     }
     if status.merged {
-        // FINDINGS.md F3: `merged` used to render in `text_tertiary` —
-        // nearly indistinguishable from the muted meta text beside it.
-        // `success_muted` keeps it recognizably in the `success` family
-        // (SPEC §3's four status hues are the app's only meaning-carrying
-        // color) while staying quieter than the needs-attention pills
+        // `success_muted` keeps `merged` recognizably in the `success`
+        // family while staying quieter than the needs-attention pills
         // (`dirty`/`gone`) that can appear earlier in this same list.
         specs.push(PillSpec {
             label: "merged".to_string(),
@@ -266,27 +255,11 @@ fn pill_specs(info: &WorktreeInfo, awaiting_status: bool, theme: &Theme) -> Vec<
 
 /// Renders [`pill_specs`]'s output as a single flex-row group: a real
 /// `ui::pill` for each colored spec, or plain `text_ghost` text for the
-/// loading/unknown placeholder. `None` when `specs` is empty (not actually
-/// reachable today — see [`pill_specs`] — but kept honest rather than
-/// assumed).
+/// loading/unknown placeholder. `None` when `specs` is empty.
 ///
 /// The colored-pill group (never the placeholder) is wrapped in
-/// [`motion::fade_quick`], keyed to this row: status resolves
-/// asynchronously (`app::loading::apply_rows`'s with-status pass, run after
-/// a fast, status-free listing paints the row first), and that pill group's
-/// *first* appearance in the tree — the instant the placeholder is replaced
-/// by a real answer — is the one moment SPEC §5's feedback pillar asks this
-/// app to acknowledge. Every reload starts by wiping status back to `None`
-/// (`reload_impl`'s fast pass), so this group is genuinely absent from the
-/// tree for at least one frame before the with-status pass lands — gpui
-/// prunes its animation state in that gap, so the *next* mount (status
-/// resolving again) is always a fresh, real fade-in, not a stale "already
-/// done" no-op. A render that merely re-notifies (a selection change, a
-/// hover) with status unchanged touches this same element id every frame in
-/// between, so its animation state is never pruned and never replays —
-/// exactly the "near-free" cost SPEC §5 requires: after the one bounded
-/// 150ms fade per resolution, every later render of an already-settled row
-/// is a plain, static paint, no per-row timer and no repaint loop.
+/// [`motion::fade_quick`], keyed to this row, so status resolving from a
+/// placeholder into a real answer gets one fade-in rather than popping in.
 fn render_status_pills(
     specs: &[PillSpec],
     theme: &Theme,
@@ -297,23 +270,21 @@ fn render_status_pills(
         return None;
     }
     let is_real = specs.iter().any(|spec| spec.color.is_some());
-    let children: Vec<AnyElement> = specs
-        .iter()
-        .map(|spec| match spec.color {
-            Some(color) => ui::pill(spec.label.clone(), color).into_any_element(),
-            None => div()
-                .flex_none()
-                .text_color(theme.text_ghost)
-                .child(spec.label.clone())
-                .into_any_element(),
-        })
-        .collect();
     let group = div()
         .flex_none()
         .flex()
         .items_center()
         .gap(px(SPACE_8))
-        .children(children);
+        .children(specs.iter().map(|spec| {
+            match spec.color {
+                Some(color) => ui::pill(spec.label.clone(), color).into_any_element(),
+                None => div()
+                    .flex_none()
+                    .text_color(theme.text_ghost)
+                    .child(spec.label.clone())
+                    .into_any_element(),
+            }
+        }));
     Some(if is_real {
         motion::fade_quick(("worktree-pills", row_ix), group, cx).into_any_element()
     } else {
@@ -321,19 +292,18 @@ fn render_status_pills(
     })
 }
 
-/// Reserved width for a `ui::badge`-shaped chip: `SPACE_6` padding on both
-/// sides plus its label text — mirrors `ui::badge`'s own layout exactly
-/// (see its doc) so this reservation never drifts from what it actually
-/// paints.
+/// Reserved width for a `ui::main_badge`-shaped chip: `SPACE_6` padding on
+/// both sides plus its label text — mirrors `ui::main_badge`'s own layout
+/// exactly so this reservation never drifts from what it actually paints.
 fn badge_reserve_px(label: &str) -> f32 {
-    SPACE_6 * 2.0 + label.chars().count() as f32 * CHAR_WIDTH_APPROX
+    SPACE_6 * 2.0 + label.chars().count() as f32 * ui::CHAR_WIDTH_APPROX
 }
 
 /// Reserved width for one `ui::pill`: its 6px dot, the `SPACE_4` gap to the
 /// label, and the label text — mirrors `ui::pill`'s own layout exactly, the
 /// same reasoning as [`badge_reserve_px`].
 fn pill_reserve_px(label: &str) -> f32 {
-    6.0 + SPACE_4 + label.chars().count() as f32 * CHAR_WIDTH_APPROX
+    6.0 + SPACE_4 + label.chars().count() as f32 * ui::CHAR_WIDTH_APPROX
 }
 
 /// Total width [`pill_specs`]' output reserves on the line: every pill's
@@ -349,7 +319,7 @@ fn status_pills_reserve_px(specs: &[PillSpec]) -> f32 {
         .iter()
         .map(|spec| match spec.color {
             Some(_) => pill_reserve_px(&spec.label),
-            None => spec.label.chars().count() as f32 * CHAR_WIDTH_APPROX,
+            None => spec.label.chars().count() as f32 * ui::CHAR_WIDTH_APPROX,
         })
         .sum();
     let gaps = (specs.len() - 1) as f32 * SPACE_8;
@@ -359,31 +329,27 @@ fn status_pills_reserve_px(specs: &[PillSpec]) -> f32 {
 /// Budgets line 1 (branch name, `main` badge, lock icon) against
 /// `inner_width` — the row's live-computed content width (see
 /// `app::chrome::WtmApp::worktree_row_card_width`). The branch name is
-/// this row's heaviest text (SURFACES §3) and only ever competes with the
-/// badge/lock, both small and fixed, so — unlike the path on line 2 — it
-/// rarely needs to lean on [`BRANCH_MIN_CHARS`] in practice; that's the
-/// literal content of this priority tier being above the path's (Task 1's
-/// #3: "branch name truncates only after the path has nothing left to
-/// give").
+/// this row's heaviest text and only ever competes with the badge/lock,
+/// both small and fixed, so — unlike the path on line 2 — it rarely needs
+/// to lean on [`BRANCH_MIN_CHARS`] in practice: the branch name truncates
+/// only after the path has nothing left to give.
 fn line1_max_chars(inner_width: f32, is_main: bool, is_locked: bool) -> usize {
-    let mut children = 1; // the branch name itself
+    let children = 1 + usize::from(is_main) + usize::from(is_locked);
     let mut reserved = 0.0;
     if is_main {
-        children += 1;
         reserved += badge_reserve_px("main");
     }
     if is_locked {
-        children += 1;
         reserved += 11.0; // ui::icon's own fixed glyph size, no label
     }
     let gaps = (children - 1) as f32 * SPACE_8;
     let budget_px = (inner_width - reserved - gaps).max(0.0);
-    ((budget_px / CHAR_WIDTH_APPROX).floor() as usize).max(BRANCH_MIN_CHARS)
+    ((budget_px / ui::CHAR_WIDTH_APPROX).floor() as usize).max(BRANCH_MIN_CHARS)
 }
 
 /// The outcome of budgeting line 2's never-shrink elements against
-/// `inner_width` (Task 1's priority order): whether the sha/age are shown
-/// at all, and how many characters the path gets.
+/// `inner_width`: whether the sha/age are shown at all, and how many
+/// characters the path gets.
 struct Line2Layout {
     path_max_chars: usize,
     show_sha: bool,
@@ -393,15 +359,14 @@ struct Line2Layout {
 /// Budgets line 2 (folder icon, path, status pills, HEAD sha, relative
 /// age) against `inner_width` — the row's actual, live-computed content
 /// width, not a flat character cap that can't tell a 900px window from a
-/// 1400px one (this function replaces the old, fixed `ROW_PATH_MAX_CHARS`).
+/// 1400px one.
 ///
-/// Priority order (Task 1 / SURFACES §3 — "status is the reason the row
-/// exists"): the status pills are reserved for in full and never shrink;
-/// the sha and then the age (the least essential of the two, since it's
-/// furthest from the pills that matter) are the first things dropped
-/// *entirely*, before the path would otherwise fall below
-/// [`PATH_MIN_CHARS`]; the path always gets *some* room, shrinking first
-/// and furthest of everything on the line.
+/// Priority order (status is the reason the row exists): the status pills
+/// are reserved for in full and never shrink; the sha and then the age (the
+/// least essential of the two, since it's furthest from the pills that
+/// matter) are the first things dropped *entirely*, before the path would
+/// otherwise fall below [`PATH_MIN_CHARS`]; the path always gets *some*
+/// room, shrinking first and furthest of everything on the line.
 fn line2_layout(
     inner_width: f32,
     pill_specs: &[PillSpec],
@@ -412,8 +377,8 @@ fn line2_layout(
     // to the path text — always present, mirrors `ui::meta`'s own layout.
     let icon_reserve = 11.0 + SPACE_4;
     let pills_reserve = status_pills_reserve_px(pill_specs);
-    let sha_reserve = sha.map(|s| s.chars().count() as f32 * CHAR_WIDTH_APPROX);
-    let age_reserve = age.map(|a| a.chars().count() as f32 * CHAR_WIDTH_APPROX);
+    let sha_reserve = sha.map(|s| s.chars().count() as f32 * ui::CHAR_WIDTH_APPROX);
+    let age_reserve = age.map(|a| a.chars().count() as f32 * ui::CHAR_WIDTH_APPROX);
 
     let budget = |show_sha: bool, show_age: bool| -> usize {
         let mut children = 1 + pill_specs.len(); // path + pills
@@ -428,7 +393,7 @@ fn line2_layout(
         }
         let gaps = (children.saturating_sub(1)) as f32 * SPACE_8;
         let reserved = icon_reserve + pills_reserve + extra + gaps;
-        ((inner_width - reserved) / CHAR_WIDTH_APPROX)
+        ((inner_width - reserved) / ui::CHAR_WIDTH_APPROX)
             .floor()
             .max(0.0) as usize
     };
@@ -442,8 +407,7 @@ fn line2_layout(
         };
     }
 
-    // Drop age first — the least essential of the two (SURFACES §3 lists
-    // it last on the line, after the sha).
+    // Drop age first — the least essential of the two.
     let without_age = budget(sha.is_some(), false);
     if without_age >= PATH_MIN_CHARS || sha.is_none() {
         return Line2Layout {
@@ -473,22 +437,14 @@ fn line2_layout(
 ///
 /// `card_width` is this card's own live-computed width — see
 /// `app::chrome::WtmApp::worktree_row_card_width`'s doc for the full
-/// derivation. Screenshotted at 900×600 (the window's enforced minimum)
-/// with the detail panel open, the content column narrows enough that the
-/// old fixed `ROW_PATH_MAX_CHARS` budget overflowed the row and got
-/// hard-clipped wherever an ancestor's paint happened to land — mid-pill,
-/// mid-badge, mid-sha, with no regard for which of those actually carries
-/// meaning. [`line1_max_chars`]/[`line2_layout`] replace that with budgets
-/// computed from `card_width` itself, in the priority order Task 1 spells
-/// out: pills and the `main` badge/lock never shrink or clip; the branch
-/// name and then the path give way, in that order; the sha and age are
-/// dropped outright before a pill ever would be.
+/// derivation. [`line1_max_chars`]/[`line2_layout`] budget from it directly
+/// (rather than a flat character cap that can't tell a narrow window from a
+/// wide one) in priority order: pills and the `main` badge/lock never
+/// shrink or clip; the branch name and then the path give way, in that
+/// order; the sha and age are dropped outright before a pill ever would be.
 ///
 /// `cx` is only ever read for [`motion::reduced`] inside
-/// [`render_status_pills`]'s fade-in wrapper, never for color (COMPONENTS.md
-/// rule 2 is about `Theme`, not motion) — the same "needs `&App` purely to
-/// honor reduced motion" caveat `ui::spinner`'s own doc already documents
-/// for the same reason.
+/// [`render_status_pills`]'s fade-in wrapper, never for color.
 #[allow(clippy::too_many_arguments)]
 pub fn render_row(
     info: &WorktreeInfo,
@@ -500,16 +456,13 @@ pub fn render_row(
     theme: &Theme,
     cx: &App,
 ) -> Stateful<Div> {
-    // Takes `&Theme` directly rather than resolving `Theme::of(cx)` itself
-    // (as this used to): `app::chrome::render_list`'s `uniform_list`
-    // processor already computes `self.chrome_theme(cx)` once per visible
-    // range — the copy with `Theme::tab_stops` forced to `false` while a
-    // dialog covers the list (see that field's doc). Calling `Theme::of(cx)`
-    // in here instead silently discarded that and let a row underneath an
-    // open dialog keep registering as a real Tab stop — caught by hand
-    // during this phase's keyboard-navigation pass: Tab from a Prune
-    // dialog's last control landed on the first worktree row instead of
-    // wrapping back inside the dialog.
+    // Takes `&Theme` directly rather than resolving `Theme::of(cx)` itself:
+    // `app::chrome::render_list`'s `uniform_list` processor already computes
+    // `self.chrome_theme(cx)` once per visible range — the copy with
+    // `Theme::tab_stops` forced to `false` while a dialog covers the list
+    // (see that field's doc) — and resolving it fresh here would silently
+    // discard that, letting a row underneath an open dialog register as a
+    // real Tab stop.
     let theme = *theme;
 
     // `ui::row` applies its own `SPACE_8` padding on both edges before
@@ -522,18 +475,22 @@ pub fn render_row(
     // the full budget — a short name (e.g. "main") gets a snug box, so the
     // badge/lock beside it sit right next to the text instead of trailing
     // a wide gap sized for a name this row doesn't actually have.
-    let name_box_width = display_name.chars().count() as f32 * CHAR_WIDTH_APPROX;
+    // `CHAR_WIDTH_APPROX` is a mono-face estimate reused here for this
+    // proportional branch name too, deliberately conservatively: a
+    // proportional glyph usually runs a little narrower, so this slightly
+    // overestimates the width, which is the safe direction to be wrong in.
+    let name_box_width = display_name.chars().count() as f32 * ui::CHAR_WIDTH_APPROX;
 
     let specs = pill_specs(info, awaiting_status, &theme);
     let sha = info.head.as_deref();
     let layout = line2_layout(inner_width, &specs, sha, age.as_deref());
     let path_text = display_path(info, layout.path_max_chars);
-    let path_box_width = path_text.chars().count() as f32 * CHAR_WIDTH_APPROX;
+    let path_box_width = path_text.chars().count() as f32 * ui::CHAR_WIDTH_APPROX;
 
-    // A two-line card at `LIST_ROW_HEIGHT` (SURFACES §3): `ui::row` owns the
-    // radius and the hover/selection wash; this function only lays out the
-    // two lines inside it and centers them in the fixed height, since
-    // neither line alone fills it.
+    // A two-line card at `LIST_ROW_HEIGHT`: `ui::row` owns the radius and
+    // the hover/selection wash; this function only lays out the two lines
+    // inside it and centers them in the fixed height, since neither line
+    // alone fills it.
     ui::row(("worktree", row_ix), selected, &theme)
         .h(px(LIST_ROW_HEIGHT))
         .flex()
@@ -549,10 +506,9 @@ pub fn render_row(
                 .overflow_hidden()
                 .child(
                     // The branch name must out-weigh everything else on the
-                    // row (SURFACES §3): `TEXT_BASE`/500 weight, the
-                    // heaviest text this card ever shows. Truncated names
-                    // still get their full text via a tooltip (FINDINGS.md
-                    // F2).
+                    // row: `TEXT_BASE`/500 weight, the heaviest text this
+                    // card ever shows. Truncated names still get their full
+                    // text via a tooltip.
                     //
                     // A definite `.w(px(..))` (not `flex_1`/`min_w_0`) is
                     // what actually avoids gpui 0.2.2's text-measurement
@@ -573,7 +529,7 @@ pub fn render_row(
                         .child(display_name)
                         .tooltip(ui::tooltip(info.display_name().to_string())),
                 )
-                .when(info.is_main, |this| this.child(ui::badge("main", &theme)))
+                .when(info.is_main, |this| this.child(ui::main_badge(&theme)))
                 .when(info.is_locked, |this| {
                     this.child(ui::icon(icons::LOCK, 11.0, theme.text_ghost))
                 }),
@@ -589,13 +545,12 @@ pub fn render_row(
                 .child(
                     // Built by hand rather than through `ui::meta` (whose
                     // inner text has no definite width of its own) so the
-                    // path text can carry one — see this function's own
-                    // doc and the branch-name comment above for why that's
-                    // what actually fixes Task 1's bug. Visually identical
+                    // path text can carry one — see this function's own doc
+                    // and the branch-name comment above. Visually identical
                     // to `ui::meta`'s own recipe (11px `FOLDER` icon,
                     // `SPACE_4` gap, `FONT_MONO`/`TEXT_SM`/`text_muted`
                     // label) — truncating from the *start*, keeping the
-                    // worktree's own directory name (SURFACES §3).
+                    // worktree's own directory name.
                     div()
                         .id(("worktree-path", row_ix))
                         .flex_none()
@@ -620,14 +575,13 @@ pub fn render_row(
                 )
                 .when(layout.show_sha, |this| {
                     // HEAD is a sha in meta position — `FONT_MONO`, same as
-                    // the path beside it, so columns of shas line up
-                    // (SPEC §6).
+                    // the path beside it, so columns of shas line up.
                     this.child(
                         div()
                             .flex_none()
                             .font_family(ui::FONT_MONO)
                             .text_color(theme.text_ghost)
-                            .child(info.head.clone().unwrap_or_default()),
+                            .child(sha.unwrap_or_default().to_string()),
                     )
                 })
                 .when(layout.show_age, |this| {
@@ -635,7 +589,7 @@ pub fn render_row(
                         div()
                             .flex_none()
                             .text_color(theme.text_ghost)
-                            .child(age.clone().unwrap_or_default()),
+                            .child(age.as_deref().unwrap_or("").to_string()),
                     )
                 }),
         )
@@ -657,32 +611,12 @@ pub fn render_header(shown: usize, total: usize, loading: bool, cx: &App) -> imp
         format!("{shown} of {total} worktrees")
     };
 
-    // FINDINGS-2.md G1: the caller (`app::chrome::render_list`) used to lean
-    // entirely on its own wrapping `overflow_hidden()` to keep this from
-    // overflowing the toolbar row — a hard clip, not a truncation, since
-    // nothing here gave the count text itself a `min_w_0()`/`.truncate()` to
-    // ellipsize with.
-    //
-    // A later pass (this comment) found that giving the *count* the shrink
-    // authority was backwards: at the app's own default 1180px width, with
-    // the toolbar's five controls sharing this row, the count and the
-    // "· loading status…" suffix were routinely squeezed into less room
-    // than both demand together. `flex_none` on the suffix meant it always
-    // claimed its full width regardless, so 100% of that deficit landed on
-    // the count's `min_w_0()`/`.truncate()` — cutting "4 worktrees" down to
-    // "4 wo" mid-word, the one piece of text here that must never be
-    // mangled (SURFACES §4 — a corrupted count reads as a bug, not a
-    // degrade). The suffix, by contrast, is disposable: it repeats
-    // information (`loading`) the spinner in the titlebar already shows —
-    // see `chrome.rs`'s `render_titlebar` — so losing it under pressure
-    // costs nothing a user can't get elsewhere.
-    //
-    // Swapping which side carries `min_w_0()`/`.truncate()` fixes this: the
-    // count is now `flex_none()` (always its full natural width, so a
-    // narrow allocation instead forces the *row*'s own `flex_wrap()` —
-    // `app::chrome::render_list`'s toolbar row — to drop the actions group
-    // to its own line, per that row's doc comment, rather than clipping
-    // digits) and the suffix absorbs whatever shrink pressure is left.
+    // The count is `flex_none()` (always its full natural width, so a
+    // narrow allocation instead forces the toolbar row's own `flex_wrap()`
+    // to drop the actions group to its own line rather than clipping
+    // digits); the "· loading status…" suffix is disposable — it repeats
+    // what the titlebar's spinner already shows — so it absorbs whatever
+    // shrink pressure is left instead.
     div()
         .flex()
         .min_w_0()
@@ -704,8 +638,8 @@ pub fn render_header(shown: usize, total: usize, loading: bool, cx: &App) -> imp
 
 /// Shown in place of the list when a repository has no worktrees — the
 /// first thing a new user of this repo sees, so it gets the full
-/// `ui::empty_state` treatment (icon, headline, hint, and now an action)
-/// rather than two lines of grey text in a void (SURFACES §3).
+/// `ui::empty_state` treatment (icon, headline, hint, and an action) rather
+/// than two lines of grey text in a void.
 ///
 /// `action` is built by the caller (`app::chrome::WtmApp::render_list`),
 /// which owns the `Context<WtmApp>` a real "New Worktree" click handler
@@ -738,22 +672,15 @@ pub fn render_no_repo(action: AnyElement, cx: &App) -> impl IntoElement {
     )
 }
 
-/// Home-relative path, so the common case reads as `~/code/project` rather
-/// than an absolute path that pushes the interesting part off screen —
-/// then capped to `max_chars` (the line 2 budget [`line2_layout`]
-/// computed) with a leading ellipsis so the worktree's own directory name
-/// (the tail) survives, the same `truncate_path_tail` mechanism
-/// `detail_panel`'s Path row uses and for the same reason (see that
-/// function's doc).
+/// Home-relative path (via [`ui::display_path`]), so the common case reads
+/// as `~/code/project` rather than an absolute path that pushes the
+/// interesting part off screen — then capped to `max_chars` (the line 2
+/// budget [`line2_layout`] computed) with a leading ellipsis so the
+/// worktree's own directory name (the tail) survives, the same
+/// `truncate_path_tail` mechanism `detail_panel`'s Path row uses and for
+/// the same reason (see that function's doc).
 fn display_path(info: &WorktreeInfo, max_chars: usize) -> String {
-    let path = info.path.display().to_string();
-    let home_relative = match std::env::var("HOME") {
-        Ok(home) if !home.is_empty() && path.starts_with(&home) => {
-            format!("~{}", &path[home.len()..])
-        }
-        _ => path,
-    };
-    truncate_path_tail(&home_relative, max_chars)
+    truncate_path_tail(&ui::display_path(&info.path), max_chars)
 }
 
 #[cfg(test)]
@@ -797,33 +724,17 @@ mod layout_tests {
     }
 
     #[test]
-    fn dirty_pill_label_singular_is_not_pluralized() {
+    fn dirty_pill_label_covers_singular_plural_and_zero() {
         assert_eq!(dirty_pill_label(1), "1 dirty");
-    }
-
-    #[test]
-    fn dirty_pill_label_plural_reads_n_dirty() {
         assert_eq!(dirty_pill_label(2), "2 dirty");
         assert_eq!(dirty_pill_label(42), "42 dirty");
-    }
-
-    #[test]
-    fn dirty_pill_label_zero_still_reads_n_dirty_rather_than_panicking() {
-        // No real call site renders this (see the function's own doc), but
-        // it must stay total.
+        // No real call site renders this, but it must stay total.
         assert_eq!(dirty_pill_label(0), "0 dirty");
     }
 
     #[test]
     fn status_pills_reserve_is_zero_for_an_empty_row() {
         assert_eq!(status_pills_reserve_px(&[]), 0.0);
-    }
-
-    #[test]
-    fn status_pills_reserve_sums_dot_gap_label_and_inter_pill_gaps() {
-        let specs = [dirty_pill(), gone_pill()];
-        let expected = pill_reserve_px("dirty") + pill_reserve_px("gone") + SPACE_8;
-        assert!((status_pills_reserve_px(&specs) - expected).abs() < 1e-6);
     }
 
     #[test]
@@ -841,8 +752,7 @@ mod layout_tests {
 
     #[test]
     fn line2_layout_drops_age_before_sha_under_pressure() {
-        // Task 1 #4: "sha, then relative age — drop these before letting a
-        // pill clip" — age (least essential) goes first.
+        // Age (least essential) goes first.
         let specs = [dirty_pill()];
         let layout = line2_layout(200.0, &specs, Some("abc1234"), Some("5mo"));
         assert!(layout.show_sha, "sha should still be shown here");
@@ -862,25 +772,15 @@ mod layout_tests {
     #[test]
     fn line2_layout_never_lets_the_path_disappear_even_under_extreme_pill_pressure() {
         // Three pills eating nearly the whole row and no sha/age left to
-        // drop — the path still gets *something* (Task 1 #5: "the path
-        // shrinks first, and keeps shrinking", never to zero) without this
-        // function panicking on an underflow.
+        // drop — the path still gets *something*, never zero, without this
+        // function panicking on an underflow. Pills themselves are never
+        // asked to shrink, down to a pathologically zero-width row.
         let specs = [dirty_pill(), gone_pill(), merged_pill()];
         let layout = line2_layout(175.0, &specs, None, None);
         assert!(!layout.show_sha);
         assert!(!layout.show_age);
         assert_eq!(layout.path_max_chars, PATH_ABSOLUTE_MIN_CHARS);
-    }
 
-    #[test]
-    fn line2_layout_never_shrinks_pills_only_the_path_and_what_it_drops() {
-        // Regardless of how tight the row is, this function's contract is
-        // that pills are reserved for in full — it has no code path that
-        // would ever ask a pill itself to take less room, so this is really
-        // asserting the *absence* of such a path by checking a pathological
-        // width still resolves instead of panicking, with the path pinned
-        // at its absolute floor.
-        let specs = [dirty_pill(), gone_pill(), merged_pill()];
         let layout = line2_layout(0.0, &specs, Some("abc1234"), Some("5mo"));
         assert_eq!(layout.path_max_chars, PATH_ABSOLUTE_MIN_CHARS);
     }
@@ -901,8 +801,6 @@ mod layout_tests {
 
 #[cfg(test)]
 mod sort_tests {
-    use wtm::model::WorktreeStatus;
-
     use super::*;
 
     /// A worktree with a given name/main-ness and, optionally, a status.

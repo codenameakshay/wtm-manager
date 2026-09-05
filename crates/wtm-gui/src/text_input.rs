@@ -16,29 +16,24 @@
 //! no use for it, and every action left in `text_input` below binds a key a
 //! dialog actually needs.
 //!
-//! # Paint only, per the redesign
+//! # Paint
 //!
-//! The redesign (SURFACES §10) touches only how this file paints: the field
-//! is an inset well (`theme.surface_inset`), focus adds a stronger edge (see
-//! [`TextInput::render`]'s use of [`crate::ui::focus_ring`]), the
-//! placeholder reads at `text_faint`, and the caret/selection band paint
-//! from `Theme`'s dedicated `caret`/`selection` tokens (see their docs on
-//! `Theme` for why those exist rather than a bare `theme.accent`).
-//! [`TextInput::borderless`] is the one new, purely-additive knob: an
-//! overlay that supplies its own containing well
-//! (the command palette's search field, sitting inside `ui::popover`) can
-//! opt out of this file's own background/border so it doesn't nest a second
-//! box around the first. Every IME/selection/keyboard code path below is
-//! unchanged.
+//! The field is an inset well (`theme.surface_inset`); focus adds a
+//! stronger edge (see [`TextInput::render`]'s use of
+//! [`crate::ui::focus_ring`]), the placeholder reads at `text_faint`, and
+//! the caret/selection band paint from `Theme`'s dedicated
+//! `caret`/`selection` tokens (see their docs on `Theme` for why those
+//! exist rather than a bare `theme.accent`). [`TextInput::borderless`] lets
+//! an overlay that supplies its own containing well (the command palette's
+//! search field, sitting inside `ui::popover`) opt out of this file's own
+//! background/border so it doesn't nest a second box around the first.
 //!
-//! The original steps the cursor by grapheme cluster via the
-//! `unicode-segmentation` crate. This crate may only touch its own two
-//! files, so `unicode-segmentation` is not a dependency here — cursor
-//! movement below steps by Unicode scalar value (`char`) instead. The two
-//! only disagree inside a multi-codepoint grapheme cluster (an emoji with a
-//! skin-tone modifier, a combining accent typed as two codepoints); every
-//! string this app collects — worktree and branch names — is plain
-//! ASCII/Latin in practice, so the simplification is invisible in use.
+//! Cursor movement below steps by Unicode scalar value (`char`), not
+//! extended grapheme cluster. The two only disagree inside a multi-codepoint
+//! grapheme cluster (an emoji with a skin-tone modifier, a combining accent
+//! typed as two codepoints); every string this app collects — worktree and
+//! branch names — is plain ASCII/Latin in practice, so the simplification is
+//! invisible in use.
 
 use std::ops::Range;
 use std::time::Duration;
@@ -158,11 +153,11 @@ impl TextInput {
     /// already defaults `tab_stop` to `true` and nothing needs to call
     /// this. The one exception is `WtmApp`'s worktree-list filter field: it
     /// stays mounted (and painted) behind an open dialog/palette/context
-    /// menu, exactly like `ui.rs`'s row/button/icon_button components —
-    /// SURFACES' "the shell paints underneath overlays, it doesn't
-    /// unmount" and [`crate::theme::Theme::tab_stops`]'s doc both explain
-    /// why gpui's own `tab_group()` can't keep Tab inside the overlay on
-    /// its own. Those components get their per-frame `false` from
+    /// menu, exactly like `ui.rs`'s row/button/icon_button components — the
+    /// shell paints underneath overlays, it doesn't unmount, and
+    /// [`crate::theme::Theme::tab_stops`]'s doc explains why gpui's own
+    /// `tab_group()` can't keep Tab inside the overlay on its own. Those
+    /// components get their per-frame `false` from
     /// `WtmApp::chrome_theme`'s `Theme` copy, threaded in as an explicit
     /// `&Theme` parameter; a `TextInput` is a separate `Entity` rendered by
     /// gpui on its own schedule with no such parameter to receive, so
@@ -185,8 +180,8 @@ impl TextInput {
     /// right, so this is opt-in and changes nothing for them. It exists for
     /// the one caller that already supplies its own containing well: the
     /// command palette's search field sits inside `ui::popover` and wants
-    /// to blend into it (SURFACES §6: "a borderless inset well") rather
-    /// than draw a second, redundant box nested inside the first. Purely a
+    /// to blend into it as a borderless inset well rather than draw a
+    /// second, redundant box nested inside the first. Purely a
     /// paint switch — [`TextInput::render`] is the only reader of this
     /// field, and every IME/selection/keyboard path elsewhere in this file
     /// is unaffected either way.
@@ -199,9 +194,9 @@ impl TextInput {
         &self.content
     }
 
-    /// Replace the content wholesale — used to preload a dialog field or to
-    /// clear it after a submit. Does not emit [`InputEvent::Changed`]; see
-    /// that variant's doc comment for why.
+    /// Replace the content wholesale — for preloading a dialog field or
+    /// clearing it after a submit. Does not emit [`InputEvent::Changed`];
+    /// see that variant's doc comment for why.
     pub fn set_value(
         &mut self,
         text: impl Into<SharedString>,
@@ -642,7 +637,11 @@ impl EntityInputHandler for TextInput {
         let line_point = self.last_bounds?.localize(&point)?;
         let last_layout = self.last_layout.as_ref()?;
 
-        assert_eq!(last_layout.text, self.content);
+        // An IME/accessibility query can arrive between an edit and the
+        // next paint, when the cached layout's text is already stale.
+        if last_layout.text != self.content {
+            return None;
+        }
         let utf8_index = last_layout.index_for_x(point.x - line_point.x)?;
         Some(self.offset_to_utf16(utf8_index))
     }
@@ -713,7 +712,7 @@ impl Element for TextElement {
         let cursor_visible = input.cursor_visible;
         let style = window.text_style();
 
-        // SURFACES §10: "Placeholder is text_faint."
+        // Placeholder is text_faint.
         let (display_text, text_color) = if content.is_empty() {
             (input.placeholder.clone(), theme.text_faint)
         } else {
@@ -761,10 +760,9 @@ impl Element for TextElement {
             .shape_line(display_text, font_size, &runs, None);
 
         // `theme.caret`/`theme.selection`: dedicated tokens for exactly
-        // this — see their docs on `Theme` for why they exist (a caret and
-        // a selection band are the "focus" half of accent's SPEC §3
-        // mandate, tuned per appearance so `theme.text` painted on top
-        // stays readable, rather than a bare `theme.accent` reused as-is).
+        // this — see their docs on `Theme` for why they exist (tuned per
+        // appearance so `theme.text` painted on top stays readable, rather
+        // than a bare `theme.accent` reused as-is).
         let cursor_pos = line.x_for_index(cursor);
         let (selection, cursor) = if selected_range.is_empty() {
             (
@@ -893,15 +891,14 @@ impl Render for TextInput {
             .text_size(px(ui::TEXT_BASE))
             .line_height(px(18.0));
 
-        // SURFACES §10: "the field itself is an inset well; focus adds
-        // border_strong and the ring." `ui::focus_ring` — the design
-        // system's one implementation of "the ring" (a real border, since
-        // gpui has no inset box-shadow) — already paints a 2px accent edge
-        // on focus, which reads strictly stronger than the resting 1px
-        // `border` hairline; a separate `border_strong` layer underneath it
-        // would never be visible, so this applies the ring directly rather
-        // than painting a border nothing would show. Skipped in
-        // `borderless` mode — see [`TextInput::borderless`]'s doc.
+        // The field itself is an inset well; `ui::focus_ring` (a real
+        // border, since gpui has no inset box-shadow) already paints a 2px
+        // accent edge on focus, which reads strictly stronger than the
+        // resting 1px `border` hairline, so a separate `border_strong`
+        // layer underneath it would never be visible — this applies the
+        // ring directly rather than painting a border nothing would show.
+        // Skipped in `borderless` mode — see [`TextInput::borderless`]'s
+        // doc.
         let field = if self.borderless {
             field
         } else {
