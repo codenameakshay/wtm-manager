@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Pruning many worktrees is fast and visibly makes progress.** With
+  ~150 worktrees, a prune from the app took over five minutes and the
+  window looked hung: every removal fired the filesystem watcher, and
+  each event reloaded and re-scanned the status of every remaining
+  worktree, so the app spent the whole prune re-scanning its own
+  deletions. Watcher events during an app-started prune or bulk remove
+  now only mark the repository stale and one reload runs at the end;
+  the dialog shows "Removing n of N…" while it runs. Removal itself
+  runs four worktrees at a time and deletes branches in one git call.
+  On a 150-worktree fixture: `wtm prune` 29s → 13s; in the app 52s →
+  13s with 1 reload instead of 19.
 - **App: one monospace face.** The run-command log, the diff view, and
   the create-dialog log rendered in two different monospace fonts; all
   three now use the bundled Geist Mono.

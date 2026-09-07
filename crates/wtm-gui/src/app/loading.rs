@@ -260,7 +260,11 @@ impl WtmApp {
         // coalesced notification with one follow-up refresh. Keep the stale
         // bit on errors so an activation or later successful load can retry;
         // never spin on a failing repository.
-        if completed_status_pass && self.window_active && self.repository_stale {
+        if completed_status_pass
+            && self.window_active
+            && self.repository_stale
+            && !self.prune_in_flight
+        {
             self.reload(cx);
         }
         cx.notify();
@@ -397,7 +401,7 @@ impl WtmApp {
             self.repository_stale = true;
             return;
         }
-        if self.loading {
+        if self.loading || self.prune_in_flight {
             self.repository_stale = true;
         } else {
             self.reload(cx);

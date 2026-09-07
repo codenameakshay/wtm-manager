@@ -19,9 +19,24 @@ impl BulkRemoveState {
             candidates,
             force: false,
             busy: false,
+            done: 0,
             error: None,
         }
     }
+}
+
+/// Progress of a prune or bulk remove running in the background.
+enum PruneMsg {
+    /// Candidates dealt with so far.
+    Progress(usize),
+    Done(PruneReport),
+}
+
+/// Which confirmation the running prune belongs to.
+#[derive(Clone, Copy)]
+enum PruneTarget {
+    Dialog,
+    BulkRemove,
 }
 
 impl WtmApp {
@@ -759,21 +774,73 @@ impl WtmApp {
             return;
         }
         state.busy = true;
+        state.done = 0;
         let candidates = state.candidates.clone();
         let force = state.force;
-        cx.notify();
+        self.start_prune(candidates, force, PruneTarget::Dialog, cx);
+    }
 
+    /// Run the prune in the background, streaming "n of N" progress back
+    /// and reloading exactly once when it finishes (see `prune_in_flight`).
+    fn start_prune(
+        &mut self,
+        candidates: Vec<PruneCandidate>,
+        force: bool,
+        target: PruneTarget,
+        cx: &mut Context<Self>,
+    ) {
+        cx.notify();
         let Some(repo) = self.active.clone() else {
             return;
         };
-        cx.spawn(async move |this, cx| {
-            let report = cx
-                .background_spawn(async move { data::run_prune(&repo, &candidates, force) })
-                .await;
-            this.update(cx, |this, cx| this.finish_prune_dialog(report, cx))
-                .ok();
+        self.prune_in_flight = true;
+        let (tx, rx) = mpsc::channel::<PruneMsg>();
+        cx.background_spawn(async move {
+            let progress = |done| {
+                let _ = tx.send(PruneMsg::Progress(done));
+            };
+            let report = data::run_prune(&repo, &candidates, force, &progress);
+            let _ = tx.send(PruneMsg::Done(report));
         })
         .detach();
+        Self::drain_stream(
+            cx,
+            rx,
+            |msg| matches!(msg, PruneMsg::Done(_)),
+            move |this, batch, cx| this.apply_prune_stream(batch, target, cx),
+        );
+    }
+
+    fn apply_prune_stream(
+        &mut self,
+        batch: Vec<PruneMsg>,
+        target: PruneTarget,
+        cx: &mut Context<Self>,
+    ) {
+        for msg in batch {
+            match msg {
+                PruneMsg::Progress(done) => match target {
+                    PruneTarget::Dialog => {
+                        if let Some(Dialog::Prune(state)) = &mut self.dialog {
+                            state.done = done;
+                        }
+                    }
+                    PruneTarget::BulkRemove => {
+                        if let Some(state) = &mut self.bulk_remove {
+                            state.done = done;
+                        }
+                    }
+                },
+                PruneMsg::Done(report) => {
+                    self.prune_in_flight = false;
+                    match target {
+                        PruneTarget::Dialog => self.finish_prune_dialog(report, cx),
+                        PruneTarget::BulkRemove => self.finish_bulk_remove(report, cx),
+                    }
+                }
+            }
+        }
+        cx.notify();
     }
 
     fn finish_prune_dialog(&mut self, report: PruneReport, cx: &mut Context<Self>) {
@@ -1072,21 +1139,10 @@ impl WtmApp {
         }
         state.busy = true;
         state.error = None;
+        state.done = 0;
         let candidates = state.candidates.clone();
         let force = state.force;
-        cx.notify();
-
-        let Some(repo) = self.active.clone() else {
-            return;
-        };
-        cx.spawn(async move |this, cx| {
-            let report = cx
-                .background_spawn(async move { data::run_prune(&repo, &candidates, force) })
-                .await;
-            this.update(cx, |this, cx| this.finish_bulk_remove(report, cx))
-                .ok();
-        })
-        .detach();
+        self.start_prune(candidates, force, PruneTarget::BulkRemove, cx);
     }
 
     /// Always closes the confirmation — a partial result is reported via

@@ -42,7 +42,7 @@ pub fn run(args: &RemoveArgs, global: &GlobalArgs) -> Result<()> {
 
     match branch_to_delete {
         Some(branch) => {
-            gitcmd::branch_delete(&ctx.main_root, &branch)?;
+            gitcmd::branch_delete(&ctx.main_root, &[&branch])?;
             if !global.quiet {
                 println!("Deleted branch '{branch}'");
             }

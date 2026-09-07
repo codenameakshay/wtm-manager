@@ -136,8 +136,9 @@ pub fn run_prune(
     repo: &OpenRepo,
     candidates: &[prune::PruneCandidate],
     force: bool,
+    progress: &(dyn Fn(usize) + Sync),
 ) -> prune::PruneReport {
-    prune::execute(&repo.ctx, candidates, force, false)
+    prune::execute(&repo.ctx, candidates, force, false, progress)
 }
 
 /// Open a worktree in the configured editor (config `editor` > `$VISUAL` >
@@ -505,7 +506,7 @@ pub fn delete_branch(repo: &OpenRepo, branch: &str) -> Result<(), String> {
             "branch '{branch}' is protected and will not be touched"
         ));
     }
-    gitcmd::branch_delete(&repo.ctx.main_root, branch).map_err(|e| e.to_string())
+    gitcmd::branch_delete(&repo.ctx.main_root, &[branch]).map_err(|e| e.to_string())
 }
 
 // ---------------------------------------------------------------------

@@ -65,3 +65,44 @@ fn list_with_status_stays_under_budget() {
         "warm median list-with-status time {median:?} exceeded the {WARM_MEDIAN_BUDGET:?} CI budget"
     );
 }
+
+/// Non-flaky CI performance gate for `wtm prune`'s bounded-parallelism
+/// removal (see `commands::prune::REMOVE_PARALLELISM`). A generous budget:
+/// this catches a regression back to fully-sequential removal, not runner
+/// noise.
+const PRUNE_BUDGET: Duration = Duration::from_secs(20);
+
+#[test]
+#[ignore]
+fn prune_of_64_worktrees_stays_under_budget() {
+    let (_tmp, repo_dir) = perf_fixture::build_fixture(WORKTREE_COUNT);
+    let ctx = wtm::repo::discover(Some(&repo_dir)).expect("discover fixture repo");
+    let items = worktree::list(
+        &ctx,
+        &ListOptions {
+            with_status: true,
+            base: None,
+        },
+    )
+    .expect("list fixture worktrees");
+
+    // Every fixture worktree is branched straight from main's tip with no
+    // commit of its own, so all of them are merged candidates.
+    let candidates = wtm::commands::prune::candidates(&items, &[], true, false, false);
+    assert_eq!(candidates.len(), WORKTREE_COUNT);
+
+    let start = Instant::now();
+    // force = true: skip the per-worktree dirty scan, isolating removal
+    // throughput itself.
+    let report = wtm::commands::prune::execute(&ctx, &candidates, true, false, &|_| {});
+    let elapsed = start.elapsed();
+
+    println!("prune of {WORKTREE_COUNT} worktrees: {elapsed:?} (budget: {PRUNE_BUDGET:?})");
+
+    assert_eq!(report.removed, WORKTREE_COUNT);
+    assert!(report.failures.is_empty(), "{:?}", report.failures);
+    assert!(
+        elapsed < PRUNE_BUDGET,
+        "prune of {WORKTREE_COUNT} worktrees took {elapsed:?}, exceeded the {PRUNE_BUDGET:?} CI budget"
+    );
+}
