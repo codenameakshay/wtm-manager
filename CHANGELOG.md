@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.9.0] - 2026-09-07
 
 ### Added
 
@@ -19,6 +19,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **App: Remove Missing from Sidebar.** One palette / empty-space menu
   action forgets every sidebar entry whose folder is gone. It does not
   touch anything on disk.
+
+### Changed
+
+- **`WorktreeDetails::dirty_total` is `Option<usize>`.** `None` means the
+  scan failed.
 
 ### Fixed
 
@@ -97,8 +102,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   OSC 52.
 - **App: background repository refresh no longer runs while the window
   is hidden.** Watcher events while inactive only mark the repository
-  stale; one reload runs when the window becomes active again. This
-  shipped in 0.8.0 (PR #9) and was missing from these notes.
+  stale; one reload runs when the window becomes active again.
 - **`scripts/bundle-mac.sh` honors `CARGO_TARGET_DIR`**, matching the
   Linux packaging script.
 
