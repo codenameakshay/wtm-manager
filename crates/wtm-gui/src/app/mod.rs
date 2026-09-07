@@ -224,9 +224,9 @@ pub struct WtmApp {
     /// every reload.
     watched: Option<(PathBuf, Vec<PathBuf>)>,
     /// Whether the window is currently active. Filesystem changes received
-    /// while inactive only mark the repository stale; activation performs one
-    /// coalesced refresh so background Git activity cannot spend CPU scanning
-    /// every worktree while the app is hidden behind another window.
+    /// while inactive only mark the repository stale; becoming active
+    /// performs one refresh (the coalesced stale bit, and also a rescan
+    /// for nested working-tree edits the non-recursive watcher cannot see).
     window_active: bool,
     repository_stale: bool,
     /// A prune or bulk remove this app started is still running. Every

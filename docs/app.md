@@ -66,7 +66,10 @@ its `.git` file/directory changing is caught, without recursing into
 Object-database writes, the reflog, and `*.lock` files are filtered out as
 noise — they fire on nearly every git operation without changing anything
 the app shows. A burst of filesystem events (a `git commit`, a `worktree
-add`) is debounced into a single refresh.
+add`) is debounced into a single refresh. Nested edits inside a worktree
+(for example `src/foo.rs`) are not watcher events, by design: recursing
+into the working tree would watch `node_modules` and build output. Those
+edits are picked up when the window becomes active again, or on ⌘R.
 
 Watching can fail — a platform watch-descriptor limit, a permissions error —
 and that's never surfaced as an error message: it just means live refresh is

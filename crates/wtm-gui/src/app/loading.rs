@@ -324,12 +324,17 @@ impl WtmApp {
     // -------------------------------------------------------------
 
     /// Keep filesystem notifications cheap while the window is hidden. The
-    /// activation observer is the only place that turns the coalesced stale
-    /// bit back into work, so an arbitrary burst of background Git activity
-    /// results in one refresh at most.
+    /// activation observer turns the coalesced stale bit back into work, so
+    /// a burst of background Git activity results in one refresh at most.
+    ///
+    /// Becoming active also rescans even when the watcher saw nothing:
+    /// worktree roots are watched non-recursively, so an edit under `src/`
+    /// never marks the repository stale, and dirty pills would otherwise
+    /// stay wrong until the next ⌘R or `.git` event.
     pub(super) fn on_window_activation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let was_active = self.window_active;
         self.window_active = window.is_window_active();
-        if self.window_active && self.repository_stale {
+        if self.window_active && (!was_active || self.repository_stale) {
             self.reload(cx);
         }
     }

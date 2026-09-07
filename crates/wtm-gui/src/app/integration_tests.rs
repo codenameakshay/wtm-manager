@@ -1773,6 +1773,58 @@ fn selection_survives_a_reload_that_reorders_rows_by_path_not_index(cx: &mut Tes
     });
 }
 
+/// Nested working-tree edits do not fire the (non-recursive) worktree
+/// watcher. Returning to the window must still rescan dirty status.
+#[gpui::test]
+fn activation_rescans_dirty_status_without_a_watcher_event(cx: &mut TestAppContext) {
+    let fx = Fixture::new();
+    let clean = fx.add_worktree("clean-for-focus");
+    let repo = fx.open();
+    let (view, cx) = open_app(cx, Some(repo));
+    cx.run_until_parked();
+
+    view.read_with(cx, |app, _| {
+        let row = app
+            .rows
+            .iter()
+            .find(|r| r.display_name() == "clean-for-focus")
+            .expect("clean-for-focus row");
+        assert_eq!(
+            row.status.as_ref().map(|s| s.dirty),
+            Some(false),
+            "the new worktree starts clean"
+        );
+    });
+
+    cx.deactivate_window();
+    std::fs::create_dir_all(clean.join("src")).unwrap();
+    std::fs::write(clean.join("src").join("lib.rs"), "fn x() {}\n").unwrap();
+    view.read_with(cx, |app, _| {
+        assert!(!app.window_active);
+        assert!(
+            !app.repository_stale,
+            "a nested edit must not be a watcher event"
+        );
+    });
+
+    cx.update(|window, _| window.activate_window());
+    cx.run_until_parked();
+
+    view.read_with(cx, |app, _| {
+        assert!(app.window_active);
+        let row = app
+            .rows
+            .iter()
+            .find(|r| r.display_name() == "clean-for-focus")
+            .expect("clean-for-focus row");
+        assert_eq!(
+            row.status.as_ref().map(|s| s.dirty),
+            Some(true),
+            "activation must rescan dirty status even when the watcher saw nothing"
+        );
+    });
+}
+
 /// Filesystem notifications must not launch a full status walk while the
 /// window is inactive. Multiple notifications are represented by one stale
 /// bit and produce exactly one refresh when the window becomes active again.

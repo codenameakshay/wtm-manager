@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`wtm prune` refuses the worktree that contains the current directory**,
   the same way `wtm remove` already does. Pruning from inside a merged
   worktree used to delete the directory the shell was standing in.
+- **App: dirty counts refresh when the window becomes active.** Nested
+  file edits do not fire the worktree watcher (it does not recurse into
+  `src/` or `node_modules`). Returning to the app now rescans status, so
+  a worktree you dirtied in an editor no longer looks clean until ⌘R.
 
 ## [0.8.0] - 2026-09-07
 
