@@ -35,6 +35,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dialog.** Switching repository and reopening Create could apply the
   previous repo's branches to the new form. Each dialog now has a load
   id, and stale results are ignored.
+- **App: Settings names `gui.json`, not `prefs.json`.** The terminal
+  hint pointed at a file that does not exist.
+- **TUI: idle frames no longer full-redraw at 10 Hz.** The loop still
+  polls every 100ms so status can land, but it paints only when the
+  model changed.
 
 ## [0.8.0] - 2026-09-07
 
@@ -77,6 +82,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fails mid-write (for example `wl-copy` on an X11 session) no longer
   aborts the copy; the TUI moves on to the next tool and finally to
   OSC 52.
+- **App: background repository refresh no longer runs while the window
+  is hidden.** Watcher events while inactive only mark the repository
+  stale; one reload runs when the window becomes active again. This
+  shipped in 0.8.0 (PR #9) and was missing from these notes.
 - **`scripts/bundle-mac.sh` honors `CARGO_TARGET_DIR`**, matching the
   Linux packaging script.
 
