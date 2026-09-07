@@ -16,6 +16,9 @@ pub enum Error {
     #[error("no worktree or branch named '{0}' was found")]
     WorktreeNotFound(String),
 
+    #[error("no worktree or branch named '{name}' was found (ambiguous: matches {candidates})")]
+    WorktreeAmbiguous { name: String, candidates: String },
+
     #[error("branch '{branch}' is already checked out at {path}")]
     BranchInUse { branch: String, path: PathBuf },
 

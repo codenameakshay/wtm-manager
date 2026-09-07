@@ -76,9 +76,13 @@ pub fn list(ctx: &RepoContext, opts: &ListOptions) -> Result<Vec<WorktreeInfo>> 
 }
 
 /// Resolve `<name>` to a worktree: exact match on registry name, then branch
-/// name, then unique substring of branch/name (error WorktreeNotFound
-/// otherwise; if substring matching is ambiguous, also WorktreeNotFound with
-/// the candidates listed in the message). Never computes status.
+/// name, then unique substring of the **display name** (the branch, or the
+/// registry name when HEAD is detached). Substring matching deliberately
+/// ignores a hidden registry id that the user never typed — agent worktrees
+/// share prefixes like `t3code-` while checking out unrelated branches.
+/// Unknown names are [`Error::WorktreeNotFound`]. Ambiguous substring
+/// matches are [`Error::WorktreeAmbiguous`], with the query kept separate
+/// from the candidate list. Never computes status.
 pub fn find(ctx: &RepoContext, name: &str) -> Result<WorktreeInfo> {
     let infos = list(ctx, &ListOptions::default())?;
 
@@ -91,7 +95,7 @@ pub fn find(ctx: &RepoContext, name: &str) -> Result<WorktreeInfo> {
 
     let matches: Vec<&WorktreeInfo> = infos
         .iter()
-        .filter(|i| i.name.contains(name) || i.display_name().contains(name))
+        .filter(|i| i.display_name().contains(name))
         .collect();
     match matches.as_slice() {
         [single] => Ok((*single).clone()),
@@ -102,9 +106,10 @@ pub fn find(ctx: &RepoContext, name: &str) -> Result<WorktreeInfo> {
                 .map(|i| i.display_name())
                 .collect::<Vec<_>>()
                 .join(", ");
-            Err(Error::WorktreeNotFound(format!(
-                "{name} (ambiguous: matches {candidates})"
-            )))
+            Err(Error::WorktreeAmbiguous {
+                name: name.to_string(),
+                candidates,
+            })
         }
     }
 }
@@ -724,17 +729,54 @@ mod tests {
         add_worktree(&ctx, &tmp.path().join("wts").join("feat-b"), "feat-b");
 
         let err = find(&ctx, "feat").unwrap_err();
-        match err {
-            Error::WorktreeNotFound(msg) => {
-                assert!(msg.contains("feat-a") && msg.contains("feat-b"), "{msg}");
+        match &err {
+            Error::WorktreeAmbiguous { name, candidates } => {
+                assert_eq!(name, "feat");
+                assert!(
+                    candidates.contains("feat-a") && candidates.contains("feat-b"),
+                    "{candidates}"
+                );
             }
-            other => panic!("expected WorktreeNotFound, got {other}"),
+            other => panic!("expected WorktreeAmbiguous, got {other}"),
         }
+        let displayed = err.to_string();
+        assert!(
+            displayed.contains("named 'feat'"),
+            "query must stay outside the hint: {displayed}"
+        );
+        assert!(
+            !displayed.contains("named 'feat (ambiguous"),
+            "hint must not nest inside the quoted name: {displayed}"
+        );
 
         assert!(matches!(
             find(&ctx, "zzz").unwrap_err(),
             Error::WorktreeNotFound(_)
         ));
+    }
+
+    #[test]
+    fn find_substring_ignores_hidden_registry_names() {
+        let (tmp, ctx) = fixture();
+        // Registry name is the directory basename (`t3code-aaaa`); the
+        // user-facing branch is unrelated. Substring match on the hidden
+        // id used to pull this in for a query like `t3code`.
+        add_worktree(
+            &ctx,
+            &tmp.path().join("wts").join("t3code-aaaa"),
+            "other/topic",
+        );
+        add_worktree(
+            &ctx,
+            &tmp.path().join("wts").join("t3code-bbbb"),
+            "t3code/bbbb",
+        );
+
+        let found = find(&ctx, "t3code").unwrap();
+        assert_eq!(found.branch.as_deref(), Some("t3code/bbbb"));
+
+        // Exact registry name still resolves.
+        assert_eq!(find(&ctx, "t3code-aaaa").unwrap().name, "t3code-aaaa");
     }
 
     #[test]

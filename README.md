@@ -420,7 +420,8 @@ status-derived columns are omitted entirely when status was skipped.
 ### `wtm remove <name>` (alias: `rm`)
 
 Remove a worktree. `<name>` matches a registry entry name, a branch name, or
-an unambiguous substring of either; if omitted, an interactive picker is
+an unambiguous substring of the display name (the branch, or the registry
+name when HEAD is detached); if omitted, an interactive picker is
 shown (requires stdin and stderr to be TTYs).
 
 | Flag | Description |

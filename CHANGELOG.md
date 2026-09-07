@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.0] - 2026-09-07
+
+### Fixed
+
+- **Name lookup ignores hidden git registry ids.** `wtm path t3code` used
+  to substring-match a worktree whose directory was named `t3code-…` even
+  when that row's branch was something else, then stuff the "ambiguous"
+  hint inside the quoted name. Lookup now matches the display name
+  (branch, or registry name when detached) and reports
+  `named 't3code' (ambiguous: matches …)`.
+
 ## [0.9.0] - 2026-09-07
 
 ### Added

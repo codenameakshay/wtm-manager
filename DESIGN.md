@@ -79,9 +79,10 @@ pub struct ListOptions {
 pub fn list(ctx: &RepoContext, opts: &ListOptions) -> Result<Vec<WorktreeInfo>>;
 
 /// Resolve `<name>` to a worktree: exact match on registry name, then branch
-/// name, then unique substring of branch/name (error WorktreeNotFound
-/// otherwise; if substring matching is ambiguous, also WorktreeNotFound with
-/// the candidates listed in the message). Never computes status.
+/// name, then unique substring of the display name (branch, or registry
+/// name when detached). Hidden registry ids are not substring-matched.
+/// Unknown names are WorktreeNotFound; ambiguous substring matches are
+/// WorktreeAmbiguous. Never computes status.
 pub fn find(ctx: &RepoContext, name: &str) -> Result<WorktreeInfo>;
 
 /// Worktree containing `path` (used to detect "you are removing the worktree
