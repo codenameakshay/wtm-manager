@@ -23,6 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   merged detection prefers `origin/HEAD`, then `origin/main` /
   `origin/master`, then local HEAD. `wtm fetch` is still required to
   refresh those remote-tracking refs.
+- **Agent skill and `AGENTS.md`.** `skills/wtm/` documents `--unique`,
+  mutation JSON, `dirty_count`, `lock_reason`, and `head_time`. Copy the
+  same folder into `~/.claude/skills` or `~/.cursor/skills`. Repo-root
+  `AGENTS.md` tells coding agents never to run bare `wtm`.
 
 ### Fixed
 

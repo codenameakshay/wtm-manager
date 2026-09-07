@@ -682,16 +682,20 @@ at `skills/wtm/` that teaches a coding agent how to install and drive `wtm` —
 installation, the core commands with `--json`/non-interactive usage patterns
 for agents, and a full command/config/TUI reference.
 
-Install it by copying the folder into your Claude Skills directory:
+Install the same folder into Claude or Cursor (do not maintain a second
+copy):
 
 ```sh
 cp -r skills/wtm ~/.claude/skills/wtm
+cp -r skills/wtm ~/.cursor/skills/wtm
 ```
 
-After that, telling a coding agent something like "install and use the wtm
-worktree manager" just works. The skill's `skills/wtm/scripts/install.sh`
-also works standalone as an automated installer (git check, best-available
-install method, optional shell integration).
+Codex and other agents that read a repo-root `AGENTS.md` pick up
+`AGENTS.md` in this repository. After that, telling a coding agent
+something like "install and use the wtm worktree manager" just works. The
+skill's `skills/wtm/scripts/install.sh` also works standalone as an
+automated installer (git check, best-available install method, optional
+zsh/bash shell integration).
 
 ## License
 

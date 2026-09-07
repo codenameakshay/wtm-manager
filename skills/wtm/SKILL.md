@@ -30,9 +30,9 @@ Otherwise pick the best available method, in order:
    curl --proto '=https' --tlsv1.2 -LsSf https://github.com/codenameakshay/wtm-manager/releases/latest/download/wtm-installer.sh | sh
    ```
 
-Homebrew support is planned but there is no published tap yet. The crate name
-`wtm` on crates.io belongs to a different project, so always use the git URL
-above when installing from source.
+Homebrew formula name will be `wtm-manager` (the crates.io name `wtm` is a
+different project). Until a tap is published, install from git or the
+shell installer as above.
 
 `skills/wtm/scripts/install.sh` automates the available installation paths
 (detection, install, and shell integration) — prefer running it over doing
@@ -56,12 +56,14 @@ to open a new shell (or `source` the rc file) for it to take effect.
 
 | Task | Command |
 |---|---|
-| Create a worktree for a branch | `wtm add <branch>` (`--from <base>` to branch off something other than the default base) |
+| Create a throwaway worktree | `wtm add --unique --json` (optional stem: `wtm add --unique agent --json`) |
+| Create a worktree for a named branch | `wtm add <branch> --json` (`--from <base>` to branch off something other than the default base) |
 | List worktrees, machine-readable | `wtm list --json` |
-| List worktrees, fast (no status) | `wtm list --no-status` |
+| List worktrees, fast (no status) | `wtm list --json --fast` |
 | Get a worktree's path | `wtm path <name>` |
-| Remove a worktree | `wtm remove <name> --force` |
-| Clean up merged/gone worktrees | `wtm prune --merged --gone` (add `--dry-run` to preview) |
+| Remove a worktree | `wtm remove <name> --json` (add `--force` if dirty) |
+| Preview leftover worktrees | `wtm prune --merged --gone --detached --json --dry-run` |
+| Clean up leftover worktrees | `wtm prune --merged --gone --detached --json` |
 | Fetch remotes so ahead/behind and gone are current | `wtm fetch` |
 | Open a worktree in the editor | `wtm open <name>` |
 
@@ -79,8 +81,10 @@ to open a new shell (or `source` the rc file) for it to take effect.
   automatically. In a non-TTY context (agent shells, pipes, CI), bare `wtm`
   still detects that and prints help with exit 0 instead of opening
   anything — but don't rely on that as a safety net; always use an explicit
-  subcommand (`wtm list --json`, `wtm add`, `wtm path`, …) instead of any of
-  these three.
+  subcommand (`wtm list --json`, `wtm add --unique --json`, `wtm path`,
+  `wtm remove --json`) instead of any of these three.
+- Prefer `wtm add --unique --json` for agent sessions so you do not collide
+  with `BranchInUse`. Do not invent a suffix yourself on a named `wtm add`.
 - `wtm switch <name>` only changes the calling shell's directory when the
   user's shell wrapper (see above) is installed and active — which is never
   the case inside an agent's own subprocess. From an agent, resolve the
