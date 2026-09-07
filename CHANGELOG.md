@@ -14,6 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **App: Settings can set the terminal app.** The Terminal field writes
   `gui.json` and takes precedence over `$WTM_TERMINAL`. Leave it empty
   for the environment variable or the platform default.
+- **`wtm fetch` and TUI `f`.** Fetch from the default remote so CLI and
+  TUI ahead/behind and prune --gone match the app's Fetch button.
 
 ### Fixed
 

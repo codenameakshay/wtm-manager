@@ -115,6 +115,7 @@ wtm open feature/login             # open a worktree in $EDITOR
 
 wtm remove hotfix                  # remove a worktree (refuses if dirty)
 wtm prune --merged --gone          # clean up merged / upstream-gone worktrees
+wtm fetch                          # update remote-tracking refs (ahead/behind, gone)
 
 wtm                                 # opens the desktop app on a terminal
 wtm tui                             # or launch the terminal UI directly
@@ -320,6 +321,7 @@ files, recent commits).
 | `y` | Copy worktree path |
 | `/` | Fuzzy filter |
 | `r` | Refresh status |
+| `f` | Fetch from the default remote |
 | `?` | Help overlay |
 | `q` / `Esc` | Quit |
 
@@ -458,6 +460,17 @@ Branches for merged/gone candidates are deleted as part of pruning (that's
 the point); missing-directory entries only have their registry entry
 cleaned up — their branch, if any, is left alone. Always finishes with
 `git worktree prune`.
+
+### `wtm fetch`
+
+Run `git fetch --prune` against the default remote (`origin` if configured,
+otherwise the first remote name alphabetically) so ahead/behind counts and
+`wtm prune --gone` see a current picture. Shells out to `git` so SSH
+agents and `credential.helper` keep working.
+
+| Flag | Description |
+| --- | --- |
+| `--remote <name>` | Fetch this remote instead of the default. |
 
 ### `wtm open [name]`
 

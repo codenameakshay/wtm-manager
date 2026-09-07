@@ -62,6 +62,7 @@ to open a new shell (or `source` the rc file) for it to take effect.
 | Get a worktree's path | `wtm path <name>` |
 | Remove a worktree | `wtm remove <name> --force` |
 | Clean up merged/gone worktrees | `wtm prune --merged --gone` (add `--dry-run` to preview) |
+| Fetch remotes so ahead/behind and gone are current | `wtm fetch` |
 | Open a worktree in the editor | `wtm open <name>` |
 
 **IMPORTANT for agents:**

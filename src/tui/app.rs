@@ -77,6 +77,8 @@ pub(crate) enum Effect {
     RunCommand { path: PathBuf, command: String },
     /// Copy the path to the system clipboard.
     CopyPath { path: PathBuf },
+    /// Fetch from the default remote (`git fetch --prune`).
+    Fetch,
     /// Leave the TUI without switching.
     Quit,
 }
@@ -643,6 +645,7 @@ impl App {
             KeyCode::Char('r') => {
                 vec![self.request_rows(true)]
             }
+            KeyCode::Char('f') => vec![Effect::Fetch],
             KeyCode::Char('?') => {
                 self.overlay = Overlay::Help;
                 Vec::new()
@@ -754,6 +757,16 @@ mod tests {
             with_status(info("feat-a", false), false, false),
             info("feat-b", false),
         ])
+    }
+
+    #[test]
+    fn f_requests_fetch() {
+        let mut app = three_row_app();
+        let fx = app.update(key(KeyCode::Char('f')));
+        match &fx[..] {
+            [Effect::Fetch] => {}
+            other => panic!("expected Fetch, got {other:?}"),
+        }
     }
 
     #[test]

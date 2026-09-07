@@ -289,6 +289,7 @@ fn draw_help(f: &mut Frame) {
         ("y", "copy path to clipboard"),
         ("/", "fuzzy filter (esc clears)"),
         ("r", "refresh status"),
+        ("f", "fetch from the default remote"),
         ("?", "this help"),
         ("q / esc", "quit"),
     ];

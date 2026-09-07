@@ -367,6 +367,7 @@ pub enum Command {
     Remove(RemoveArgs),  // alias: rm; --force, --with-branch
     Switch(SwitchArgs),  // aliases: cd, sw; hidden --print-path
     Prune(PruneArgs),    // alias: clean; --merged --gone --dry-run --force
+    Fetch(FetchArgs),    // --remote
     Open(OpenArgs),      // --with <cmd>
     Path(PathArgs),
     App,                 // alias: gui; open the desktop app
@@ -382,9 +383,9 @@ plain text). Every command and flag gets real help text (doc comments).
 
 ## src/commands/ — one module per command
 
-`pub mod add; pub mod completions; pub mod config_cmd; pub mod init;
-pub mod list; pub mod open; pub mod path; pub mod prune; pub mod remove;
-pub mod switch;` — each exposes
+`pub mod add; pub mod completions; pub mod config_cmd; pub mod fetch;
+pub mod init; pub mod list; pub mod open; pub mod path; pub mod prune;
+pub mod remove; pub mod switch;` — each exposes
 `pub fn run(args: &XArgs, global: &GlobalArgs) -> crate::error::Result<()>`
 (signature may take resolved `RepoContext`/`Config` instead — keep it
 consistent across all commands: resolve ctx+config in a shared

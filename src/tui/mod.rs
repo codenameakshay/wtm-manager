@@ -31,7 +31,7 @@ use ratatui::Terminal;
 
 use crate::cdfile;
 use crate::cli::GlobalArgs;
-use crate::commands::{add, open, prune, remove};
+use crate::commands::{add, fetch, open, prune, remove};
 use crate::config::{self, Config};
 use crate::error::{Error, Result};
 use crate::repo::{self, RepoContext};
@@ -311,6 +311,30 @@ fn run_effect(
                 },
                 Err(e) => Msg::ActionOutcome {
                     text: format!("copy failed: {e}"),
+                    error: true,
+                    refresh: false,
+                },
+            };
+            Ok(Some(msg))
+        }
+        Effect::Fetch => {
+            let msg = match fetch::fetch(ctx, None) {
+                Ok(outcome) => Msg::ActionOutcome {
+                    text: if outcome.updated_refs == 0 {
+                        format!("fetched {} (no refs updated)", outcome.remote)
+                    } else {
+                        format!(
+                            "fetched {} ({} ref{})",
+                            outcome.remote,
+                            outcome.updated_refs,
+                            if outcome.updated_refs == 1 { "" } else { "s" }
+                        )
+                    },
+                    error: false,
+                    refresh: true,
+                },
+                Err(e) => Msg::ActionOutcome {
+                    text: format!("fetch failed: {e}"),
                     error: true,
                     refresh: false,
                 },
