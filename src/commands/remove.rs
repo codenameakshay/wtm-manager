@@ -41,27 +41,35 @@ pub fn run(args: &RemoveArgs, global: &GlobalArgs) -> Result<()> {
         )));
     }
 
-    remove_worktree(&ctx, &target, args.force, global.quiet)?;
+    let name = target.display_name().to_string();
+    let path = target.path.clone();
+    remove_worktree(&ctx, &target, args.force, global.quiet || args.json)?;
 
-    if !global.quiet {
-        println!(
-            "Removed worktree '{}' ({})",
-            target.display_name(),
-            target.path.display()
-        );
-    }
-
+    let mut branch_deleted = false;
     match branch_to_delete {
         Some(branch) => {
             gitcmd::branch_delete(&ctx.main_root, &[&branch])?;
-            if !global.quiet {
+            branch_deleted = true;
+            if !global.quiet && !args.json {
                 println!("Deleted branch '{branch}'");
             }
         }
-        None if args.with_branch && !global.quiet => {
+        None if args.with_branch && !global.quiet && !args.json => {
             eprintln!("note: no branch was checked out; nothing to delete");
         }
         None => {}
+    }
+
+    if args.json {
+        crate::output::print_json(&serde_json::json!({
+            "ok": true,
+            "action": "remove",
+            "name": name,
+            "path": path,
+            "branch_deleted": branch_deleted,
+        }));
+    } else if !global.quiet {
+        println!("Removed worktree '{name}' ({})", path.display());
     }
 
     Ok(())

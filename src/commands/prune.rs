@@ -58,11 +58,22 @@ pub fn run(args: &PruneArgs, global: &GlobalArgs) -> Result<()> {
         global.verbose,
     );
     let (candidates, cwd_skipped) = exclude_cwd(candidates);
-    for c in &cwd_skipped {
-        eprintln!(
-            "warning: skipping '{}': it contains the current directory (cd elsewhere first)",
-            c.info.display_name()
-        );
+    if !args.json {
+        for c in &cwd_skipped {
+            eprintln!(
+                "warning: skipping '{}': it contains the current directory (cd elsewhere first)",
+                c.info.display_name()
+            );
+        }
+    }
+
+    let candidate_names: Vec<String> = candidates
+        .iter()
+        .map(|c| c.info.display_name().to_string())
+        .collect();
+
+    if args.json {
+        return run_json(&ctx, args, &candidates, candidate_names);
     }
 
     if candidates.is_empty() {
@@ -100,6 +111,57 @@ pub fn run(args: &PruneArgs, global: &GlobalArgs) -> Result<()> {
         eprintln!("pruned {} worktree(s)", report.removed);
     }
     if !report.failures.is_empty() {
+        return Err(Error::Other(format!(
+            "prune completed with {} failure(s): {}",
+            report.failures.len(),
+            report.failures.join("; ")
+        )));
+    }
+    Ok(())
+}
+
+fn run_json(
+    ctx: &RepoContext,
+    args: &PruneArgs,
+    candidates: &[PruneCandidate],
+    candidate_names: Vec<String>,
+) -> Result<()> {
+    if args.dry_run {
+        crate::output::print_json(&serde_json::json!({
+            "ok": true,
+            "action": "prune",
+            "removed": 0,
+            "skipped": [],
+            "failures": [],
+            "candidates": candidate_names,
+        }));
+        return Ok(());
+    }
+
+    if candidates.is_empty() {
+        gitcmd::worktree_prune(&ctx.main_root)?;
+        crate::output::print_json(&serde_json::json!({
+            "ok": true,
+            "action": "prune",
+            "removed": 0,
+            "skipped": [],
+            "failures": [],
+            "candidates": candidate_names,
+        }));
+        return Ok(());
+    }
+
+    let report = execute(ctx, candidates, args.force, true, &|_| {});
+    let ok = report.failures.is_empty();
+    crate::output::print_json(&serde_json::json!({
+        "ok": ok,
+        "action": "prune",
+        "removed": report.removed,
+        "skipped": report.skipped,
+        "failures": report.failures,
+        "candidates": candidate_names,
+    }));
+    if !ok {
         return Err(Error::Other(format!(
             "prune completed with {} failure(s): {}",
             report.failures.len(),

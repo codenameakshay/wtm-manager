@@ -400,6 +400,7 @@ automation (`setup.commands`/`setup.copy`) runs in the fresh worktree:
 | `--cd` | After creating, `cd` into the new worktree (shell wrapper required — see above). |
 | `--open` | Open the new worktree in your editor after creation. |
 | `--no-setup` | Skip running `setup.commands`/`setup.copy` for this worktree. |
+| `--json` | Print one JSON object on stdout (`ok`, `action`, `name`, `branch`, `path`, `detached`). Git/setup chatter is silenced. |
 
 Refuses if the destination path already exists. Setup automation failures
 are reported but the worktree is kept — fix the issue and rerun the setup
@@ -433,6 +434,7 @@ shown (requires stdin and stderr to be TTYs).
 | --- | --- |
 | `--force` | Remove even if the worktree has uncommitted changes. |
 | `--with-branch` | Also delete the branch after removal (refused for protected branches). |
+| `--json` | Print one JSON object (`ok`, `action`, `name`, `path`, `branch_deleted`). |
 
 Refuses to remove the main worktree, and refuses to remove a worktree that
 contains your current directory. A worktree whose directory is already gone
@@ -461,6 +463,7 @@ whose directory is missing or that git considers prunable (always), plus
 | `--gone` | Also include worktrees whose upstream branch was deleted remotely. |
 | `--dry-run` | Print the plan and exit without changing anything. |
 | `--force` | Proceed even if a candidate worktree is dirty. |
+| `--json` | Print one JSON object (`ok`, `action`, `removed`, `skipped`, `failures`, `candidates`). Dry-run sets `removed` to 0. |
 
 The main worktree and any `protected_branches` are never candidates.
 Branches for merged/gone candidates are deleted as part of pruning (that's

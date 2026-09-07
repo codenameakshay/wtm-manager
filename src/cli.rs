@@ -141,6 +141,10 @@ pub struct AddArgs {
     /// Skip the configured post-create setup (copy entries and commands).
     #[arg(long)]
     pub no_setup: bool,
+
+    /// Print one JSON object on stdout (git/setup chatter is silenced).
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// Arguments for `wtm list`.
@@ -172,6 +176,10 @@ pub struct RemoveArgs {
     /// are never deleted).
     #[arg(long)]
     pub with_branch: bool,
+
+    /// Print one JSON object on stdout.
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// Arguments for `wtm switch`.
@@ -207,6 +215,10 @@ pub struct PruneArgs {
     /// Prune even worktrees with uncommitted changes.
     #[arg(long)]
     pub force: bool,
+
+    /// Print one JSON object on stdout.
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// Arguments for `wtm fetch`.

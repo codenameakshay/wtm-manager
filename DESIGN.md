@@ -390,8 +390,10 @@ AddArgs: `branch: Option<String>` (required unless `--unique` or `--detach`),
 `--unique` (stem defaults to `wtm`; creates `stem/<8 hex>` and retries on
 collision), `--detach` (no branch; `git worktree add --detach`), `--from
 <base>`, `--path <path>`, `--cd`, `--open`, `--no-setup`. `--unique` and
-`--detach` conflict. `--json` lives ONLY on read commands (list; path/switch
-emit plain text). Every command and flag gets real help text (doc comments).
+`--detach` conflict. `--json` on `list`, `add`, `remove`, and `prune`
+(pretty object/array on stdout; failures still print `error:` on stderr
+with no JSON envelope). path/switch emit plain text. Every command and
+flag gets real help text (doc comments).
 
 ## src/commands/ — one module per command
 
@@ -416,7 +418,9 @@ Key behaviors:
   setup (unless --no-setup); on Error::Setup print it but exit non-zero.
   --open: preflight and launch the editor on the new path. Print success only
   outside quiet mode. `--cd` writes the target only after setup and all other
-  requested post-create actions succeed.
+  requested post-create actions succeed. `--json` prints one object
+  `{ok,action,name,branch,path,detached}` on stdout and silences git/setup
+  chatter so stdout stays parseable.
 - list: with_status = !no_status; --json ⇒ render_json to stdout.
 - remove: name optional ⇒ interactive picker (TTY-gated, see picker rules).
   Refuse main worktree (MainWorktree). CLI `run` and the TUI refuse when
@@ -426,6 +430,7 @@ Key behaviors:
   entry via `git worktree remove --force` (it's the only way) but only ever
   after informing the user via stderr note; still safe. --with-branch ⇒
   branch_delete after successful removal, but refuse for protected branches.
+  `--json` prints `{ok,action,name,path,branch_deleted}`.
 - switch: resolve worktree; with --print-path (hidden flag) print ONLY the
   path to stdout (ALL other UI, including the picker, must go to stderr);
   without it print the path plus a hint (stderr) about `wtm init zsh`.
@@ -444,7 +449,9 @@ Key behaviors:
   failures, and report failures together after the registry refresh. Branch
   deletion: merged/gone candidates get their branch deleted (that is the
   point of pruning); protected branches never; missing-dir entries never (we
-  only clean the registry).
+  only clean the registry). `--json` prints
+  `{ok,action,removed,skipped,failures,candidates}`; dry-run sets
+  `removed: 0` and fills `candidates`.
 - fetch: remote = `--remote` > configured `origin` > first remote name
   alphabetically. No remotes configured ⇒ `Error::Other` ("no configured
   remotes"). Runs `git fetch --prune` (stale remote-tracking refs would keep

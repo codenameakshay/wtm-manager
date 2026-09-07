@@ -71,6 +71,7 @@ pub fn run(args: &AddArgs, global: &GlobalArgs) -> Result<()> {
     let (ctx, config) = super::prepare(global)?;
 
     let branch = args.branch.as_deref().unwrap_or("");
+    let json = args.json;
     let request = CreateRequest {
         branch,
         unique: args.unique,
@@ -79,11 +80,28 @@ pub fn run(args: &AddArgs, global: &GlobalArgs) -> Result<()> {
         path_override: args.path.as_deref(),
         cd: args.cd,
         run_setup: !args.no_setup,
-        announce: !global.quiet,
-        quiet: global.quiet,
+        announce: !global.quiet && !json,
+        quiet: global.quiet || json,
         verbose: global.verbose,
     };
     let dest = create(&ctx, &config, &request)?;
+
+    if json {
+        let info = worktree::containing(&ctx, &dest)?.ok_or_else(|| {
+            Error::Other(format!(
+                "created worktree at {} but it is not in the registry",
+                dest.display()
+            ))
+        })?;
+        crate::output::print_json(&serde_json::json!({
+            "ok": true,
+            "action": "add",
+            "name": info.display_name(),
+            "branch": info.branch,
+            "path": info.path,
+            "detached": info.branch.is_none(),
+        }));
+    }
 
     if args.open {
         super::open::spawn_editor(&config, &dest)?;

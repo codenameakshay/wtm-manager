@@ -95,6 +95,14 @@ pub fn render_json(items: &[WorktreeInfo]) -> String {
     )
 }
 
+/// Pretty-print a mutation `--json` object to stdout.
+pub fn print_json(value: &impl serde::Serialize) {
+    println!(
+        "{}",
+        serde_json::to_string_pretty(value).expect("mutation JSON is plain data with string keys")
+    );
+}
+
 /// Replace a leading `$HOME` prefix with `~`.
 pub fn abbreviate_path(path: &Path, home: Option<&Path>) -> String {
     if let Some(home) = home {

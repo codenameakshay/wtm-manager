@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `stem/<8 hex>` branch (default stem: `wtm`) without hitting
   `BranchInUse`, or a detached-HEAD worktree with no branch to delete.
   Normal `wtm add <branch>` still refuses when the branch is in use.
+- **`--json` on `add`, `remove`, and `prune`.** One pretty object on
+  stdout. Failures still print `error:` on stderr (no error envelope).
 
 ### Fixed
 
