@@ -1758,6 +1758,7 @@ mod tests {
             is_main,
             is_missing: missing,
             is_locked: false,
+            lock_reason: None,
             is_prunable: prunable,
             status: Some(WorktreeStatus {
                 dirty: false,

@@ -388,6 +388,7 @@ fn main_info(ctx: &RepoContext, repo: &git2::Repository) -> WorktreeInfo {
         is_main: true,
         is_missing: !ctx.main_root.exists(),
         is_locked: false,
+        lock_reason: None,
         is_prunable: false,
         status: None,
     }
@@ -397,13 +398,19 @@ fn main_info(ctx: &RepoContext, repo: &git2::Repository) -> WorktreeInfo {
 /// entries degrade to `is_missing: true` with whatever metadata can still be
 /// recovered textually from the registry.
 fn linked_info(ctx: &RepoContext, main_repo: &git2::Repository, name: &str) -> WorktreeInfo {
-    let (path, is_locked, is_prunable) = match main_repo.find_worktree(name) {
+    let (path, is_locked, lock_reason, is_prunable) = match main_repo.find_worktree(name) {
         Ok(wt) => {
-            let locked = matches!(wt.is_locked(), Ok(git2::WorktreeLockStatus::Locked(_)));
+            let (locked, reason) = match wt.is_locked() {
+                Ok(git2::WorktreeLockStatus::Locked(reason)) => {
+                    let reason = reason.map(|s| s.trim_end().to_string());
+                    (true, reason)
+                }
+                _ => (false, None),
+            };
             let prunable = wt.is_prunable(None).unwrap_or(false);
-            (Some(wt.path().to_path_buf()), locked, prunable)
+            (Some(wt.path().to_path_buf()), locked, reason, prunable)
         }
-        Err(_) => (registered_path(&ctx.git_dir, name), false, true),
+        Err(_) => (registered_path(&ctx.git_dir, name), false, None, true),
     };
 
     let (path, is_missing) = match path {
@@ -422,6 +429,7 @@ fn linked_info(ctx: &RepoContext, main_repo: &git2::Repository, name: &str) -> W
         is_main: false,
         is_missing,
         is_locked,
+        lock_reason,
         is_prunable,
         status: None,
     }
@@ -548,6 +556,32 @@ mod tests {
         let det = entry(&infos, "det");
         assert_eq!(det.branch, None, "detached HEAD has no branch");
         assert!(det.head.is_some());
+        assert!(!det.is_locked);
+        assert_eq!(det.lock_reason, None);
+    }
+
+    #[test]
+    fn locked_worktree_exposes_lock_reason() {
+        let (tmp, ctx) = fixture();
+        let dest = tmp.path().join("wts").join("locked");
+        add_worktree(&ctx, &dest, "locked");
+        git(
+            &ctx.main_root,
+            &[
+                "worktree",
+                "lock",
+                dest.to_str().unwrap(),
+                "--reason",
+                "agent-in-use",
+            ],
+        );
+
+        let infos = list(&ctx, &ListOptions::default()).unwrap();
+        let locked = entry(&infos, "locked");
+        assert!(locked.is_locked);
+        assert_eq!(locked.lock_reason.as_deref(), Some("agent-in-use"));
+        assert!(!entry(&infos, "main").is_locked);
+        assert_eq!(entry(&infos, "main").lock_reason, None);
     }
 
     #[test]

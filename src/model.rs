@@ -18,6 +18,9 @@ pub struct WorktreeInfo {
     /// The registry entry exists but its directory is gone from disk.
     pub is_missing: bool,
     pub is_locked: bool,
+    /// Why git locked this worktree, when [`Self::is_locked`] is true.
+    /// `None` when unlocked. An empty string means locked with no message.
+    pub lock_reason: Option<String>,
     /// git considers this entry prunable (`git worktree prune` would drop it).
     pub is_prunable: bool,
     /// Expensive per-worktree status; `None` when skipped via `--no-status`

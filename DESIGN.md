@@ -171,7 +171,8 @@ prefix.
 
 Plain, serde-`Serialize` data: `WorktreeInfo` is everything `wtm list --json`
 emits for one worktree (name/path/branch/head/flags plus an optional
-`status`); `WorktreeStatus` is the expensive per-worktree fields
+`status`); `lock_reason` is `null` when unlocked and a string (possibly
+empty) when `is_locked` is true. `WorktreeStatus` is the expensive per-worktree fields
 (dirty/dirty_count/ahead/behind/upstream_gone/merged) computed by
 `worktree::list` when status is requested. Field names are the stable JSON
 contract — do not rename without a version bump plan.

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.10.0] - 2026-09-07
 
+### Added
+
+- **`lock_reason` on `wtm list --json`.** git2 already returned why a
+  worktree was locked; the JSON only had `is_locked`. Agents can now see
+  the lock message (empty string if locked with no reason).
+
 ### Fixed
 
 - **Name lookup ignores hidden git registry ids.** `wtm path t3code` used

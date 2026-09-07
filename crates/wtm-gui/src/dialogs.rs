@@ -993,6 +993,7 @@ mod tests {
             is_main,
             is_missing: false,
             is_locked: false,
+            lock_reason: None,
             is_prunable: false,
             status: Some(WorktreeStatus {
                 dirty,

@@ -14,6 +14,7 @@ const EXPECTED_FIELDS: &[&str] = &[
     "is_main",
     "is_missing",
     "is_locked",
+    "lock_reason",
     "is_prunable",
     "status",
 ];
@@ -83,4 +84,25 @@ fn json_no_status_and_fast_alias_yield_null_status() {
             );
         }
     }
+}
+
+#[test]
+fn json_exposes_lock_reason_when_git_locks_a_worktree() {
+    let repo = TestRepo::new();
+    repo.wtm().args(["add", "locked"]).assert().success();
+    let wt = repo.default_worktree_path("locked");
+    let path = wt.to_str().expect("utf-8 path");
+    repo.git(
+        repo.root(),
+        &["worktree", "lock", path, "--reason", "agent-in-use"],
+    );
+
+    let items = repo.list_json(&["--fast"]);
+    let locked = find_entry(&items, "locked").expect("locked worktree");
+    assert_eq!(locked["is_locked"], true);
+    assert_eq!(locked["lock_reason"], "agent-in-use");
+
+    let main = find_entry(&items, "main").expect("main");
+    assert_eq!(main["is_locked"], false);
+    assert!(main["lock_reason"].is_null());
 }
