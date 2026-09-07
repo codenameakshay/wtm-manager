@@ -90,6 +90,8 @@ pub fn create_worktree_streaming(
 ) -> Result<PathBuf, String> {
     let request = add::CreateRequest {
         branch,
+        unique: false,
+        detach: false,
         base_override: base,
         path_override: None,
         cd: false,

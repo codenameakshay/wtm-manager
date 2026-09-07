@@ -135,6 +135,8 @@ pub fn run_capture(cwd: &Path, args: &[&str]) -> Result<std::process::Output>;
 pub fn worktree_add(main_root: &Path, path: &Path, branch: &str, quiet: bool) -> Result<()>;
 /// Create and add a branch. Quiet captures Git output; otherwise it streams.
 pub fn worktree_add_new_branch(main_root: &Path, path: &Path, branch: &str, base: &str, quiet: bool) -> Result<()>;
+/// Detached HEAD, no branch. Quiet captures Git output; otherwise it streams.
+pub fn worktree_add_detach(main_root: &Path, path: &Path, base: &str, quiet: bool) -> Result<()>;
 /// `git worktree remove [--force] <path>`.
 pub fn worktree_remove(main_root: &Path, path: &Path, force: bool) -> Result<()>;
 /// `git worktree prune`.
@@ -384,9 +386,12 @@ pub enum Command {
     Config(ConfigArgs),  // subcommands: path, init
 }
 ```
-AddArgs: `branch: String`, `--from <base>`, `--path <path>`, `--cd`, `--open`,
-`--no-setup`. `--json` lives ONLY on read commands (list; path/switch emit
-plain text). Every command and flag gets real help text (doc comments).
+AddArgs: `branch: Option<String>` (required unless `--unique` or `--detach`),
+`--unique` (stem defaults to `wtm`; creates `stem/<8 hex>` and retries on
+collision), `--detach` (no branch; `git worktree add --detach`), `--from
+<base>`, `--path <path>`, `--cd`, `--open`, `--no-setup`. `--unique` and
+`--detach` conflict. `--json` lives ONLY on read commands (list; path/switch
+emit plain text). Every command and flag gets real help text (doc comments).
 
 ## src/commands/ — one module per command
 
@@ -399,7 +404,10 @@ consistent across all commands: resolve ctx+config in a shared
 `commands::prepare(global)` helper).
 
 Key behaviors:
-- add: branch exists (local) ⇒ error BranchInUse if some worktree already has
+- add: `--unique` generates `stem/<8 hex>` (stem defaults to `wtm`) and
+  retries on `BranchInUse` / destination collision — never auto-suffix
+  without the flag. `--detach` calls `worktree_add_detach` (no branch).
+  Otherwise: branch exists (local) ⇒ error BranchInUse if some worktree already has
   it checked out, else `worktree_add`. Branch doesn't exist ⇒ base = --from >
   config.default_base > HEAD. Any explicitly selected base must resolve and
   peel to a commit; otherwise fail before mutation. Then call

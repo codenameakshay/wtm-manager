@@ -6,6 +6,8 @@
 //! automation).
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::cli::{AddArgs, GlobalArgs};
 use crate::config::Config;
@@ -16,14 +18,39 @@ use crate::template::{self, TemplateContext};
 use crate::worktree::{self, ListOptions};
 use crate::{gitcmd, setup};
 
+/// Mix time, pid, and a process-local counter into 8 lowercase hex digits.
+fn unique_hex() -> String {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    let mixed = nanos
+        .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        .wrapping_add(n)
+        .wrapping_add(u64::from(std::process::id()) << 32);
+    format!("{:08x}", (mixed ^ (mixed >> 32)) as u32)
+}
+
+const UNIQUE_ATTEMPTS: usize = 32;
+
 /// Everything [`create`] needs beyond repo/config. The CLI fills this from
 /// `AddArgs`; the TUI and GUI fill it from their create forms (with
 /// `announce`/`cd` off, since they own the terminal/window and never want
 /// stdout output).
 pub struct CreateRequest<'a> {
     /// Branch to check out (created from the base ref when it does not
-    /// exist yet).
+    /// exist yet). With [`Self::unique`], this is the stem (`wtm` when
+    /// empty). With [`Self::detach`], this is only the path-template name
+    /// (`wtm/<hex>` when empty).
     pub branch: &'a str,
+    /// Generate `stem/<8 hex>` and retry on name or destination collision.
+    /// Mutually exclusive with [`Self::detach`]. Never implied by
+    /// [`Error::BranchInUse`] — callers must set this flag.
+    pub unique: bool,
+    /// Detached HEAD, no branch. Mutually exclusive with [`Self::unique`].
+    pub detach: bool,
     /// Base ref override for a newly created branch (`--from` / TUI form);
     /// `None` falls back to the configured `default_base`, then HEAD.
     pub base_override: Option<&'a str>,
@@ -43,8 +70,11 @@ pub struct CreateRequest<'a> {
 pub fn run(args: &AddArgs, global: &GlobalArgs) -> Result<()> {
     let (ctx, config) = super::prepare(global)?;
 
+    let branch = args.branch.as_deref().unwrap_or("");
     let request = CreateRequest {
-        branch: &args.branch,
+        branch,
+        unique: args.unique,
+        detach: args.detach,
         base_override: args.from.as_deref(),
         path_override: args.path.as_deref(),
         cd: args.cd,
@@ -103,7 +133,71 @@ pub fn create_streaming(
 /// worktree add`, even if the caller's own subsequent setup step fails —
 /// `Error::Setup`'s message says exactly that).
 fn create_core(ctx: &RepoContext, config: &Config, req: &CreateRequest) -> Result<PathBuf> {
-    let branch = req.branch;
+    if req.unique && req.detach {
+        return Err(Error::Other(
+            "--unique and --detach cannot be combined".into(),
+        ));
+    }
+    if req.detach {
+        return create_detached(ctx, config, req);
+    }
+    if req.unique {
+        return create_unique(ctx, config, req);
+    }
+    if req.branch.is_empty() {
+        return Err(Error::Other("a branch name is required".into()));
+    }
+    checkout_or_create(ctx, config, req, req.branch)
+}
+
+fn create_unique(ctx: &RepoContext, config: &Config, req: &CreateRequest) -> Result<PathBuf> {
+    let stem = if req.branch.is_empty() {
+        "wtm"
+    } else {
+        req.branch
+    };
+    for _ in 0..UNIQUE_ATTEMPTS {
+        let branch = format!("{stem}/{}", unique_hex());
+        match checkout_or_create(ctx, config, req, &branch) {
+            Err(Error::BranchInUse { .. } | Error::DestinationExists(_)) => continue,
+            other => return other,
+        }
+    }
+    Err(Error::Other(format!(
+        "could not allocate a unique branch under '{stem}/'"
+    )))
+}
+
+fn create_detached(ctx: &RepoContext, config: &Config, req: &CreateRequest) -> Result<PathBuf> {
+    let label = if req.branch.is_empty() {
+        format!("wtm/{}", unique_hex())
+    } else {
+        req.branch.to_string()
+    };
+    let dest = destination(ctx, config, req.path_override, &label)?;
+    if dest.exists() {
+        return Err(Error::DestinationExists(dest));
+    }
+    if req.verbose {
+        eprintln!("destination: {}", dest.display());
+    }
+    let base = resolve_base(ctx, config, req.base_override)?;
+    if req.verbose {
+        eprintln!("creating detached worktree from '{base}'");
+    }
+    gitcmd::worktree_add_detach(&ctx.main_root, &dest, &base, req.quiet)?;
+    if req.announce {
+        println!("Created detached worktree at {}", dest.display());
+    }
+    Ok(dest)
+}
+
+fn checkout_or_create(
+    ctx: &RepoContext,
+    config: &Config,
+    req: &CreateRequest,
+    branch: &str,
+) -> Result<PathBuf> {
     let branch_exists = local_branch_exists(ctx, branch)?;
 
     // Pre-check: refuse when some worktree already has this branch checked

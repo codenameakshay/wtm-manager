@@ -104,6 +104,9 @@ After installing, wire up the shell integration so `wtm switch` and the TUI's
 cd my-project                      # inside a git repo
 
 wtm add feature/login              # create a new branch + worktree
+wtm add --unique                   # throwaway branch wtm/<8 hex>
+wtm add --unique agent             # throwaway branch agent/<8 hex>
+wtm add --detach                   # detached HEAD, no branch to clean up
 wtm add --from origin/main hotfix  # branch a new worktree off a specific base
 
 wtm list                           # see every worktree, with status
@@ -391,6 +394,8 @@ automation (`setup.commands`/`setup.copy`) runs in the fresh worktree:
 | Flag | Description |
 | --- | --- |
 | `--from <base>` | Base ref for a new branch. Must resolve to a commit. If omitted, uses `default_base`, then `HEAD`. |
+| `--unique [stem]` | Create `stem/<8 hex>` (default stem: `wtm`) and retry if that name already exists. Does not auto-suffix a normal `wtm add` that hits `BranchInUse`. |
+| `--detach [name]` | Detached HEAD, no branch. `name` is only used in the path template. |
 | `--path <path>` | Explicit destination path, overriding the path template. |
 | `--cd` | After creating, `cd` into the new worktree (shell wrapper required — see above). |
 | `--open` | Open the new worktree in your editor after creation. |

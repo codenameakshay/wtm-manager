@@ -183,6 +183,97 @@ fn dash_c_operates_on_repo_from_unrelated_cwd() {
 }
 
 #[test]
+fn add_unique_creates_stem_slash_hex_branch() {
+    let repo = TestRepo::new();
+    repo.wtm().args(["add", "--unique"]).assert().success();
+
+    let items = repo.list_json(&["--fast"]);
+    let linked: Vec<_> = items
+        .as_array()
+        .expect("array")
+        .iter()
+        .filter(|e| e["is_main"] == false)
+        .collect();
+    assert_eq!(linked.len(), 1, "exactly one linked worktree, got {items}");
+    let branch = linked[0]["branch"]
+        .as_str()
+        .expect("unique create has a branch");
+    assert!(
+        branch.starts_with("wtm/"),
+        "default stem is wtm/, got {branch}"
+    );
+    let suffix = branch.strip_prefix("wtm/").unwrap();
+    assert_eq!(suffix.len(), 8, "8 hex digits, got {suffix}");
+    assert!(
+        suffix.chars().all(|c| c.is_ascii_hexdigit()),
+        "suffix must be hex, got {suffix}"
+    );
+    assert!(
+        Path::new(&entry_path(linked[0])).is_dir(),
+        "worktree directory must exist"
+    );
+}
+
+#[test]
+fn add_unique_stem_does_not_collide() {
+    let repo = TestRepo::new();
+    repo.wtm()
+        .args(["add", "--unique", "agent"])
+        .assert()
+        .success();
+    repo.wtm()
+        .args(["add", "--unique", "agent"])
+        .assert()
+        .success();
+
+    let items = repo.list_json(&["--fast"]);
+    let mut branches: Vec<_> = items
+        .as_array()
+        .expect("array")
+        .iter()
+        .filter(|e| e["is_main"] == false)
+        .map(|e| e["branch"].as_str().unwrap().to_string())
+        .collect();
+    branches.sort();
+    assert_eq!(branches.len(), 2);
+    assert!(
+        branches.iter().all(|b| b.starts_with("agent/")),
+        "stem agent/, got {branches:?}"
+    );
+    assert_ne!(branches[0], branches[1]);
+}
+
+#[test]
+fn add_detach_checks_out_no_branch() {
+    let repo = TestRepo::new();
+    repo.wtm().args(["add", "--detach"]).assert().success();
+
+    let items = repo.list_json(&["--fast"]);
+    let linked: Vec<_> = items
+        .as_array()
+        .expect("array")
+        .iter()
+        .filter(|e| e["is_main"] == false)
+        .collect();
+    assert_eq!(linked.len(), 1, "exactly one linked worktree, got {items}");
+    assert!(
+        linked[0]["branch"].is_null(),
+        "detached HEAD has no branch, got {items}"
+    );
+    assert!(Path::new(&entry_path(linked[0])).is_dir());
+}
+
+#[test]
+fn add_unique_and_detach_conflict() {
+    let repo = TestRepo::new();
+    repo.wtm()
+        .args(["add", "--unique", "--detach"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("cannot be used with"));
+}
+
+#[test]
 fn list_from_inside_linked_worktree_subdir_resolves_main_registry() {
     let repo = TestRepo::new();
     repo.wtm().args(["add", "feature-x"]).assert().success();

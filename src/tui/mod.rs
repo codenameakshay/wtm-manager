@@ -208,6 +208,8 @@ fn run_effect(
             let outcome = suspended(terminal, || {
                 let request = add::CreateRequest {
                     branch: &branch,
+                    unique: false,
+                    detach: false,
                     base_override: Some(&base),
                     path_override: None,
                     cd: false,

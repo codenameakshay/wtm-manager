@@ -3,9 +3,9 @@
 //! hooks, filters, and user configuration behave exactly like the `git` CLI.
 //!
 //! Output policy (consistent per function):
-//! - `worktree_add` / `worktree_add_new_branch` stream stdout/stderr unless
-//!   quiet mode is active; quiet mode captures output and only surfaces it on
-//!   failure.
+//! - `worktree_add` / `worktree_add_new_branch` / `worktree_add_detach`
+//!   stream stdout/stderr unless quiet mode is active; quiet mode captures
+//!   output and only surfaces it on failure.
 //! - Everything else (`run`, `worktree_remove`, `worktree_prune`,
 //!   `branch_delete`) CAPTURES output and surfaces stderr inside
 //!   `Error::GitCommand` on failure.
@@ -70,6 +70,17 @@ pub fn worktree_add_new_branch(
     run_with_output_policy(
         main_root,
         &["worktree", "add", "-b", branch, path_str.as_ref(), base],
+        quiet,
+    )
+}
+
+/// `git worktree add --detach <path> <base>` (no branch). Captures output
+/// in quiet mode and streams it otherwise.
+pub fn worktree_add_detach(main_root: &Path, path: &Path, base: &str, quiet: bool) -> Result<()> {
+    let path_str = path.to_string_lossy();
+    run_with_output_policy(
+        main_root,
+        &["worktree", "add", "--detach", path_str.as_ref(), base],
         quiet,
     )
 }
@@ -179,6 +190,19 @@ mod tests {
         let wt = tmp.path().join("wt-other");
         worktree_add(&main, &wt, "other", false).unwrap();
         assert!(wt.join(".git").exists());
+    }
+
+    #[test]
+    fn worktree_add_detach_has_no_branch() {
+        let (tmp, main) = fixture();
+        let wt = tmp.path().join("wt-det");
+        worktree_add_detach(&main, &wt, "HEAD", false).unwrap();
+        assert!(wt.join(".git").exists());
+        let branch = git(&wt, &["branch", "--show-current"]);
+        assert!(
+            branch.trim().is_empty(),
+            "detached HEAD must have no current branch, got {branch:?}"
+        );
     }
 
     #[test]
