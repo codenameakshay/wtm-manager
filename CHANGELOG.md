@@ -16,6 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for the environment variable or the platform default.
 - **`wtm fetch` and TUI `f`.** Fetch from the default remote so CLI and
   TUI ahead/behind and prune --gone match the app's Fetch button.
+- **App: Remove Missing from Sidebar.** One palette / empty-space menu
+  action forgets every sidebar entry whose folder is gone. It does not
+  touch anything on disk.
 
 ### Fixed
 

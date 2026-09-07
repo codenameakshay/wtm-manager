@@ -329,6 +329,9 @@ impl WtmApp {
             MenuItem::action("add-repository", "Add Repository…")
                 .icon(icons::PLUS)
                 .shortcut("⌘⇧O"),
+            MenuItem::action("remove-missing", "Remove Missing from Sidebar")
+                .icon(icons::TRASH)
+                .danger(),
         ];
 
         let target = MenuTarget::EmptySpace;
@@ -438,6 +441,7 @@ impl WtmApp {
             "prune" => self.on_prune_repo(&PruneRepo, window, cx),
             "reload" => self.on_reload(&Reload, window, cx),
             "add-repository" => self.on_add_repository(&AddRepository, window, cx),
+            "remove-missing" => self.forget_missing_repos(cx),
             _ => {}
         }
     }
@@ -450,6 +454,32 @@ impl WtmApp {
             "forget" => self.forget_repo(path, cx),
             _ => {}
         }
+    }
+
+    /// Forget every sidebar entry whose folder is gone. Never touches disk.
+    pub(super) fn forget_missing_repos(&mut self, cx: &mut Context<Self>) {
+        let mut reg = registry::load();
+        let n = reg.forget_missing();
+        if n == 0 {
+            self.set_info("no missing repositories in the sidebar", cx);
+            cx.notify();
+            return;
+        }
+        match registry::save(&reg) {
+            Ok(()) => {
+                self.repos = sidebar_sorted(reg.entries());
+                self.set_info(
+                    if n == 1 {
+                        "removed 1 missing repository from the sidebar".to_string()
+                    } else {
+                        format!("removed {n} missing repositories from the sidebar")
+                    },
+                    cx,
+                );
+            }
+            Err(e) => self.set_error(format!("could not save the repo list: {e}"), cx),
+        }
+        cx.notify();
     }
 
     /// Drop `path` from the sidebar registry. Never touches the filesystem —

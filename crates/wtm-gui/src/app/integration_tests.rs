@@ -2259,3 +2259,36 @@ fn set_terminal_persists_and_empty_clears(cx: &mut TestAppContext) {
     });
     assert_eq!(crate::prefs::load().terminal, None);
 }
+
+#[gpui::test]
+fn forget_missing_repos_drops_only_gone_sidebar_entries(cx: &mut TestAppContext) {
+    let fx = Fixture::new();
+    let missing = PathBuf::from("/tmp/wtm-forget-missing-does-not-exist");
+    wtm::registry::remember(&missing, "gone").unwrap();
+    let present = fx.root().to_path_buf();
+    wtm::registry::remember(&present, "worktree-manager").unwrap();
+
+    let repo = fx.open();
+    let (view, cx) = open_app(cx, Some(repo));
+    cx.run_until_parked();
+
+    view.read_with(cx, |app, _| {
+        assert!(
+            app.repos.iter().any(|r| r.path == missing),
+            "the missing entry must be in the sidebar before cleanup"
+        );
+    });
+
+    view.update_in(cx, |app, _window, cx| app.forget_missing_repos(cx));
+
+    view.read_with(cx, |app, _| {
+        assert!(
+            !app.repos.iter().any(|r| r.path == missing),
+            "the missing entry must be gone"
+        );
+        assert!(
+            app.repos.iter().any(|r| r.path == present),
+            "existing repositories must stay"
+        );
+    });
+}

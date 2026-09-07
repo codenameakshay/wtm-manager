@@ -34,7 +34,9 @@ directory) stays in the list, shown greyed out, rather than disappearing —
 losing your list because a volume happened to be unplugged would be worse
 than a stale entry. Right-click a sidebar entry for **Open**, **Reveal in
 Finder**, **Copy Path**, or **Remove from Sidebar** — the last one only
-forgets the registry entry; it never touches anything on disk.
+forgets the registry entry; it never touches anything on disk. **Remove
+Missing from Sidebar** (command palette, or the empty-space context menu)
+forgets every greyed-out entry at once.
 
 **Adding a repository** — the `+` button next to the "Repositories" header,
 `⌘⇧O`, or (when the sidebar is empty) the "Add Repository…" row in its own

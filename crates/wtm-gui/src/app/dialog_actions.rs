@@ -1064,6 +1064,7 @@ impl WtmApp {
             palette::CommandId::Settings => self.on_open_settings(&OpenSettings, window, cx),
             palette::CommandId::FetchRemote => self.on_fetch_remote(&FetchRemote, window, cx),
             palette::CommandId::AddRepository => self.on_add_repository(&AddRepository, window, cx),
+            palette::CommandId::RemoveMissingRepos => self.forget_missing_repos(cx),
             palette::CommandId::ShowDetailsTab => {
                 self.on_show_details_tab(&ShowDetailsTab, window, cx)
             }
