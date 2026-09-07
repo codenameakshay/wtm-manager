@@ -810,7 +810,10 @@ pub fn list_files(worktree: &Path, rel_dir: &Path) -> Result<Vec<FileEntry>, Str
     let status_by_path: HashMap<String, FileStatus> = statuses
         .iter()
         .filter_map(|e| {
-            let path = e.path().ok()?.to_string();
+            // Untracked directories are keyed with a trailing slash
+            // (`src/`); the directory listing looks up `src`. Strip so both
+            // sides match.
+            let path = e.path().ok()?.trim_end_matches('/').to_string();
             let status = file_status_from_git(e.status())?;
             Some((path, status))
         })
@@ -1960,6 +1963,13 @@ mod tests {
         assert_eq!(readme.status, Some(FileStatus::Modified));
         let new_file = entries.iter().find(|e| e.name == "new.txt").unwrap();
         assert_eq!(new_file.status, Some(FileStatus::Untracked));
+        let src = entries.iter().find(|e| e.name == "src").unwrap();
+        assert_eq!(
+            src.status,
+            Some(FileStatus::Untracked),
+            "an untracked directory is one git2 status entry ending in '/', \
+             and must still badge as Untracked"
+        );
 
         // Directories sort before files.
         let src_pos = entries.iter().position(|e| e.name == "src").unwrap();

@@ -28,6 +28,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Prune during the fast listing, then turning on Merged/Gone, used to keep
   an empty candidate list even after status landed. The open dialog now
   recomputes from the new rows.
+- **App: untracked directories show an Untracked badge in the Files tab.**
+  git2 reports a new directory as `src/`; the tree looked up `src` and
+  left the row unbadged.
 
 ## [0.8.0] - 2026-09-07
 
