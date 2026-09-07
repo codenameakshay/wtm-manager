@@ -20,13 +20,11 @@ The app never talks to git directly and never rewrites `.worktree.toml` or
 The sidebar lists every repository you've opened in the app, sorted
 alphabetically by name (case-insensitive, path as a tie-break), backed by a
 registry at `~/.config/wtm/repos.json` (`src/registry.rs`). It used to sort
-most-recently-opened first — the same order the registry itself returns,
-which the CLI still uses to pick a default repo at launch — but that meant
-selecting a sidebar entry could jump it to the top under the user's cursor, a
-navigation list rearranging itself because you used it. The sidebar now
-sorts its own copy instead; `last_opened` is still recorded and still picks
-the repo a fresh window opens, only the sidebar's *display* order stopped
-following it. This is a convenience cache, not a source of truth:
+most-recently-opened first — the same order the registry itself returns.
+The CLI never reads this file: it discovers a repository from the current
+directory or `-C`. `last_opened` still picks the repo a fresh Dock/Spotlight
+window opens. The sidebar sorts its own copy alphabetically so selecting a
+repo does not jump it under the cursor. This is a convenience cache, not a source of truth:
 worktrees are always discovered fresh from git's own registry, the same way
 the CLI does it. A missing, corrupt, or unreadable registry file just means
 an empty sidebar, never a startup failure.
@@ -344,13 +342,11 @@ registry entry, the same guarantee as the sidebar's own row menu above.
   immediately and again at the next launch), that turns off the app's
   animation catalog for anyone who finds motion distracting or has a system
   preference for it.
-- **Terminal app** — read-only, showing whatever `$WTM_TERMINAL` currently
-  resolves to, or the label `Terminal` when it's unset (that label reflects
-  macOS's own default; on Linux the actual unset-case behavior is the
-  fallback list under [Platform support](#platform-support), not literally
-  an app named "Terminal"). There's no in-app field for this because nothing
-  downstream of one would currently read it; changing which terminal
-  `⌘⇧T`/"Open in Terminal" uses means setting the environment variable.
+- **Terminal app** — shows the value `Open in Terminal` will use, in
+  order: `gui.json`'s `terminal` field, then `$WTM_TERMINAL`, then the
+  platform default (`Terminal` on macOS; the fallback list under
+  [Platform support](#platform-support) on Linux). The sheet does not
+  edit this yet; set `terminal` in `gui.json` or `$WTM_TERMINAL`.
 - **Effective repository configuration** — a read-only view of `wtm`'s own
   layered TOML config as it applies to the open repository (path template,
   default base, editor, protected branches, setup commands/copy entries).
@@ -375,8 +371,8 @@ Two files, next to the CLI's own `~/.config/wtm/config.toml` (same
 - `~/.config/wtm/repos.json` — the sidebar registry (`src/registry.rs`):
   each entry's path, display name, and last-opened timestamp.
 - `~/.config/wtm/gui.json` — GUI-local preferences (`src/prefs.rs`):
-  appearance, sidebar/detail-panel visibility, window frame, and last-opened
-  repository path.
+  appearance, `terminal`, reduce-motion, sidebar/detail-panel visibility,
+  window frame, and last-opened repository path.
 
 Both use the same persistence pattern: an atomic write (temp file, then
 rename) and a schema version, so a crash mid-write can't truncate the file

@@ -137,8 +137,11 @@ pub fn worktree_add_new_branch(main_root: &Path, path: &Path, branch: &str, base
 pub fn worktree_remove(main_root: &Path, path: &Path, force: bool) -> Result<()>;
 /// `git worktree prune`.
 pub fn worktree_prune(main_root: &Path) -> Result<()>;
-/// `git branch -D <name>` (only ever called after explicit user opt-in).
-pub fn branch_delete(main_root: &Path, name: &str) -> Result<()>;
+/// `git branch -D <names...>` (only ever called after explicit user opt-in).
+/// One spawn for any number of branches. git reports each failure and keeps
+/// going, so a non-zero exit means at least one was not deleted. Prune
+/// attributes failures by falling back to one call per name.
+pub fn branch_delete(main_root: &Path, names: &[&str]) -> Result<()>;
 ```
 
 ## src/registry.rs — known-repository registry (GUI sidebar)

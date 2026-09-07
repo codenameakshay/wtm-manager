@@ -475,7 +475,9 @@ none is set and `--with` wasn't given.
 
 Print a worktree's path and nothing else — no interactive picker, ever, so
 it's safe to use in scripts. If `<name>` is omitted, prints the nearest Git
-worktree root containing your current directory.
+worktree root containing your current directory. With `-C <repo>`,
+containment is limited to that repository's registry: if cwd is not inside
+one of its worktrees, the command prints that repository's main worktree.
 
 ### `wtm app` (alias: `gui`)
 
