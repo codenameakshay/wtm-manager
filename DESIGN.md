@@ -408,8 +408,10 @@ Key behaviors:
   requested post-create actions succeed.
 - list: with_status = !no_status; --json ⇒ render_json to stdout.
 - remove: name optional ⇒ interactive picker (TTY-gated, see picker rules).
-  Refuse main worktree (MainWorktree). Refuse when target contains cwd.
-  Safety: if dirty and !force ⇒ Error::Dirty. Missing dir ⇒ remove registry
+  Refuse main worktree (MainWorktree). CLI `run` and the TUI refuse when
+  the target contains cwd; `remove_worktree` itself does not (the GUI
+  process cwd is meaningless). Safety: if dirty and !force ⇒ Error::Dirty.
+  Missing dir ⇒ remove registry
   entry via `git worktree remove --force` (it's the only way) but only ever
   after informing the user via stderr note; still safe. --with-branch ⇒
   branch_delete after successful removal, but refuse for protected branches.

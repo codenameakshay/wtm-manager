@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   hint inside the quoted name. Lookup now matches the display name
   (branch, or registry name when detached) and reports
   `named 't3code' (ambiguous: matches …)`.
+- **App: Remove no longer uses the process cwd as a safety signal.**
+  `remove_worktree` is shared with the GUI, whose working directory is not
+  the user's shell. The CLI and TUI still refuse to remove the worktree
+  you are standing in.
 
 ## [0.9.0] - 2026-09-07
 

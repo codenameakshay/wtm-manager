@@ -101,8 +101,9 @@ pub fn create_worktree_streaming(
     add::create_streaming(&repo.ctx, &repo.config, &request, sink).map_err(|e| e.to_string())
 }
 
-/// Remove a worktree through the safety-checked core (main worktree, cwd, and
-/// dirty checks all still apply).
+/// Remove a worktree through the safety-checked core (main worktree and
+/// dirty checks still apply). The GUI does not apply the CLI/TUI cwd
+/// guard: this process's working directory is not the user's shell.
 pub fn remove_worktree(repo: &OpenRepo, info: &WorktreeInfo, force: bool) -> Result<(), String> {
     remove::remove_worktree(&repo.ctx, info, force, true).map_err(|e| e.to_string())
 }

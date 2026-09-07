@@ -384,6 +384,9 @@ mod tests {
 
     #[test]
     fn exclude_cwd_skips_the_candidate_at_current_dir_and_keeps_others() {
+        let _cwd = crate::commands::remove::CWD_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let cwd = std::env::current_dir().unwrap();
         let elsewhere = std::env::temp_dir().join("wtm-exclude-cwd-test-does-not-exist");
         let cands = vec![

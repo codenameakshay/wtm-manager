@@ -233,17 +233,28 @@ fn run_effect(
             }))
         }
         Effect::Remove { info, force } => {
-            let msg = match remove::remove_worktree(ctx, &info, force, true) {
-                Ok(()) => Msg::ActionOutcome {
-                    text: format!("removed worktree '{}'", info.display_name()),
-                    error: false,
-                    refresh: true,
-                },
-                Err(e) => Msg::ActionOutcome {
-                    text: format!("remove failed: {e}"),
+            let msg = if remove::contains_cwd(&info.path) {
+                Msg::ActionOutcome {
+                    text: format!(
+                        "refusing to remove '{}': it contains the current directory (cd elsewhere first)",
+                        info.display_name()
+                    ),
                     error: true,
                     refresh: false,
-                },
+                }
+            } else {
+                match remove::remove_worktree(ctx, &info, force, true) {
+                    Ok(()) => Msg::ActionOutcome {
+                        text: format!("removed worktree '{}'", info.display_name()),
+                        error: false,
+                        refresh: true,
+                    },
+                    Err(e) => Msg::ActionOutcome {
+                        text: format!("remove failed: {e}"),
+                        error: true,
+                        refresh: false,
+                    },
+                }
             };
             Ok(Some(msg))
         }
