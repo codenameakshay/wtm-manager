@@ -15,11 +15,14 @@
 //! defaults rather than erroring. A broken preferences file is a papercut,
 //! never a reason the app fails to open.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
 use wtm::config;
+
+use crate::worktree_list::SortMode;
 
 /// Current on-disk schema version. Bumped only for incompatible changes; a
 /// file written by a newer version of the app is ignored rather than
@@ -70,6 +73,11 @@ pub struct Prefs {
     /// `motion::reduced`'s persisted backing — mirrors `motion.rs`'s own
     /// global at startup and on every toggle; see `WtmApp::set_reduce_motion`.
     pub reduce_motion: bool,
+    /// Worktree-list sort mode. Missing key (older `gui.json`) is Name.
+    pub sort_mode: SortMode,
+    /// Recent Run Command strings, keyed by repository main-worktree path.
+    /// Capped in memory by `run_panel::MAX_RECENT_STORED` before save.
+    pub recent_commands: HashMap<PathBuf, Vec<String>>,
 }
 
 impl Default for Prefs {
@@ -82,6 +90,8 @@ impl Default for Prefs {
             window: None,
             last_repo: None,
             reduce_motion: false,
+            sort_mode: SortMode::default(),
+            recent_commands: HashMap::new(),
         }
     }
 }
@@ -196,6 +206,11 @@ mod tests {
             }),
             last_repo: Some(PathBuf::from("/tmp/some-repo")),
             reduce_motion: true,
+            sort_mode: SortMode::Recent,
+            recent_commands: HashMap::from([(
+                PathBuf::from("/tmp/some-repo"),
+                vec!["cargo test".into()],
+            )]),
         };
         let file = PrefsFile {
             version: SCHEMA_VERSION,
@@ -256,6 +271,8 @@ mod tests {
         assert_eq!(loaded.terminal, Some("iTerm".to_string()));
         assert!(!loaded.sidebar_visible);
         assert!(!loaded.detail_panel_visible);
+        assert_eq!(loaded.sort_mode, SortMode::Name);
+        assert!(loaded.recent_commands.is_empty());
     }
 
     #[test]
@@ -276,6 +293,8 @@ mod tests {
             }),
             last_repo: Some(tmp.path().join("repo")),
             reduce_motion: true,
+            sort_mode: SortMode::Status,
+            recent_commands: HashMap::new(),
         };
 
         save(&prefs).unwrap();

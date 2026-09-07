@@ -173,9 +173,7 @@ pub struct WtmApp {
     /// pills can show "unknown" instead of implying "clean".
     awaiting_status: bool,
     status: Option<StatusMessage>,
-    /// How `rows` is ordered — see [`SortMode`]. Session-only: nothing
-    /// persists this across a restart yet, unlike `sidebar_visible`/
-    /// `detail_panel_visible`, which live in `Prefs`.
+    /// How `rows` is ordered — see [`SortMode`]. Persisted in `Prefs`.
     sort_mode: SortMode,
     /// HEAD commit unix-time per worktree path, for `Recent`-mode sorting
     /// and each row's age display — loaded in the background after every
@@ -325,7 +323,7 @@ pub struct WtmApp {
     /// Commands recently run via the Run Command dialog, most-recent-first,
     /// keyed by repository (its main worktree root, `OpenRepo::path()`) so a
     /// build/test command typed in one repo doesn't clutter another's
-    /// suggestions. Session-only: nothing persists this across a restart yet.
+    /// suggestions. Persisted in `Prefs::recent_commands`.
     recent_commands: HashMap<PathBuf, Vec<String>>,
     /// Incremented each time the create dialog opens. Background branch/ref
     /// loads capture the value and ignore their result if it no longer
@@ -395,7 +393,7 @@ impl WtmApp {
             selected: None,
             awaiting_status: true,
             status: None,
-            sort_mode: SortMode::default(),
+            sort_mode: prefs.sort_mode,
             activity: HashMap::new(),
             fetching: false,
             sidebar_visible: prefs.sidebar_visible,
@@ -427,6 +425,7 @@ impl WtmApp {
             context_menu: ContextMenu::new(),
             context_menu_target: None,
             settings_open: false,
+            recent_commands: prefs.recent_commands.clone(),
             prefs,
             filter_input,
             _filter_sub: filter_sub,
@@ -435,7 +434,6 @@ impl WtmApp {
             bulk_remove: None,
             run_command: None,
             create_load_id: 0,
-            recent_commands: HashMap::new(),
             list_scroll: UniformListScrollHandle::new(),
             changes_scroll: ScrollHandle::new(),
             files_tree_scroll: ScrollHandle::new(),

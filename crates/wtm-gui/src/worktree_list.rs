@@ -44,10 +44,10 @@ const PATH_ABSOLUTE_MIN_CHARS: usize = 3;
 const BRANCH_MIN_CHARS: usize = 6;
 
 /// How the worktree list orders its rows, selectable via the list
-/// toolbar's sort control (`app::chrome::render_sort_control`). Kept only
-/// for the current session — `WtmApp::sort_mode`'s own doc explains why it
-/// isn't persisted to `prefs.rs` yet.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// toolbar's sort control (`app::chrome::render_sort_control`). Persisted
+/// on [`crate::prefs::Prefs::sort_mode`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum SortMode {
     /// Main worktree first, then every other row alphabetically by branch
     /// (case-insensitive) — the list's original ordering.

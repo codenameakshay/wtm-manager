@@ -360,6 +360,8 @@ impl WtmApp {
             return;
         }
         self.sort_mode = mode;
+        self.prefs.sort_mode = mode;
+        self.save_prefs();
         self.resort_preserving_selection(cx);
     }
 

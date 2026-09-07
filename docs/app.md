@@ -98,8 +98,7 @@ first in every mode, since it's the repo's anchor, not just another row
 that happens to alphabetize or was touched first. Selection survives a
 re-sort — it's tracked by the worktree's path rather than its row index, so
 the worktree you had selected stays selected even though it moved. The
-chosen sort mode lives only in memory: `prefs.rs` isn't wired up to persist
-it yet, so it resets to Name the next time you open the app.
+chosen sort mode is stored in `gui.json` and restored on the next launch.
 
 **Fetch** (a toolbar button, `⌘⇧F`, and the empty-space context menu) runs
 `git fetch --prune` against the repository's default remote — `origin` if
@@ -222,9 +221,10 @@ whole app quits while a command is still running, it isn't killed either —
 there is no kill/terminate API for it — so it's orphaned and keeps running
 until it exits on its own.
 
-Recent-command suggestions, like the sort mode above, are session-only:
-they're kept in memory, keyed by repository, and reset the next time you
-open the app.
+Recent-command suggestions are keyed by repository, stored in `gui.json`,
+and restored on the next launch. At most 20 commands are kept per
+repository. They can include secrets you typed; clear them by editing
+`gui.json` if you need to.
 
 ## Open on Remote
 
@@ -371,8 +371,9 @@ Two files, next to the CLI's own `~/.config/wtm/config.toml` (same
 - `~/.config/wtm/repos.json` — the sidebar registry (`src/registry.rs`):
   each entry's path, display name, and last-opened timestamp.
 - `~/.config/wtm/gui.json` — GUI-local preferences (`src/prefs.rs`):
-  appearance, `terminal`, reduce-motion, sidebar/detail-panel visibility,
-  window frame, and last-opened repository path.
+  appearance, `terminal`, reduce-motion, sort mode, recent commands,
+  sidebar/detail-panel visibility, window frame, and last-opened
+  repository path.
 
 Both use the same persistence pattern: an atomic write (temp file, then
 rename) and a schema version, so a crash mid-write can't truncate the file

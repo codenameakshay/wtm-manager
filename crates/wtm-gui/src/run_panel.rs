@@ -39,9 +39,8 @@ const MAX_OUTPUT_LINES: usize = 4000;
 /// How many recent-command suggestions the picker shows beneath the input.
 pub const MAX_RECENT_SUGGESTIONS: usize = 8;
 
-/// How many recent commands are remembered per repository, session-only —
-/// see [`crate::app::WtmApp`]'s `recent_commands` field doc for why this
-/// cannot yet survive a restart.
+/// How many recent commands are remembered per repository, persisted in
+/// `gui.json` (`Prefs::recent_commands`).
 pub const MAX_RECENT_STORED: usize = 20;
 
 const WIDTH: f32 = 480.0;

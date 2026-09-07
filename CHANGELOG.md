@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **App: sort mode and recent commands survive a restart.** Name / Recent /
+  Status and per-repository Run Command suggestions are stored in `gui.json`.
+
 ### Fixed
 
 - **App: picking a remote-only branch in New Worktree now branches from

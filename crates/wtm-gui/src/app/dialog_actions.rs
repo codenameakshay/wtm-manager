@@ -1281,6 +1281,8 @@ impl WtmApp {
         if let Some(repo_key) = self.active.as_ref().map(|r| r.path().to_path_buf()) {
             let recent = self.recent_commands.entry(repo_key).or_default();
             run_panel::record_recent_command(recent, command.clone(), run_panel::MAX_RECENT_STORED);
+            self.prefs.recent_commands = self.recent_commands.clone();
+            self.save_prefs();
         }
 
         let (tx, rx) = mpsc::channel::<run_panel::RunStreamMsg>();
