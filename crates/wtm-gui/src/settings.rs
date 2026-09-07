@@ -13,7 +13,7 @@
 //!
 //! - **Appearance** is a real, persisted setting — a real `ui::segmented`
 //!   control, writing straight through `WtmApp::set_appearance` to
-//!   `prefs.json` via `on_select`, which is exactly the shape `cx.listener`
+//!   `gui.json` via `on_select`, which is exactly the shape `cx.listener`
 //!   produces.
 //! - **Reduce motion** sits right below Appearance. It drives
 //!   `WtmApp::set_reduce_motion` (mirrors `set_appearance`'s shape exactly:
@@ -201,7 +201,7 @@ fn render_terminal_section(prefs_terminal: Option<&str>, theme: &Theme) -> impl 
                 .child(terminal),
         )
         .child(dim_note(
-            "Set in prefs.json or via $WTM_TERMINAL — not editable here.",
+            "Set in gui.json or via $WTM_TERMINAL — not editable here.",
             theme,
         ))
 }
