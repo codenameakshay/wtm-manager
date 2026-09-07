@@ -20,6 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   file edits do not fire the worktree watcher (it does not recurse into
   `src/` or `node_modules`). Returning to the app now rescans status, so
   a worktree you dirtied in an editor no longer looks clean until ⌘R.
+- **A failed dirty scan is no longer shown as zero dirty files.** The
+  detail pane and Changes tab used to print `changes (0)` when libgit2
+  could not scan the worktree. They now say `unavailable`, matching
+  `wtm list`.
 
 ## [0.8.0] - 2026-09-07
 
