@@ -77,6 +77,8 @@ pub(crate) enum Effect {
     RunCommand { path: PathBuf, command: String },
     /// Copy the path to the system clipboard.
     CopyPath { path: PathBuf },
+    /// Fetch from the default remote (`git fetch --prune`).
+    Fetch,
     /// Leave the TUI without switching.
     Quit,
 }
@@ -597,6 +599,9 @@ impl App {
                         .collect();
                     prune::selection_candidates(selection, &self.protected)
                 };
+                // Never list the worktree containing cwd in the confirm
+                // overlay — it would only be skipped by `execute` anyway.
+                let (candidates, _cwd_skipped) = prune::exclude_cwd(candidates);
                 if candidates.is_empty() {
                     self.message = Some(Message {
                         text: "nothing to prune".to_string(),
@@ -642,6 +647,13 @@ impl App {
             }
             KeyCode::Char('r') => {
                 vec![self.request_rows(true)]
+            }
+            KeyCode::Char('f') => {
+                self.message = Some(Message {
+                    text: "fetching…".to_string(),
+                    error: false,
+                });
+                vec![Effect::Fetch]
             }
             KeyCode::Char('?') => {
                 self.overlay = Overlay::Help;
@@ -754,6 +766,16 @@ mod tests {
             with_status(info("feat-a", false), false, false),
             info("feat-b", false),
         ])
+    }
+
+    #[test]
+    fn f_requests_fetch() {
+        let mut app = three_row_app();
+        let fx = app.update(key(KeyCode::Char('f')));
+        match &fx[..] {
+            [Effect::Fetch] => {}
+            other => panic!("expected Fetch, got {other:?}"),
+        }
     }
 
     #[test]

@@ -13,7 +13,7 @@
 //!
 //! - **Appearance** is a real, persisted setting — a real `ui::segmented`
 //!   control, writing straight through `WtmApp::set_appearance` to
-//!   `prefs.json` via `on_select`, which is exactly the shape `cx.listener`
+//!   `gui.json` via `on_select`, which is exactly the shape `cx.listener`
 //!   produces.
 //! - **Reduce motion** sits right below Appearance. It drives
 //!   `WtmApp::set_reduce_motion` (mirrors `set_appearance`'s shape exactly:
@@ -22,9 +22,8 @@
 //!   read-back can never disagree with what was just toggled) and is fully
 //!   persisted — `main.rs` applies `prefs.reduce_motion` at startup the same
 //!   place it applies `prefs.appearance`.
-//! - **Terminal app** is read-only: the sheet shows whichever value
-//!   `crate::data::open_in_terminal` will actually use (`Prefs::terminal`,
-//!   then `$WTM_TERMINAL`, then the platform default), with no editing UI.
+//! - **Terminal app** is a text field writing `Prefs::terminal`. Empty
+//!   means `$WTM_TERMINAL`, then the platform default.
 //! - **Effective repository configuration** is read-only by design: it is
 //!   `wtm`'s own layered TOML config (see `wtm::config`), shared with the
 //!   CLI and potentially checked into the repository. The app must never
@@ -42,13 +41,14 @@
 use std::path::PathBuf;
 
 use gpui::prelude::*;
-use gpui::{div, px, AnyElement, Context, ScrollHandle, SharedString};
+use gpui::{div, px, AnyElement, Context, Entity, ScrollHandle, SharedString};
 
 use crate::app::WtmApp;
 use crate::data::OpenRepo;
 use crate::dialogs;
 use crate::motion;
 use crate::prefs::{Appearance, Prefs};
+use crate::text_input::TextInput;
 use crate::theme::{Theme, SPACE_12, SPACE_16, SPACE_2, SPACE_20, SPACE_4, SPACE_6, SPACE_8};
 use crate::ui::{self, ButtonVariant, TEXT_SM, TEXT_XS};
 
@@ -68,6 +68,7 @@ pub struct ShortcutMeta {
 pub fn render(
     prefs: &Prefs,
     repo: Option<&OpenRepo>,
+    terminal_input: Entity<TextInput>,
     scroll: &ScrollHandle,
     theme: &Theme,
     cx: &mut Context<WtmApp>,
@@ -98,7 +99,7 @@ pub fn render(
                 .track_scroll(scroll)
                 .child(render_appearance_section(prefs.appearance, theme, cx))
                 .child(ui::divider(theme))
-                .child(render_terminal_section(prefs.terminal.as_deref(), theme))
+                .child(render_terminal_section(terminal_input, theme))
                 .child(ui::divider(theme))
                 .child(render_config_section(repo, theme, cx))
                 .child(ui::divider(theme))
@@ -175,33 +176,14 @@ fn render_appearance_section(
 // Terminal
 // ---------------------------------------------------------------------
 
-fn render_terminal_section(prefs_terminal: Option<&str>, theme: &Theme) -> impl IntoElement {
-    // Same precedence `data::open_in_terminal` applies, so this always
-    // shows the app that will actually be used.
-    let terminal = prefs_terminal
-        .filter(|t| !t.is_empty())
-        .map(str::to_string)
-        .or_else(|| std::env::var("WTM_TERMINAL").ok().filter(|t| !t.is_empty()))
-        .unwrap_or_else(|| "Terminal".to_string());
-
+fn render_terminal_section(terminal_input: Entity<TextInput>, theme: &Theme) -> impl IntoElement {
     div()
         .flex()
         .flex_col()
         .gap(px(SPACE_4))
-        .child(
-            // Rendered as a value, not a heading: with the "Terminal App"
-            // eyebrow gone, heading-weight text here would be the only thing
-            // in the sheet that looked like a surviving section label. Match
-            // the treatment `config_row` below uses for config values — mono
-            // face, body size — so it reads as data, not a title.
-            div()
-                .font_family(ui::FONT_MONO)
-                .text_size(px(TEXT_SM))
-                .text_color(theme.text)
-                .child(terminal),
-        )
+        .child(terminal_input)
         .child(dim_note(
-            "Set in prefs.json or via $WTM_TERMINAL — not editable here.",
+            "Empty uses $WTM_TERMINAL, then the platform default. macOS: an app name like iTerm. Linux: a binary on PATH.",
             theme,
         ))
 }

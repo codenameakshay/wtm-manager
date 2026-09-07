@@ -59,7 +59,8 @@ impl WtmApp {
             return;
         };
 
-        let state = CreateState::new(&repo, window, cx);
+        self.create_load_id = self.create_load_id.wrapping_add(1);
+        let state = CreateState::new(&repo, self.create_load_id, window, cx);
         let branch_focus = state.branch_input.focus_handle(cx);
         self.dialog = Some(Dialog::Create(state));
         window.focus(&branch_focus);
@@ -184,6 +185,14 @@ impl WtmApp {
         let closed_dialog = self.dialog.take().is_some();
         let closed_settings = self.settings_open;
         self.settings_open = false;
+        if closed_settings {
+            // The Terminal field's `Changed` handler only updates
+            // `self.prefs` in memory (see `update_terminal_pref`) so typing
+            // doesn't write `gui.json` on every keystroke — persist once
+            // here instead, covering both Escape/Cancel and Submit (which
+            // also routes through this method).
+            self.save_prefs();
+        }
         let closed_palette = self.palette.take().is_some();
         let closed_bulk_remove = self.bulk_remove.take().is_some();
         // Taking `run_command` here does not stop whatever command is still
@@ -216,26 +225,38 @@ impl WtmApp {
         let Some(repo) = self.active.clone() else {
             return;
         };
+        let load_id = self.create_load_id;
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_spawn(async move { data::list_branches(&repo) })
                 .await;
             this.update(cx, |this, cx| {
-                let error = result.as_ref().err().cloned();
-                if let Some(Dialog::Create(state)) = &mut this.dialog {
-                    state.branches_loading = false;
-                    if let Ok(branches) = result {
-                        state.branches = branches;
-                    }
-                }
-                if let Some(e) = error {
-                    this.set_error(format!("could not list branches: {e}"), cx);
-                }
-                cx.notify();
+                this.apply_create_branches(load_id, result, cx);
             })
             .ok();
         })
         .detach();
+    }
+
+    /// Apply a `list_branches` result only if it belongs to the create
+    /// dialog currently on screen.
+    pub(super) fn apply_create_branches(
+        &mut self,
+        load_id: u64,
+        result: Result<Vec<data::BranchInfo>, String>,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(Dialog::Create(state)) = &mut self.dialog {
+            if state.load_id != load_id {
+                return;
+            }
+            state.branches_loading = false;
+            match result {
+                Ok(branches) => state.branches = branches,
+                Err(e) => self.set_error(format!("could not list branches: {e}"), cx),
+            }
+        }
+        cx.notify();
     }
 
     /// Fill the branch field from a picker click. Ignores the click if the
@@ -243,6 +264,7 @@ impl WtmApp {
     pub(super) fn select_branch_in_create(
         &mut self,
         name: String,
+        from_remote: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -250,7 +272,18 @@ impl WtmApp {
             return;
         };
         let input = state.branch_input.clone();
+        let base_input = state.base_input.clone();
         input.update(cx, |input, cx| input.set_value(name, window, cx));
+        // A remote-only picker row must also fill Base, otherwise create
+        // makes a new branch from default_base / HEAD and the clicked tip
+        // is ignored. Picking a LOCAL row after a remote one must clear
+        // whatever that remote pick left behind — Base is meaningless for
+        // an existing local branch.
+        if let Some(remote) = from_remote {
+            base_input.update(cx, |input, cx| input.set_value(remote, window, cx));
+        } else {
+            base_input.update(cx, |input, cx| input.set_value(String::new(), window, cx));
+        }
     }
 
     /// Load the refs the Base field's picker offers, mirroring
@@ -264,6 +297,7 @@ impl WtmApp {
             return;
         };
         let current_worktree = self.selected_worktree_path();
+        let load_id = self.create_load_id;
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_spawn(
@@ -271,21 +305,30 @@ impl WtmApp {
                 )
                 .await;
             this.update(cx, |this, cx| {
-                let error = result.as_ref().err().cloned();
-                if let Some(Dialog::Create(state)) = &mut this.dialog {
-                    state.base_refs_loading = false;
-                    if let Ok(refs) = result {
-                        state.base_refs = refs;
-                    }
-                }
-                if let Some(e) = error {
-                    this.set_error(format!("could not list refs: {e}"), cx);
-                }
-                cx.notify();
+                this.apply_create_refs(load_id, result, cx);
             })
             .ok();
         })
         .detach();
+    }
+
+    pub(super) fn apply_create_refs(
+        &mut self,
+        load_id: u64,
+        result: Result<Vec<data::RefInfo>, String>,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(Dialog::Create(state)) = &mut self.dialog {
+            if state.load_id != load_id {
+                return;
+            }
+            state.base_refs_loading = false;
+            match result {
+                Ok(refs) => state.base_refs = refs,
+                Err(e) => self.set_error(format!("could not list refs: {e}"), cx),
+            }
+        }
+        cx.notify();
     }
 
     /// Fill the Base field from a picker click or an Enter on the
@@ -1033,6 +1076,7 @@ impl WtmApp {
             palette::CommandId::Settings => self.on_open_settings(&OpenSettings, window, cx),
             palette::CommandId::FetchRemote => self.on_fetch_remote(&FetchRemote, window, cx),
             palette::CommandId::AddRepository => self.on_add_repository(&AddRepository, window, cx),
+            palette::CommandId::RemoveMissingRepos => self.forget_missing_repos(cx),
             palette::CommandId::ShowDetailsTab => {
                 self.on_show_details_tab(&ShowDetailsTab, window, cx)
             }
@@ -1248,8 +1292,9 @@ impl WtmApp {
         cx.notify();
 
         if let Some(repo_key) = self.active.as_ref().map(|r| r.path().to_path_buf()) {
-            let recent = self.recent_commands.entry(repo_key).or_default();
+            let recent = self.prefs.recent_commands.entry(repo_key).or_default();
             run_panel::record_recent_command(recent, command.clone(), run_panel::MAX_RECENT_STORED);
+            self.save_prefs();
         }
 
         let (tx, rx) = mpsc::channel::<run_panel::RunStreamMsg>();
@@ -1329,7 +1374,7 @@ impl WtmApp {
         let recent: &[String] = self
             .active
             .as_ref()
-            .and_then(|repo| self.recent_commands.get(repo.path()))
+            .and_then(|repo| self.prefs.recent_commands.get(repo.path()))
             .map(Vec::as_slice)
             .unwrap_or(&[]);
         run_panel::render(state, recent, theme, cx)

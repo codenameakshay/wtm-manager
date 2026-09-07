@@ -102,6 +102,21 @@ impl WtmApp {
         cx.notify();
     }
 
+    /// Update `prefs.terminal` in memory only, without persisting — used by
+    /// the settings field's `Changed` event so typing doesn't write
+    /// `gui.json` on every keystroke. An empty or whitespace value clears
+    /// `prefs.terminal` so `$WTM_TERMINAL` and the platform default apply.
+    /// `close_dialog` persists once when the settings sheet closes.
+    pub(crate) fn update_terminal_pref(&mut self, value: String, cx: &mut Context<Self>) {
+        let trimmed = value.trim();
+        self.prefs.terminal = if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        };
+        cx.notify();
+    }
+
     // -------------------------------------------------------------
     // Settings sheet
     // -------------------------------------------------------------
@@ -316,6 +331,9 @@ impl WtmApp {
             MenuItem::action("add-repository", "Add Repository…")
                 .icon(icons::PLUS)
                 .shortcut("⌘⇧O"),
+            MenuItem::action("remove-missing", "Remove Missing from Sidebar")
+                .icon(icons::TRASH)
+                .danger(),
         ];
 
         let target = MenuTarget::EmptySpace;
@@ -425,6 +443,7 @@ impl WtmApp {
             "prune" => self.on_prune_repo(&PruneRepo, window, cx),
             "reload" => self.on_reload(&Reload, window, cx),
             "add-repository" => self.on_add_repository(&AddRepository, window, cx),
+            "remove-missing" => self.forget_missing_repos(cx),
             _ => {}
         }
     }
@@ -439,6 +458,60 @@ impl WtmApp {
         }
     }
 
+    /// Forget every sidebar entry whose folder is gone. Never touches disk.
+    pub(super) fn forget_missing_repos(&mut self, cx: &mut Context<Self>) {
+        let mut reg = registry::load();
+        let before = reg.entries();
+        let n = reg.forget_missing();
+        if n == 0 {
+            self.set_info("no missing repositories in the sidebar", cx);
+            return;
+        }
+        match registry::save(&reg) {
+            Ok(()) => {
+                let after = reg.entries();
+                let removed: Vec<RepoEntry> = before
+                    .into_iter()
+                    .filter(|entry| !after.iter().any(|kept| kept.path == entry.path))
+                    .collect();
+                self.repos = sidebar_sorted(after);
+                // `prefs.recent_commands` is the single store for Run
+                // Command suggestions (see `WtmApp`'s doc) — a repository
+                // whose folder is gone can never be opened again, so its
+                // entry is dead weight.
+                let mut prefs_changed = false;
+                for entry in &removed {
+                    if self.prefs.recent_commands.remove(&entry.path).is_some() {
+                        prefs_changed = true;
+                    }
+                }
+                if prefs_changed {
+                    self.save_prefs();
+                }
+                // The active repository's folder is one of the ones just
+                // dropped — its rows and detail data no longer describe
+                // anything real, so clear the selection the same way
+                // `begin_activate_repo` does when switching to a different
+                // repository.
+                let active_removed = self
+                    .active
+                    .as_ref()
+                    .is_some_and(|repo| removed.iter().any(|entry| entry.path == repo.path()));
+                if active_removed {
+                    self.active = None;
+                    self.rows.clear();
+                    self.selected = None;
+                    self.multi_selected.clear();
+                    self.file_trees.clear();
+                    self.load_details_for_selection(cx);
+                }
+                let names: Vec<&str> = removed.iter().map(|e| e.name.as_str()).collect();
+                self.set_info(format!("removed {} from the sidebar", names.join(", ")), cx);
+            }
+            Err(e) => self.set_error(format!("could not save the repo list: {e}"), cx),
+        }
+    }
+
     /// Drop `path` from the sidebar registry. Never touches the filesystem —
     /// see `wtm::registry::Registry::forget`'s own doc on that guarantee.
     fn forget_repo(&mut self, path: &Path, cx: &mut Context<Self>) {
@@ -447,6 +520,9 @@ impl WtmApp {
             match registry::save(&reg) {
                 Ok(()) => {
                     self.repos = sidebar_sorted(reg.entries());
+                    if self.prefs.recent_commands.remove(path).is_some() {
+                        self.save_prefs();
+                    }
                     self.set_info("removed from sidebar", cx);
                 }
                 Err(e) => self.set_error(format!("could not save the repo list: {e}"), cx),

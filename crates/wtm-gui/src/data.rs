@@ -276,32 +276,77 @@ fn existing_ancestor(path: &Path) -> Option<PathBuf> {
         .map(Path::to_path_buf)
 }
 
-/// Open a worktree in a terminal app. `app` (`Prefs::terminal`) takes
-/// precedence over `$WTM_TERMINAL`, which takes precedence over the
-/// platform default.
-///
-/// macOS: the resolved name is used for `open -a <app> <path>`, falling
-/// back to `Terminal`.
-///
-/// Linux: the resolved name is the emulator binary to try first (a bare
-/// name resolved on `$PATH`, or a full path); failing that, the first
-/// installed of, in order, `x-terminal-emulator`, `gnome-terminal`,
-/// `konsole`, `alacritty`, `kitty`, `wezterm`, `foot`, `xterm`. Each is
-/// spawned detached (`Command::spawn`, never waited on) rather than launched
-/// the way macOS's `open -a` is: `open` itself exits the moment the app is
-/// launched, but several of these terminals (xterm, alacritty, kitty, foot,
-/// wezterm) run in the foreground and don't return control until their
-/// window closes, so waiting on them here would block for as long as the
-/// user keeps the terminal open.
-pub fn open_in_terminal(path: &Path, app: Option<&str>) -> Result<(), String> {
+/// Linux only: emulators to try, in order, when nothing explicit is
+/// configured -- `x-terminal-emulator`, `gnome-terminal`, `konsole`,
+/// `alacritty`, `kitty`, `wezterm`, `foot`, `xterm`.
+#[cfg(not(target_os = "macos"))]
+const LINUX_TERMINAL_CANDIDATES: &[&str] = &[
+    "x-terminal-emulator",
+    "gnome-terminal",
+    "konsole",
+    "alacritty",
+    "kitty",
+    "wezterm",
+    "foot",
+    "xterm",
+];
+
+/// `app` (`Prefs::terminal`) resolved against `$WTM_TERMINAL` and the
+/// platform default, same precedence [`open_in_terminal`] launches with:
+/// `app` if non-empty, else `$WTM_TERMINAL` if non-empty, else the platform
+/// default (`"Terminal"` on macOS; on Linux, the first of
+/// [`LINUX_TERMINAL_CANDIDATES`] found on `$PATH`, or the last candidate if
+/// none are installed).
+pub fn effective_terminal(app: Option<&str>) -> String {
     let explicit = app
         .filter(|t| !t.is_empty())
         .map(str::to_string)
         .or_else(|| std::env::var("WTM_TERMINAL").ok().filter(|t| !t.is_empty()));
-
+    if let Some(explicit) = explicit {
+        return explicit;
+    }
     #[cfg(target_os = "macos")]
     {
-        let terminal = explicit.unwrap_or_else(|| "Terminal".to_string());
+        "Terminal".to_string()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        LINUX_TERMINAL_CANDIDATES
+            .iter()
+            .find(|name| on_path(name))
+            .unwrap_or(&LINUX_TERMINAL_CANDIDATES[LINUX_TERMINAL_CANDIDATES.len() - 1])
+            .to_string()
+    }
+}
+
+/// Whether an executable named `name` exists on `$PATH`. Used only to pick
+/// the most honest `effective_terminal` fallback name; `open_in_terminal`
+/// itself doesn't need this since it just tries each candidate in turn.
+#[cfg(not(target_os = "macos"))]
+fn on_path(name: &str) -> bool {
+    std::env::var_os("PATH")
+        .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join(name).is_file()))
+}
+
+/// Open a worktree in a terminal app. `app` (`Prefs::terminal`) takes
+/// precedence over `$WTM_TERMINAL`, which takes precedence over the
+/// platform default -- see [`effective_terminal`] for that resolution.
+///
+/// macOS: the resolved name is used for `open -a <app> <path>`.
+///
+/// Linux: if `app` or `$WTM_TERMINAL` is set, its resolved name is the only
+/// emulator tried (a bare name resolved on `$PATH`, or a full path);
+/// otherwise every one of [`LINUX_TERMINAL_CANDIDATES`] is tried in order
+/// until one launches. Each is spawned detached (`Command::spawn`, never
+/// waited on) rather than launched the way macOS's `open -a` is: `open`
+/// itself exits the moment the app is launched, but several of these
+/// terminals (xterm, alacritty, kitty, foot, wezterm) run in the foreground
+/// and don't return control until their window closes, so waiting on them
+/// here would block for as long as the user keeps the terminal open.
+pub fn open_in_terminal(path: &Path, app: Option<&str>) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let terminal = effective_terminal(app);
         std::process::Command::new("open")
             .arg("-a")
             .arg(&terminal)
@@ -318,27 +363,21 @@ pub fn open_in_terminal(path: &Path, app: Option<&str>) -> Result<(), String> {
     }
     #[cfg(not(target_os = "macos"))]
     {
+        let explicit = app
+            .filter(|t| !t.is_empty())
+            .map(str::to_string)
+            .or_else(|| std::env::var("WTM_TERMINAL").ok().filter(|t| !t.is_empty()));
         if let Some(explicit) = explicit {
             return spawn_terminal(&explicit, path);
         }
-        const CANDIDATES: &[&str] = &[
-            "x-terminal-emulator",
-            "gnome-terminal",
-            "konsole",
-            "alacritty",
-            "kitty",
-            "wezterm",
-            "foot",
-            "xterm",
-        ];
-        for name in CANDIDATES {
+        for name in LINUX_TERMINAL_CANDIDATES {
             if spawn_terminal(name, path).is_ok() {
                 return Ok(());
             }
         }
         Err(format!(
             "no terminal emulator found (tried: {})",
-            CANDIDATES.join(", ")
+            LINUX_TERMINAL_CANDIDATES.join(", ")
         ))
     }
 }
@@ -409,6 +448,10 @@ pub fn copy_to_clipboard(text: &str) -> Result<(), String> {
 #[derive(Debug, Clone)]
 pub struct BranchInfo {
     pub name: String,
+    /// When this row came from a remote-tracking ref with no local
+    /// counterpart, the full remote-tracking name (`origin/foo`). Selecting
+    /// the row must create local `name` from this ref, not from `default_base`.
+    pub from_remote: Option<String>,
     /// Already checked out in some worktree of this repository (a `wtm add`
     /// for it would fail with `BranchInUse`).
     pub is_checked_out: bool,
@@ -419,8 +462,10 @@ pub struct BranchInfo {
 
 /// Branches available to create a worktree from: local branches first
 /// (alphabetical), then remote-tracking branches (alphabetical, remote
-/// prefix stripped, `<remote>/HEAD` excluded, and any name already covered
-/// by a local branch or another remote removed).
+/// prefix stripped from the display name, `<remote>/HEAD` excluded, and any
+/// short name already covered by a local branch removed). Remote-only rows
+/// keep the full tracking ref in [`BranchInfo::from_remote`] so a picker
+/// click can create the local branch from that tip, not from `default_base`.
 pub fn list_branches(repo: &OpenRepo) -> Result<Vec<BranchInfo>, String> {
     let git_repo = repo.ctx.open_main().map_err(|e| e.to_string())?;
 
@@ -453,6 +498,7 @@ pub fn list_branches(repo: &OpenRepo) -> Result<Vec<BranchInfo>, String> {
         locals.push(BranchInfo {
             is_checked_out: checked_out.contains(&name),
             name,
+            from_remote: None,
             upstream_gone,
         });
     }
@@ -476,17 +522,17 @@ pub fn list_branches(repo: &OpenRepo) -> Result<Vec<BranchInfo>, String> {
         if local_names.contains(short) {
             continue; // Already represented by its local branch.
         }
+        let short = short.to_string();
         remotes.push(BranchInfo {
-            name: short.to_string(),
-            is_checked_out: checked_out.contains(short),
+            name: short,
+            from_remote: Some(full_name),
+            // Branches actually checked out are local and were `continue`d
+            // above, so every row that reaches here is not checked out.
+            is_checked_out: false,
             upstream_gone: false,
         });
     }
-    remotes.sort_by(|a, b| a.name.cmp(&b.name));
-    // Two remotes tracking the same branch name (e.g. origin/main and
-    // upstream/main) collapse to one entry now that the remote prefix is
-    // gone.
-    remotes.dedup_by(|a, b| a.name == b.name);
+    remotes.sort_by(|a, b| a.name.cmp(&b.name).then(a.from_remote.cmp(&b.from_remote)));
 
     locals.extend(remotes);
     Ok(locals)
@@ -798,7 +844,10 @@ pub fn list_files(worktree: &Path, rel_dir: &Path) -> Result<Vec<FileEntry>, Str
     let status_by_path: HashMap<String, FileStatus> = statuses
         .iter()
         .filter_map(|e| {
-            let path = e.path().ok()?.to_string();
+            // Untracked directories are keyed with a trailing slash
+            // (`src/`); the directory listing looks up `src`. Strip so both
+            // sides match.
+            let path = e.path().ok()?.trim_end_matches('/').to_string();
             let status = file_status_from_git(e.status())?;
             Some((path, status))
         })
@@ -1129,99 +1178,12 @@ fn delta_status(status: git2::Delta) -> FileStatus {
 // Fetch
 // ---------------------------------------------------------------------
 
-/// Result of a [`fetch`] run: which remote it hit and how many refs it moved.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FetchOutcome {
-    pub remote: String,
-    pub updated_refs: usize,
-}
+pub use wtm::commands::fetch::FetchOutcome;
 
 /// Run `git fetch --prune` against `remote` (or the default remote when
-/// `None`), updating this repo's remote-tracking refs.
-///
-/// Ahead/behind counts are computed against those refs, and prune's
-/// "upstream gone" detection depends on them too — both are only ever as
-/// honest as the last fetch, so this is what refreshes them.
-///
-/// Shells out to the `git` binary rather than using git2's own fetch. git2
-/// would need credential callbacks re-implemented by hand: SSH agent
-/// forwarding, macOS Keychain, `credential.helper` config. Get any of that
-/// wrong (easy to do) and fetch breaks for anyone whose remote isn't a plain
-/// unauthenticated HTTPS URL — in practice most SSH-keyed GitHub/GitLab
-/// users. The system `git` binary already has all of that working
-/// correctly; shelling out reuses it instead of reimplementing it worse.
-///
-/// `--prune` so branches deleted on the remote actually disappear from
-/// remote-tracking refs here too — that's what makes `wtm prune`'s "upstream
-/// gone" detection trustworthy instead of stale.
+/// `None`). Shared with the CLI and TUI via `wtm::commands::fetch`.
 pub fn fetch(repo: &OpenRepo, remote: Option<&str>) -> Result<FetchOutcome, String> {
-    let remote_name = match remote {
-        Some(r) => r.to_string(),
-        None => default_remote_name(&repo.ctx)?,
-    };
-
-    let output = gitcmd::run_capture(&repo.ctx.main_root, &["fetch", "--prune", &remote_name])
-        .map_err(|e| e.to_string())?;
-
-    // git's own progress/ref-update reporting all goes to stderr; stdout is
-    // normally empty. Combine both so nothing is silently dropped regardless
-    // of which stream a particular git version or transport happens to use.
-    let mut combined = String::from_utf8_lossy(&output.stdout).into_owned();
-    combined.push_str(&String::from_utf8_lossy(&output.stderr));
-
-    if !output.status.success() {
-        let trimmed = combined.trim();
-        return Err(if trimmed.is_empty() {
-            format!("git fetch exited with {}", output.status)
-        } else {
-            trimmed.to_string()
-        });
-    }
-
-    Ok(FetchOutcome {
-        updated_refs: count_updated_refs(&combined),
-        remote: remote_name,
-    })
-}
-
-/// The remote `fetch` uses when the caller doesn't name one: `origin` if
-/// configured, else whichever remote sorts first alphabetically (a
-/// deterministic choice among equals); an error naming the problem when
-/// there are none.
-fn default_remote_name(ctx: &RepoContext) -> Result<String, String> {
-    let git_repo = ctx.open_main().map_err(|e| e.to_string())?;
-    let mut names: Vec<String> = git_repo
-        .remotes()
-        .map_err(|e| e.to_string())?
-        .iter()
-        // Each entry is `Result<Option<&str>, Error>`: `Err` for a git-level
-        // read failure, `Ok(None)` for a non-UTF-8 name. Neither is
-        // something a remote picker can act on, so both are dropped rather
-        // than failing the whole listing over one oddly named remote.
-        .filter_map(|entry| entry.ok().flatten())
-        .map(str::to_owned)
-        .collect();
-    if names.iter().any(|n| n == "origin") {
-        return Ok("origin".to_string());
-    }
-    names.sort();
-    names
-        .into_iter()
-        .next()
-        .ok_or_else(|| "this repository has no configured remotes".to_string())
-}
-
-/// Count how many refs `git fetch`'s output reports as touched. Every line
-/// git prints for an updated, new, or deleted ref ends in ` -> <local-ref>`
-/// (e.g. `   1234abc..5678def  main       -> origin/main`,
-/// ` * [new branch]      feat       -> origin/feat`,
-/// ` - [deleted]         (none)     -> origin/old`); progress lines and the
-/// leading `From <url>` line never take that shape. Not bulletproof against
-/// a ref name that happens to contain the literal substring ` -> `, but good
-/// enough for a UI count — and reporting 0 when nothing matches is the
-/// honest answer rather than a guess.
-fn count_updated_refs(output: &str) -> usize {
-    output.lines().filter(|line| line.contains(" -> ")).count()
+    wtm::commands::fetch::fetch(&repo.ctx, remote).map_err(|e| e.to_string())
 }
 
 // ---------------------------------------------------------------------
@@ -1715,6 +1677,19 @@ mod tests {
         assert!(terminal_args("some-custom-term", path).is_empty());
     }
 
+    #[test]
+    fn effective_terminal_prefers_explicit_pref() {
+        assert_eq!(effective_terminal(Some("iTerm")), "iTerm");
+    }
+
+    #[test]
+    fn effective_terminal_falls_back_to_a_default_when_pref_is_empty() {
+        // Exact value depends on $WTM_TERMINAL and, on Linux, on what's
+        // installed -- just assert it never comes back empty.
+        assert!(!effective_terminal(None).is_empty());
+        assert!(!effective_terminal(Some("")).is_empty());
+    }
+
     // ---------------- list_refs ordering ----------------
 
     fn raw_local(name: &str) -> RawRef {
@@ -1850,6 +1825,32 @@ mod tests {
         assert!(default.subject.is_some());
     }
 
+    #[test]
+    fn list_branches_remote_only_keeps_the_tracking_ref_as_from_remote() {
+        let (_tmp, main) = fixture();
+        git(
+            &main,
+            &["update-ref", "refs/remotes/origin/only-remote", "HEAD"],
+        );
+        let repo = test_repo(&main);
+        let branches = list_branches(&repo).unwrap();
+        let remote = branches
+            .iter()
+            .find(|b| b.name == "only-remote")
+            .expect("remote-only branch must appear under its short name");
+        assert_eq!(
+            remote.from_remote.as_deref(),
+            Some("origin/only-remote"),
+            "picking this row must create from the remote-tracking ref, not default_base"
+        );
+        assert!(!remote.is_checked_out);
+        let main_row = branches
+            .iter()
+            .find(|b| b.name == "main")
+            .expect("local main must still be listed");
+        assert_eq!(main_row.from_remote, None);
+    }
+
     // ---------------- list_files ----------------
 
     #[test]
@@ -1922,6 +1923,13 @@ mod tests {
         assert_eq!(readme.status, Some(FileStatus::Modified));
         let new_file = entries.iter().find(|e| e.name == "new.txt").unwrap();
         assert_eq!(new_file.status, Some(FileStatus::Untracked));
+        let src = entries.iter().find(|e| e.name == "src").unwrap();
+        assert_eq!(
+            src.status,
+            Some(FileStatus::Untracked),
+            "an untracked directory is one git2 status entry ending in '/', \
+             and must still badge as Untracked"
+        );
 
         // Directories sort before files.
         let src_pos = entries.iter().position(|e| e.name == "src").unwrap();
@@ -2011,71 +2019,6 @@ mod tests {
         assert!(big_file.truncated);
         let total_lines: usize = big_file.hunks.iter().map(|h| h.lines.len()).sum();
         assert_eq!(total_lines, MAX_DIFF_LINES_PER_FILE);
-    }
-
-    // ---------------- fetch ----------------
-
-    #[test]
-    fn count_updated_refs_counts_arrow_lines_only() {
-        let output = "\
-From github.com:owner/repo
-   1234abc..5678def  main       -> origin/main
- * [new branch]      feat       -> origin/feat
- - [deleted]         (none)     -> origin/old
-Fetching origin
-";
-        assert_eq!(count_updated_refs(output), 3);
-    }
-
-    #[test]
-    fn count_updated_refs_is_honestly_zero_when_nothing_changed() {
-        assert_eq!(count_updated_refs("From github.com:owner/repo\n"), 0);
-        assert_eq!(count_updated_refs(""), 0);
-    }
-
-    #[test]
-    fn default_remote_name_prefers_origin() {
-        let (_tmp, main) = fixture();
-        git(
-            &main,
-            &[
-                "remote",
-                "add",
-                "zzz-other",
-                "https://example.invalid/z.git",
-            ],
-        );
-        git(
-            &main,
-            &["remote", "add", "origin", "https://example.invalid/o.git"],
-        );
-
-        let ctx = repo::discover(Some(&main)).unwrap();
-        assert_eq!(default_remote_name(&ctx).unwrap(), "origin");
-    }
-
-    #[test]
-    fn default_remote_name_falls_back_to_first_alphabetically() {
-        let (_tmp, main) = fixture();
-        git(
-            &main,
-            &["remote", "add", "zzz", "https://example.invalid/z.git"],
-        );
-        git(
-            &main,
-            &["remote", "add", "aaa", "https://example.invalid/a.git"],
-        );
-
-        let ctx = repo::discover(Some(&main)).unwrap();
-        assert_eq!(default_remote_name(&ctx).unwrap(), "aaa");
-    }
-
-    #[test]
-    fn default_remote_name_errors_clearly_with_no_remotes() {
-        let (_tmp, main) = fixture();
-        let ctx = repo::discover(Some(&main)).unwrap();
-        let err = default_remote_name(&ctx).unwrap_err();
-        assert!(err.contains("no configured remotes"), "{err}");
     }
 
     // ---------------- worktree_activity / relative_age ----------------

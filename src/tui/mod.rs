@@ -31,7 +31,7 @@ use ratatui::Terminal;
 
 use crate::cdfile;
 use crate::cli::GlobalArgs;
-use crate::commands::{add, open, prune, remove};
+use crate::commands::{add, fetch, open, prune, remove};
 use crate::config::{self, Config};
 use crate::error::{Error, Result};
 use crate::repo::{self, RepoContext};
@@ -95,8 +95,12 @@ pub fn run(global: &GlobalArgs) -> Result<()> {
     Ok(())
 }
 
-/// The runtime loop: draw, poll input with a 100ms timeout, drain background
-/// messages, and execute effects. Returns the switch target, if any.
+/// The runtime loop: drain effects and background messages, draw only when
+/// the model changed, then poll input. Returns the switch target, if any.
+///
+/// Idle frames draw only when a key or a terminal resize changed something;
+/// polling still wakes every 100ms to drain status/detail channels, but a
+/// quiet poll with no queued input paints nothing.
 fn event_loop(
     app: &mut App,
     terminal: &mut Tui,
@@ -106,6 +110,7 @@ fn event_loop(
 ) -> Result<Option<PathBuf>> {
     let (tx, rx) = mpsc::channel::<Msg>();
     let mut effects: VecDeque<Effect> = pending.into();
+    let mut needs_draw = true;
 
     loop {
         // Execute queued effects; immediate outcomes feed straight back into
@@ -118,6 +123,7 @@ fn event_loop(
                     if let Some(msg) = run_effect(other, terminal, ctx, config, &tx)? {
                         effects.extend(app.update(msg));
                     }
+                    needs_draw = true;
                 }
             }
         }
@@ -125,16 +131,24 @@ fn event_loop(
         // Drain background results (status listings, detail loads).
         while let Ok(msg) = rx.try_recv() {
             effects.extend(app.update(msg));
+            needs_draw = true;
         }
         if !effects.is_empty() {
             continue;
         }
 
-        terminal.draw(|f| view::draw(f, app))?;
+        if needs_draw {
+            terminal.draw(|f| view::draw(f, app))?;
+            needs_draw = false;
+        }
 
         if event::poll(Duration::from_millis(100))? {
-            if let Event::Key(key) = event::read()? {
-                effects.extend(app.update(Msg::Key(key)));
+            match event::read()? {
+                Event::Key(key) => {
+                    effects.extend(app.update(Msg::Key(key)));
+                    needs_draw = true;
+                }
+                _ => needs_draw = true,
             }
         }
     }
@@ -305,6 +319,39 @@ fn run_effect(
                 },
             };
             Ok(Some(msg))
+        }
+        Effect::Fetch => {
+            // Network round trip: run off the event loop thread exactly like
+            // `Effect::LoadRows`, so the UI keeps redrawing (the footer
+            // already shows "fetching…", set by `App::on_key`) instead of
+            // freezing until git returns.
+            let ctx = ctx.clone();
+            let tx = tx.clone();
+            std::thread::spawn(move || {
+                let msg = match fetch::fetch(&ctx, None) {
+                    Ok(outcome) => Msg::ActionOutcome {
+                        text: if outcome.updated_refs == 0 {
+                            format!("fetched {} (no refs updated)", outcome.remote)
+                        } else {
+                            format!(
+                                "fetched {} ({} ref{})",
+                                outcome.remote,
+                                outcome.updated_refs,
+                                if outcome.updated_refs == 1 { "" } else { "s" }
+                            )
+                        },
+                        error: false,
+                        refresh: true,
+                    },
+                    Err(e) => Msg::ActionOutcome {
+                        text: format!("fetch failed: {e}"),
+                        error: true,
+                        refresh: false,
+                    },
+                };
+                let _ = tx.send(msg);
+            });
+            Ok(None)
         }
     }
 }

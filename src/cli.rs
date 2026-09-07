@@ -69,6 +69,11 @@ pub enum Command {
     #[command(visible_alias = "clean")]
     Prune(PruneArgs),
 
+    /// Fetch from the default remote (or `--remote`) so ahead/behind and
+    /// upstream-gone status are current. Runs `git fetch --prune`, which
+    /// deletes local remote-tracking refs for branches gone on the remote.
+    Fetch(FetchArgs),
+
     /// Open a worktree in your editor (or run an arbitrary command in it).
     Open(OpenArgs),
 
@@ -189,6 +194,15 @@ pub struct PruneArgs {
     /// Prune even worktrees with uncommitted changes.
     #[arg(long)]
     pub force: bool,
+}
+
+/// Arguments for `wtm fetch`.
+#[derive(Debug, Clone, Args)]
+pub struct FetchArgs {
+    /// Remote to fetch. Omit to use `origin`, or the first remote name
+    /// alphabetically when `origin` is not configured.
+    #[arg(long)]
+    pub remote: Option<String>,
 }
 
 /// Arguments for `wtm open`.

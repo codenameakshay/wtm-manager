@@ -298,23 +298,34 @@ impl Fixture {
     }
 }
 
-/// Bind the app's real keymap (the same `key_bindings!` table `main.rs`
-/// installs) and open a window on `initial`, running the harness to a
-/// parked state the same way the real window's first paint would settle.
-/// Shadowing the returned `cx` at the call site
-/// (`let (view, cx) = open_app(cx, ...)`) is the standard gpui pattern —
-/// see `TestAppContext::add_window_view`'s own doc comment.
+/// [`open_app_with_prefs`] with `Prefs::default()` — every test that
+/// doesn't care what preferences the app starts with (nearly all of them)
+/// uses this instead.
 fn open_app(
     cx: &mut TestAppContext,
     initial: Option<OpenRepo>,
+) -> (Entity<WtmApp>, &mut VisualTestContext) {
+    open_app_with_prefs(cx, initial, Prefs::default())
+}
+
+/// Bind the app's real keymap (the same `key_bindings!` table `main.rs`
+/// installs) and open a window on `initial` with `prefs` as the starting
+/// preferences, running the harness to a parked state the same way the
+/// real window's first paint would settle. Shadowing the returned `cx` at
+/// the call site (`let (view, cx) = open_app_with_prefs(cx, ...)`) is the
+/// standard gpui pattern — see `TestAppContext::add_window_view`'s own doc
+/// comment.
+fn open_app_with_prefs(
+    cx: &mut TestAppContext,
+    initial: Option<OpenRepo>,
+    prefs: Prefs,
 ) -> (Entity<WtmApp>, &mut VisualTestContext) {
     disable_watcher_for_tests();
     cx.update(|cx| {
         theme::init(cx);
         cx.bind_keys(crate::registered_key_bindings());
     });
-    let (view, cx) =
-        cx.add_window_view(|window, cx| WtmApp::new(initial, Prefs::default(), window, cx));
+    let (view, cx) = cx.add_window_view(|window, cx| WtmApp::new(initial, prefs, window, cx));
     // Mirrors `main.rs`'s own `window.activate_window()` call, made right
     // after opening the real window. Without it, gpui's window-level
     // `window_active` flag stays false for the lifetime of the test, and
@@ -568,6 +579,235 @@ fn create_rejects_branch_checked_out_elsewhere(cx: &mut TestAppContext) {
         before_worktrees,
         "nothing must be created on disk"
     );
+}
+
+#[gpui::test]
+fn stale_create_branch_list_does_not_fill_a_newer_dialog(cx: &mut TestAppContext) {
+    let fx = Fixture::new();
+    let repo = fx.open();
+    let (view, cx) = open_app(cx, Some(repo));
+    cx.run_until_parked();
+
+    cx.simulate_keystrokes("cmd-n");
+    let first_id = view.read_with(cx, |app, _| {
+        let Some(Dialog::Create(state)) = &app.dialog else {
+            panic!("create dialog must be open");
+        };
+        state.load_id
+    });
+    view.update_in(cx, |app, window, cx| app.close_dialog(window, cx));
+    cx.simulate_keystrokes("cmd-n");
+    view.update_in(cx, |app, _window, cx| {
+        app.apply_create_branches(
+            first_id,
+            Ok(vec![data::BranchInfo {
+                name: "stale-from-other-repo".into(),
+                from_remote: None,
+                is_checked_out: false,
+                upstream_gone: false,
+            }]),
+            cx,
+        );
+    });
+    view.read_with(cx, |app, _| {
+        let Some(Dialog::Create(state)) = &app.dialog else {
+            panic!("create dialog must be open");
+        };
+        assert_ne!(state.load_id, first_id);
+        assert!(
+            !state
+                .branches
+                .iter()
+                .any(|b| b.name == "stale-from-other-repo"),
+            "a list_branches result from the previous dialog must not fill this one"
+        );
+    });
+}
+
+/// The same stale-guard as the test above, for `apply_create_refs` (the
+/// Base field's picker) instead of `apply_create_branches` (the Branch
+/// field's).
+#[gpui::test]
+fn stale_create_refs_list_does_not_fill_a_newer_dialog(cx: &mut TestAppContext) {
+    let fx = Fixture::new();
+    let repo = fx.open();
+    let (view, cx) = open_app(cx, Some(repo));
+    cx.run_until_parked();
+
+    cx.simulate_keystrokes("cmd-n");
+    let first_id = view.read_with(cx, |app, _| {
+        let Some(Dialog::Create(state)) = &app.dialog else {
+            panic!("create dialog must be open");
+        };
+        state.load_id
+    });
+    view.update_in(cx, |app, window, cx| app.close_dialog(window, cx));
+    cx.simulate_keystrokes("cmd-n");
+    view.update_in(cx, |app, _window, cx| {
+        app.apply_create_refs(
+            first_id,
+            Ok(vec![data::RefInfo {
+                name: "stale-ref-from-other-repo".into(),
+                kind: data::RefKind::Local,
+                subject: None,
+                short_id: None,
+            }]),
+            cx,
+        );
+    });
+    view.read_with(cx, |app, _| {
+        let Some(Dialog::Create(state)) = &app.dialog else {
+            panic!("create dialog must be open");
+        };
+        assert_ne!(state.load_id, first_id);
+        assert!(
+            !state
+                .base_refs
+                .iter()
+                .any(|r| r.name == "stale-ref-from-other-repo"),
+            "a list_refs result from the previous dialog must not fill this one"
+        );
+    });
+}
+
+#[gpui::test]
+fn picking_a_remote_only_branch_creates_from_that_tracking_ref(cx: &mut TestAppContext) {
+    let fx = Fixture::new();
+    let remote_sha = git(fx.root(), &["rev-parse", "develop"]);
+    git(
+        fx.root(),
+        &["update-ref", "refs/remotes/origin/only-remote", &remote_sha],
+    );
+    let repo = fx.open();
+    let (view, cx) = open_app(cx, Some(repo));
+    cx.run_until_parked();
+
+    cx.simulate_keystrokes("cmd-n");
+    cx.run_until_parked();
+
+    view.update_in(cx, |app, window, cx| {
+        let Some(Dialog::Create(state)) = &app.dialog else {
+            panic!("dialog must be open");
+        };
+        let remote = state
+            .branches
+            .iter()
+            .find(|b| b.name == "only-remote")
+            .cloned()
+            .expect("remote-only branch must be in the picker");
+        assert_eq!(remote.from_remote.as_deref(), Some("origin/only-remote"));
+        app.select_branch_in_create(remote.name, remote.from_remote, window, cx);
+    });
+
+    view.read_with(cx, |app, cx| {
+        let Some(Dialog::Create(state)) = &app.dialog else {
+            panic!("dialog must still be open");
+        };
+        assert_eq!(state.branch_input.read(cx).value(), "only-remote");
+        assert_eq!(
+            state.base_input.read(cx).value(),
+            "origin/only-remote",
+            "the base must be the tracking ref, not an empty/default field"
+        );
+    });
+
+    view.update_in(cx, |app, window, cx| {
+        app.submit_create_dialog(window, cx);
+    });
+    cx.run_until_parked();
+    cx.executor().advance_clock(Duration::from_secs(2));
+
+    view.read_with(cx, |app, _| {
+        let Some(Dialog::Create(state)) = &app.dialog else {
+            panic!("dialog must be open");
+        };
+        let CreatePhase::Progress(progress) = &state.phase else {
+            panic!("expected the progress phase");
+        };
+        progress
+            .outcome
+            .as_ref()
+            .expect("create should have finished")
+            .as_ref()
+            .expect("create from a remote-only picker row must succeed");
+    });
+
+    let new_path = fx.worktree_path("only-remote");
+    assert!(new_path.is_dir());
+    let tip = git(&new_path, &["rev-parse", "HEAD"]);
+    assert_eq!(
+        tip, remote_sha,
+        "the worktree must be branched from origin/only-remote, not main"
+    );
+}
+
+/// Picking a remote-only branch fills Base with its tracking ref (see the
+/// test above) — picking a LOCAL branch right after must clear that back
+/// out, or Base would silently keep pointing at the previous pick's remote
+/// instead of the create dialog's own default.
+#[gpui::test]
+fn picking_a_local_branch_after_a_remote_one_clears_the_base_field(cx: &mut TestAppContext) {
+    let fx = Fixture::new();
+    let remote_sha = git(fx.root(), &["rev-parse", "develop"]);
+    git(
+        fx.root(),
+        &["update-ref", "refs/remotes/origin/only-remote", &remote_sha],
+    );
+    let repo = fx.open();
+    let (view, cx) = open_app(cx, Some(repo));
+    cx.run_until_parked();
+
+    cx.simulate_keystrokes("cmd-n");
+    cx.run_until_parked();
+
+    view.update_in(cx, |app, window, cx| {
+        let Some(Dialog::Create(state)) = &app.dialog else {
+            panic!("dialog must be open");
+        };
+        let remote = state
+            .branches
+            .iter()
+            .find(|b| b.name == "only-remote")
+            .cloned()
+            .expect("remote-only branch must be in the picker");
+        app.select_branch_in_create(remote.name, remote.from_remote, window, cx);
+    });
+    view.read_with(cx, |app, cx| {
+        let Some(Dialog::Create(state)) = &app.dialog else {
+            panic!("dialog must still be open");
+        };
+        assert_eq!(
+            state.base_input.read(cx).value(),
+            "origin/only-remote",
+            "setup: the remote pick must have filled Base first"
+        );
+    });
+
+    view.update_in(cx, |app, window, cx| {
+        let Some(Dialog::Create(state)) = &app.dialog else {
+            panic!("dialog must be open");
+        };
+        let local = state
+            .branches
+            .iter()
+            .find(|b| b.name == "develop")
+            .cloned()
+            .expect("the local develop branch must be in the picker");
+        assert!(local.from_remote.is_none(), "develop must be a LOCAL row");
+        app.select_branch_in_create(local.name, local.from_remote, window, cx);
+    });
+
+    view.read_with(cx, |app, cx| {
+        let Some(Dialog::Create(state)) = &app.dialog else {
+            panic!("dialog must still be open");
+        };
+        assert_eq!(state.branch_input.read(cx).value(), "develop");
+        assert_eq!(
+            state.base_input.read(cx).value(),
+            "",
+            "a LOCAL pick must clear whatever the previous remote pick left in Base"
+        );
+    });
 }
 
 // ---------------------------------------------------------------------
@@ -899,6 +1139,117 @@ fn prune_computes_candidates_and_reports_removed_and_skipped_honestly(cx: &mut T
             .any(|w| w.display_name() == "missing-branch"),
         "the stale registry entry for the missing worktree must be cleaned up"
     );
+}
+
+#[gpui::test]
+fn prune_dialog_recomputes_merged_candidates_when_status_lands(cx: &mut TestAppContext) {
+    let fx = Fixture::new();
+    let _merged = fx.add_worktree("merged-clean");
+    let repo = fx.open();
+    let (view, cx) = open_app(cx, Some(repo));
+    cx.run_until_parked();
+
+    view.update_in(cx, |app, window, cx| {
+        for row in &mut app.rows {
+            row.status = None;
+        }
+        app.awaiting_status = true;
+        app.on_prune_repo(&PruneRepo, window, cx);
+        app.toggle_prune_merged(cx);
+    });
+    view.read_with(cx, |app, _| {
+        let Some(Dialog::Prune(state)) = &app.dialog else {
+            panic!("prune dialog must be open");
+        };
+        assert!(state.merged);
+        let names: Vec<&str> = state
+            .candidates
+            .iter()
+            .map(|c| c.info.display_name())
+            .collect();
+        assert!(
+            !names.contains(&"merged-clean"),
+            "merged detection needs status: {names:?}"
+        );
+    });
+
+    view.update_in(cx, |app, _window, cx| app.reload(cx));
+    cx.run_until_parked();
+
+    view.read_with(cx, |app, _| {
+        let Some(Dialog::Prune(state)) = &app.dialog else {
+            panic!("prune dialog must still be open");
+        };
+        let names: Vec<&str> = state
+            .candidates
+            .iter()
+            .map(|c| c.info.display_name())
+            .collect();
+        assert!(
+            names.contains(&"merged-clean"),
+            "a status reload must recompute the open prune dialog: {names:?}"
+        );
+    });
+}
+
+/// The inverse of the test above: a *fast* (no-status) pass landing at the
+/// current generation — every row's `status` is `None` on that pass — must
+/// leave an open, already-populated Prune dialog alone rather than
+/// recomputing it against status-less rows and emptying it until the
+/// status pass lands right behind it.
+#[gpui::test]
+fn fast_pass_does_not_clear_an_open_prune_dialog(cx: &mut TestAppContext) {
+    let fx = Fixture::new();
+    let _merged = fx.add_worktree("merged-clean");
+    let repo = fx.open();
+    let (view, cx) = open_app(cx, Some(repo));
+    cx.run_until_parked();
+
+    view.update_in(cx, |app, window, cx| {
+        app.on_prune_repo(&PruneRepo, window, cx);
+        app.toggle_prune_merged(cx);
+    });
+    view.read_with(cx, |app, _| {
+        let Some(Dialog::Prune(state)) = &app.dialog else {
+            panic!("prune dialog must be open");
+        };
+        let names: Vec<&str> = state
+            .candidates
+            .iter()
+            .map(|c| c.info.display_name())
+            .collect();
+        assert!(
+            names.contains(&"merged-clean"),
+            "setup: merged-clean must start out as a candidate: {names:?}"
+        );
+    });
+
+    let (generation, fast_rows) = view.read_with(cx, |app, _| {
+        let mut rows = app.rows.clone();
+        for row in &mut rows {
+            row.status = None;
+        }
+        (app.generation, rows)
+    });
+    view.update_in(cx, |app, _window, cx| {
+        app.apply_rows(generation, Ok(fast_rows), false, cx);
+    });
+
+    view.read_with(cx, |app, _| {
+        let Some(Dialog::Prune(state)) = &app.dialog else {
+            panic!("prune dialog must still be open");
+        };
+        let names: Vec<&str> = state
+            .candidates
+            .iter()
+            .map(|c| c.info.display_name())
+            .collect();
+        assert!(
+            names.contains(&"merged-clean"),
+            "a fast (status-less) pass must not clear the open prune dialog's \
+             candidates: {names:?}"
+        );
+    });
 }
 
 /// A watcher notification that lands while a prune is running in the
@@ -1282,6 +1633,57 @@ fn detail_panel_tabs_load_real_files_and_changes(cx: &mut TestAppContext) {
         view.read_with(cx, |app, _| app.detail_tab),
         DetailTab::Details
     );
+}
+
+/// A with-status reload must refresh the detail panel even when the
+/// selection itself hasn't changed — `load_details_for_selection` is
+/// normally a no-op in that case (see its doc), which is right for the two
+/// passes of a single `reload` but wrong for a *second*, later reload where
+/// the selected worktree just became dirty: the dirty count shown must
+/// reflect the new status, not the one loaded before the selection was
+/// last (re)loaded.
+#[gpui::test]
+fn with_status_reload_refreshes_dirty_count_for_an_unchanged_selection(cx: &mut TestAppContext) {
+    let fx = Fixture::new();
+    let clean = fx.add_worktree("clean-for-dirty-count");
+    let repo = fx.open();
+    let (view, cx) = open_app(cx, Some(repo));
+    cx.run_until_parked();
+
+    let ix = view.read_with(cx, |app, _| {
+        app.rows
+            .iter()
+            .position(|r| r.display_name() == "clean-for-dirty-count")
+            .unwrap()
+    });
+    view.update_in(cx, |app, _window, cx| app.select(ix, cx));
+    cx.run_until_parked();
+
+    view.read_with(cx, |app, _| {
+        assert_eq!(
+            app.details.as_ref().and_then(|d| d.dirty_total),
+            Some(0),
+            "the worktree starts clean"
+        );
+    });
+
+    fx.write_untracked(&clean, "scratch.txt", "uncommitted\n");
+    view.update_in(cx, |app, _window, cx| app.reload(cx));
+    cx.run_until_parked();
+
+    view.read_with(cx, |app, _| {
+        assert_eq!(
+            app.rows[ix].display_name(),
+            "clean-for-dirty-count",
+            "the selection must still be the same worktree"
+        );
+        assert_eq!(
+            app.details.as_ref().and_then(|d| d.dirty_total),
+            Some(1),
+            "a with-status reload must refresh the detail panel's dirty count \
+             even though the selected worktree itself never changed"
+        );
+    });
 }
 
 // ---------------------------------------------------------------------
@@ -1695,6 +2097,117 @@ fn selection_survives_a_reload_that_reorders_rows_by_path_not_index(cx: &mut Tes
     });
 }
 
+/// Nested working-tree edits do not fire the (non-recursive) worktree
+/// watcher. Returning to the window must still rescan dirty status.
+#[gpui::test]
+fn activation_rescans_dirty_status_without_a_watcher_event(cx: &mut TestAppContext) {
+    let fx = Fixture::new();
+    let clean = fx.add_worktree("clean-for-focus");
+    let repo = fx.open();
+    let (view, cx) = open_app(cx, Some(repo));
+    cx.run_until_parked();
+
+    view.read_with(cx, |app, _| {
+        let row = app
+            .rows
+            .iter()
+            .find(|r| r.display_name() == "clean-for-focus")
+            .expect("clean-for-focus row");
+        assert_eq!(
+            row.status.as_ref().map(|s| s.dirty),
+            Some(false),
+            "the new worktree starts clean"
+        );
+    });
+
+    cx.deactivate_window();
+    std::fs::create_dir_all(clean.join("src")).unwrap();
+    std::fs::write(clean.join("src").join("lib.rs"), "fn x() {}\n").unwrap();
+    view.read_with(cx, |app, _| {
+        assert!(!app.window_active);
+        assert!(
+            !app.repository_stale,
+            "a nested edit must not be a watcher event"
+        );
+    });
+
+    cx.update(|window, _| window.activate_window());
+    cx.run_until_parked();
+
+    view.read_with(cx, |app, _| {
+        assert!(app.window_active);
+        let row = app
+            .rows
+            .iter()
+            .find(|r| r.display_name() == "clean-for-focus")
+            .expect("clean-for-focus row");
+        assert_eq!(
+            row.status.as_ref().map(|s| s.dirty),
+            Some(true),
+            "activation must rescan dirty status even when the watcher saw nothing"
+        );
+    });
+}
+
+/// `on_window_activation` must guard on `loading` exactly like
+/// `on_watcher_change` does: an activation while a load is already in
+/// flight must not start a second, concurrent one — the in-flight pass's
+/// own with-status `apply_rows` call already reloads again if
+/// `repository_stale` got set in the meantime.
+#[gpui::test]
+fn activation_does_not_reload_while_a_load_is_in_flight(cx: &mut TestAppContext) {
+    let fx = Fixture::new();
+    let repo = fx.open();
+    let (view, cx) = open_app(cx, Some(repo));
+    cx.run_until_parked();
+
+    cx.deactivate_window();
+    let generation_before = view.update_in(cx, |app, _window, _cx| {
+        app.loading = true;
+        app.generation
+    });
+
+    cx.update(|window, _| window.activate_window());
+    cx.run_until_parked();
+
+    view.read_with(cx, |app, _| {
+        assert!(app.window_active);
+        assert_eq!(
+            app.generation, generation_before,
+            "activation while `loading` is true must not start a second reload"
+        );
+    });
+}
+
+/// Same guard, for `prune_in_flight` — mirrors
+/// `watcher_changes_during_a_prune_only_mark_stale_and_reload_once_at_the_end`,
+/// but for the activation path instead of the watcher.
+#[gpui::test]
+fn activation_does_not_reload_while_a_prune_is_in_flight(cx: &mut TestAppContext) {
+    let fx = Fixture::new();
+    let repo = fx.open();
+    let (view, cx) = open_app(cx, Some(repo));
+    cx.run_until_parked();
+
+    cx.deactivate_window();
+    let generation_before = view.update_in(cx, |app, _window, _cx| {
+        app.prune_in_flight = true;
+        app.generation
+    });
+
+    cx.update(|window, _| window.activate_window());
+    cx.run_until_parked();
+
+    view.read_with(cx, |app, _| {
+        assert!(app.window_active);
+        assert_eq!(
+            app.generation, generation_before,
+            "activation while a prune is in flight must not start a reload — the \
+             prune's own completion reload already handles it"
+        );
+    });
+}
+
 /// Filesystem notifications must not launch a full status walk while the
 /// window is inactive. Multiple notifications are represented by one stale
 /// bit and produce exactly one refresh when the window becomes active again.
@@ -1811,8 +2324,8 @@ fn watcher_change_during_reload_waits_for_reactivation(cx: &mut TestAppContext) 
 fn fetch_keybinding_dispatches_and_reports_failure_offline(cx: &mut TestAppContext) {
     // No test fixture in this file ever runs `git remote add` -- every
     // repository `Fixture` builds has zero configured remotes. That makes
-    // `data::fetch`'s `default_remote_name` fail *before* it ever
-    // constructs a `git fetch` command (see `data.rs`), so dispatching the
+    // `wtm::commands::fetch`'s `default_remote_name` fail *before* it ever
+    // constructs a `git fetch` command (see `commands/fetch.rs`), so dispatching the
     // real ⌘⇧F binding here exercises the real production path end to end
     // — action dispatch, the background spawn, `apply_fetch_result` —
     // without the test ever touching the network, deterministically.
@@ -1990,8 +2503,9 @@ fn recent_command_survives_closing_the_run_dialog(cx: &mut TestAppContext) {
     cx.executor().advance_clock(Duration::from_secs(2));
 
     // Close the finished run — the suggestion list is read from
-    // `WtmApp::recent_commands`, which outlives the dialog itself (session
-    // state, not dialog state), so this must still show up after reopening.
+    // `WtmApp::prefs.recent_commands`, which outlives the dialog itself
+    // (session state, not dialog state), so this must still show up after
+    // reopening.
     cx.simulate_keystrokes("escape");
     view.read_with(cx, |app, _| {
         assert!(app.run_command.is_none(), "escape closes the dialog");
@@ -1999,10 +2513,215 @@ fn recent_command_survives_closing_the_run_dialog(cx: &mut TestAppContext) {
 
     let repo_path = fx.root().to_path_buf();
     view.read_with(cx, |app, _| {
-        let recent = app
-            .recent_commands
-            .get(&repo_path)
-            .expect("the repository must have a recent-commands entry after one run");
-        assert_eq!(recent, &vec!["echo one".to_string()]);
+        assert_eq!(
+            app.prefs.recent_commands.get(&repo_path),
+            Some(&vec!["echo one".to_string()]),
+            "the repository must have a recent-commands entry after one run"
+        );
+    });
+}
+
+#[gpui::test]
+fn set_terminal_persists_and_empty_clears(cx: &mut TestAppContext) {
+    let fx = Fixture::new();
+    let repo = fx.open();
+    let (view, cx) = open_app(cx, Some(repo));
+    cx.run_until_parked();
+
+    // The real flow: the settings sheet's Terminal field only updates
+    // `prefs.terminal` in memory as the user types (`update_terminal_pref`,
+    // wired to the field's `Changed` event) — `close_dialog` is what
+    // persists it, once, when the sheet closes.
+    view.update_in(cx, |app, window, cx| {
+        app.on_open_settings(&OpenSettings, window, cx);
+        app.update_terminal_pref("iTerm".into(), cx);
+        app.close_dialog(window, cx);
+    });
+    view.read_with(cx, |app, _| {
+        assert_eq!(app.prefs.terminal.as_deref(), Some("iTerm"));
+    });
+    assert_eq!(crate::prefs::load().terminal.as_deref(), Some("iTerm"));
+
+    view.update_in(cx, |app, window, cx| {
+        app.on_open_settings(&OpenSettings, window, cx);
+        app.update_terminal_pref("   ".into(), cx);
+        app.close_dialog(window, cx);
+    });
+    view.read_with(cx, |app, _| {
+        assert_eq!(app.prefs.terminal, None);
+    });
+    assert_eq!(crate::prefs::load().terminal, None);
+}
+
+/// The Terminal field's own keyboard behavior, driven through real
+/// keystrokes rather than calling `update_terminal_pref`/`close_dialog`
+/// directly (see the test above): typing updates `prefs.terminal` live,
+/// and Escape closes the settings sheet like every other `TextInput` in
+/// the app — see `close_dialog`'s doc on why nothing here treats Escape as
+/// destructive.
+#[gpui::test]
+fn settings_terminal_field_escape_closes_and_typing_updates_prefs(cx: &mut TestAppContext) {
+    let fx = Fixture::new();
+    let repo = fx.open();
+    let (view, cx) = open_app(cx, Some(repo));
+    cx.run_until_parked();
+
+    view.update_in(cx, |app, window, cx| {
+        app.on_open_settings(&OpenSettings, window, cx);
+        let handle = app.terminal_input.focus_handle(cx);
+        window.focus(&handle);
+    });
+    view.read_with(cx, |app, _| {
+        assert!(app.settings_open, "settings must be open")
+    });
+
+    cx.simulate_input("iTerm");
+    view.read_with(cx, |app, _| {
+        assert_eq!(
+            app.prefs.terminal.as_deref(),
+            Some("iTerm"),
+            "typing into the field must update prefs.terminal live"
+        );
+        assert!(app.settings_open, "typing must not itself close the sheet");
+    });
+
+    cx.simulate_keystrokes("escape");
+    view.read_with(cx, |app, _| {
+        assert!(
+            !app.settings_open,
+            "Escape while the field is focused must close the settings sheet"
+        );
+    });
+    assert_eq!(
+        crate::prefs::load().terminal.as_deref(),
+        Some("iTerm"),
+        "closing via Escape must persist the typed value"
+    );
+}
+
+/// `WtmApp::new` seeds its live state from whatever `Prefs` it's handed —
+/// `main.rs` always hands it `prefs::load()`'s result, but this drives that
+/// same path directly (`open_app_with_prefs`) rather than round-tripping
+/// through the real config file, so the test controls exactly what was
+/// "on disk" without needing its own `EnvGuard` dance.
+#[gpui::test]
+fn app_restores_sort_mode_and_recent_commands_from_prefs(cx: &mut TestAppContext) {
+    let fx = Fixture::new();
+    let repo = fx.open();
+    let repo_path = fx.root().to_path_buf();
+    let prefs = Prefs {
+        sort_mode: SortMode::Recent,
+        recent_commands: HashMap::from([(repo_path.clone(), vec!["cargo test".to_string()])]),
+        ..Default::default()
+    };
+    let (view, cx) = open_app_with_prefs(cx, Some(repo), prefs);
+    cx.run_until_parked();
+
+    view.read_with(cx, |app, _| {
+        assert_eq!(app.sort_mode, SortMode::Recent);
+        assert_eq!(
+            app.prefs.recent_commands.get(&repo_path),
+            Some(&vec!["cargo test".to_string()]),
+            "the recent-commands list for this repository must be restored from prefs"
+        );
+    });
+}
+
+/// The write side of the test above: `set_sort_mode` must persist to
+/// `prefs.sort_mode` immediately, and a fresh `prefs::load()` (reading
+/// back from the same on-disk `gui.json` `EnvGuard` pointed the process
+/// at) must see it.
+#[gpui::test]
+fn set_sort_mode_persists_to_prefs_and_disk(cx: &mut TestAppContext) {
+    let fx = Fixture::new();
+    let repo = fx.open();
+    let (view, cx) = open_app(cx, Some(repo));
+    cx.run_until_parked();
+
+    view.update_in(cx, |app, _window, cx| {
+        app.set_sort_mode(SortMode::Recent, cx);
+    });
+
+    view.read_with(cx, |app, _| {
+        assert_eq!(app.prefs.sort_mode, SortMode::Recent);
+    });
+    assert_eq!(crate::prefs::load().sort_mode, SortMode::Recent);
+}
+
+#[gpui::test]
+fn forget_missing_repos_drops_only_gone_sidebar_entries(cx: &mut TestAppContext) {
+    let fx = Fixture::new();
+    let missing = PathBuf::from("/tmp/wtm-forget-missing-does-not-exist");
+    wtm::registry::remember(&missing, "gone").unwrap();
+    let present = fx.root().to_path_buf();
+    wtm::registry::remember(&present, "worktree-manager").unwrap();
+
+    let repo = fx.open();
+    let (view, cx) = open_app(cx, Some(repo));
+    cx.run_until_parked();
+
+    view.read_with(cx, |app, _| {
+        assert!(
+            app.repos.iter().any(|r| r.path == missing),
+            "the missing entry must be in the sidebar before cleanup"
+        );
+    });
+
+    view.update_in(cx, |app, _window, cx| app.forget_missing_repos(cx));
+
+    view.read_with(cx, |app, _| {
+        assert!(
+            !app.repos.iter().any(|r| r.path == missing),
+            "the missing entry must be gone"
+        );
+        assert!(
+            app.repos.iter().any(|r| r.path == present),
+            "existing repositories must stay"
+        );
+    });
+}
+
+/// The palette's "Remove Missing from Sidebar" command must reach the same
+/// `forget_missing_repos` real users trigger from the empty-space context
+/// menu — driven here through the palette's real search-and-Enter flow
+/// (not the method directly), and the resulting status message must name
+/// the repository that was removed rather than just counting it.
+#[gpui::test]
+fn remove_missing_repos_via_palette_names_and_removes_the_entry(cx: &mut TestAppContext) {
+    let fx = Fixture::new();
+    let missing = PathBuf::from("/tmp/wtm-forget-missing-via-palette-does-not-exist");
+    wtm::registry::remember(&missing, "gone-via-palette").unwrap();
+
+    let repo = fx.open();
+    let (view, cx) = open_app(cx, Some(repo));
+    cx.run_until_parked();
+
+    view.read_with(cx, |app, _| {
+        assert!(
+            app.repos.iter().any(|r| r.path == missing),
+            "the missing entry must be in the sidebar before cleanup"
+        );
+    });
+
+    cx.simulate_keystrokes("cmd-k");
+    cx.simulate_input("Missing");
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+
+    view.read_with(cx, |app, _| {
+        assert!(
+            app.palette.is_none(),
+            "Enter selects the command and closes the palette"
+        );
+        assert!(
+            !app.repos.iter().any(|r| r.path == missing),
+            "the missing entry must be gone"
+        );
+        let status = app.status.as_ref().expect("a status message must be set");
+        assert!(
+            status.text.contains("gone-via-palette"),
+            "the message must name the removed repository, not just count it: {}",
+            status.text
+        );
     });
 }

@@ -173,9 +173,7 @@ pub struct WtmApp {
     /// pills can show "unknown" instead of implying "clean".
     awaiting_status: bool,
     status: Option<StatusMessage>,
-    /// How `rows` is ordered — see [`SortMode`]. Session-only: nothing
-    /// persists this across a restart yet, unlike `sidebar_visible`/
-    /// `detail_panel_visible`, which live in `Prefs`.
+    /// How `rows` is ordered — see [`SortMode`]. Persisted in `Prefs`.
     sort_mode: SortMode,
     /// HEAD commit unix-time per worktree path, for `Recent`-mode sorting
     /// and each row's age display — loaded in the background after every
@@ -224,9 +222,9 @@ pub struct WtmApp {
     /// every reload.
     watched: Option<(PathBuf, Vec<PathBuf>)>,
     /// Whether the window is currently active. Filesystem changes received
-    /// while inactive only mark the repository stale; activation performs one
-    /// coalesced refresh so background Git activity cannot spend CPU scanning
-    /// every worktree while the app is hidden behind another window.
+    /// while inactive only mark the repository stale; becoming active
+    /// performs one refresh (the coalesced stale bit, and also a rescan
+    /// for nested working-tree edits the non-recursive watcher cannot see).
     window_active: bool,
     repository_stale: bool,
     /// A prune or bulk remove this app started is still running. Every
@@ -298,6 +296,9 @@ pub struct WtmApp {
     /// Live GUI preferences, initialized from `prefs::load()` in `main.rs`
     /// and persisted by `save_prefs` on every meaningful change.
     prefs: Prefs,
+    /// Terminal-app field in Settings. Empty means `$WTM_TERMINAL` / default.
+    terminal_input: Entity<TextInput>,
+    _terminal_sub: Subscription,
     /// Type-to-filter field shown in the list header (⌘F focuses it,
     /// Escape while it has focus clears it — see its `Changed`/`Cancel`
     /// subscription wired in `new`). Always present rather than
@@ -322,11 +323,10 @@ pub struct WtmApp {
     /// way — see [`crate::run_panel::RunCommandState`]'s module doc for why
     /// this is its own field rather than a fourth `dialogs::Dialog` variant.
     run_command: Option<RunCommandState>,
-    /// Commands recently run via the Run Command dialog, most-recent-first,
-    /// keyed by repository (its main worktree root, `OpenRepo::path()`) so a
-    /// build/test command typed in one repo doesn't clutter another's
-    /// suggestions. Session-only: nothing persists this across a restart yet.
-    recent_commands: HashMap<PathBuf, Vec<String>>,
+    /// Incremented each time the create dialog opens. Background branch/ref
+    /// loads capture the value and ignore their result if it no longer
+    /// matches the dialog currently on screen.
+    create_load_id: u64,
     /// The worktree list's own scroll position — `ui::scrollbar`/
     /// `ui::scroll_fade_*` both need a live handle to read geometry off of,
     /// which `uniform_list` only exposes once tracked (`UniformListScrollHandle`
@@ -368,10 +368,20 @@ fn sidebar_sorted(mut entries: Vec<RepoEntry>) -> Vec<RepoEntry> {
 impl WtmApp {
     pub fn new(
         initial: Option<OpenRepo>,
-        prefs: Prefs,
+        mut prefs: Prefs,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        // `prefs.recent_commands` is the single store for this list (see
+        // `WtmApp`'s doc on why there is no separate in-memory field) — cap
+        // each repository's list on load the same way every write already
+        // does, so a `gui.json` from an older build (or hand-edited) can
+        // never hand the Run Command dialog more suggestions than it's
+        // meant to show.
+        for recent in prefs.recent_commands.values_mut() {
+            recent.truncate(run_panel::MAX_RECENT_STORED);
+        }
+
         let filter_input = cx.new(|cx| TextInput::new("Filter", cx));
         // Only ever calls back through `WtmApp`'s own methods — same
         // discipline `dialogs::CreateState::new` and `palette::PaletteState::new`
@@ -384,6 +394,23 @@ impl WtmApp {
             }
         });
 
+        let terminal_input =
+            cx.new(|cx| TextInput::new(data::effective_terminal(prefs.terminal.as_deref()), cx));
+        if let Some(name) = prefs.terminal.as_deref() {
+            terminal_input.update(cx, |input, cx| {
+                input.set_value(name.to_string(), window, cx);
+            });
+        }
+        let terminal_sub = cx.subscribe_in(&terminal_input, window, {
+            move |app: &mut WtmApp, input, event, window, cx| match event {
+                InputEvent::Changed => {
+                    let value = input.read(cx).value().to_string();
+                    app.update_terminal_pref(value, cx);
+                }
+                InputEvent::Cancel | InputEvent::Submit => app.close_dialog(window, cx),
+            }
+        });
+
         let mut this = Self {
             repos: sidebar_sorted(registry::load().entries()),
             active: None,
@@ -391,7 +418,7 @@ impl WtmApp {
             selected: None,
             awaiting_status: true,
             status: None,
-            sort_mode: SortMode::default(),
+            sort_mode: prefs.sort_mode,
             activity: HashMap::new(),
             fetching: false,
             sidebar_visible: prefs.sidebar_visible,
@@ -424,13 +451,15 @@ impl WtmApp {
             context_menu_target: None,
             settings_open: false,
             prefs,
+            terminal_input,
+            _terminal_sub: terminal_sub,
             filter_input,
             _filter_sub: filter_sub,
             multi_selected: BTreeSet::new(),
             palette: None,
             bulk_remove: None,
             run_command: None,
-            recent_commands: HashMap::new(),
+            create_load_id: 0,
             list_scroll: UniformListScrollHandle::new(),
             changes_scroll: ScrollHandle::new(),
             files_tree_scroll: ScrollHandle::new(),
@@ -623,6 +652,7 @@ impl Render for WtmApp {
             Some(settings::render(
                 &self.prefs,
                 self.active.as_ref(),
+                self.terminal_input.clone(),
                 &self.settings_scroll,
                 &theme,
                 cx,

@@ -1278,7 +1278,10 @@ impl WtmApp {
         // still loading, same as every other detail-panel field that
         // degrades to its bare label until `details` arrives.
         let changes_label: SharedString = match &self.details {
-            Some(details) => format!("Changes ({})", details.dirty_total).into(),
+            Some(details) => match details.dirty_total {
+                Some(n) => format!("Changes ({n})").into(),
+                None => "Changes (unavailable)".into(),
+            },
             None => "Changes".into(),
         };
         div()

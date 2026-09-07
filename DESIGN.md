@@ -125,8 +125,9 @@ use crate::error::Result;
 pub fn run(cwd: &Path, args: &[&str]) -> Result<()>;
 
 /// Run `git <args>`, returning the captured output regardless of exit
-/// status. Errors only if the process cannot be spawned. Used by the GUI
-/// (`data::fetch`) so it never spawns `git` directly.
+/// status. Errors only if the process cannot be spawned. Used by
+/// `commands::fetch::fetch`, which serves the CLI, TUI, and GUI, so none of
+/// them spawn `git fetch` directly.
 pub fn run_capture(cwd: &Path, args: &[&str]) -> Result<std::process::Output>;
 
 /// Add an existing branch. Quiet captures Git output; otherwise it streams.
@@ -137,8 +138,11 @@ pub fn worktree_add_new_branch(main_root: &Path, path: &Path, branch: &str, base
 pub fn worktree_remove(main_root: &Path, path: &Path, force: bool) -> Result<()>;
 /// `git worktree prune`.
 pub fn worktree_prune(main_root: &Path) -> Result<()>;
-/// `git branch -D <name>` (only ever called after explicit user opt-in).
-pub fn branch_delete(main_root: &Path, name: &str) -> Result<()>;
+/// `git branch -D <names...>` (only ever called after explicit user opt-in).
+/// One spawn for any number of branches. git reports each failure and keeps
+/// going, so a non-zero exit means at least one was not deleted. Prune
+/// attributes failures by falling back to one call per name.
+pub fn branch_delete(main_root: &Path, names: &[&str]) -> Result<()>;
 ```
 
 ## src/registry.rs — known-repository registry (GUI sidebar)
@@ -148,8 +152,10 @@ loaded from and saved to `$WTM_CONFIG_DIR/repos.json` (atomic temp-file +
 rename). `pub fn load() -> Registry` degrades to an empty registry on any
 read/parse failure — a broken cache must never stop the app starting.
 `pub fn remember(path: &Path, name: &str) -> Result<()>` records a repo and
-persists immediately; `Registry::forget` drops an entry in memory only. The
-CLI never touches this file; it always discovers a repo from the cwd.
+persists immediately; `Registry::forget` drops an entry in memory only.
+`Registry::forget_missing` drops every entry whose path is no longer a
+directory (also in memory only) and returns how many were removed. The CLI
+never touches this file; it always discovers a repo from the cwd.
 
 ## src/cdfile.rs — `--cd` / shell wrapper handoff
 
@@ -364,6 +370,7 @@ pub enum Command {
     Remove(RemoveArgs),  // alias: rm; --force, --with-branch
     Switch(SwitchArgs),  // aliases: cd, sw; hidden --print-path
     Prune(PruneArgs),    // alias: clean; --merged --gone --dry-run --force
+    Fetch(FetchArgs),    // --remote
     Open(OpenArgs),      // --with <cmd>
     Path(PathArgs),
     App,                 // alias: gui; open the desktop app
@@ -379,9 +386,9 @@ plain text). Every command and flag gets real help text (doc comments).
 
 ## src/commands/ — one module per command
 
-`pub mod add; pub mod completions; pub mod config_cmd; pub mod init;
-pub mod list; pub mod open; pub mod path; pub mod prune; pub mod remove;
-pub mod switch;` — each exposes
+`pub mod add; pub mod completions; pub mod config_cmd; pub mod fetch;
+pub mod init; pub mod list; pub mod open; pub mod path; pub mod prune;
+pub mod remove; pub mod switch;` — each exposes
 `pub fn run(args: &XArgs, global: &GlobalArgs) -> crate::error::Result<()>`
 (signature may take resolved `RepoContext`/`Config` instead — keep it
 consistent across all commands: resolve ctx+config in a shared
@@ -410,13 +417,26 @@ Key behaviors:
   without it print the path plus a hint (stderr) about `wtm init zsh`.
 - prune: candidates = missing/prunable entries (always) + merged (only with
   --merged) + upstream_gone (only with --gone). Skip main worktree and any
-  candidate whose branch ∈ protected_branches. --dry-run prints the plan and
-  exits 0. Respect dirty-safety like remove unless --force. Always finish
-  with `git worktree prune`. Process candidates independently, continue after
-  removal or branch-deletion failures, and report failures together after the
-  registry refresh. Branch deletion: merged/gone candidates get
-  their branch deleted (that is the point of pruning); protected branches
-  never; missing-dir entries never (we only clean the registry).
+  candidate whose branch ∈ protected_branches. `prune::exclude_cwd` then
+  drops any candidate whose path contains the process cwd, applied by each
+  caller (CLI `run`, TUI) right after selecting candidates — a worktree
+  containing cwd never appears in a `--dry-run` list or a confirm overlay,
+  and a stderr warning names it. `execute`/`remove_one` no longer do this
+  check (the GUI's process cwd is meaningless, so it must not silently skip
+  a legitimate prune there); `execute`'s `skipped` means dirty only.
+  --dry-run prints the plan and exits 0. Respect dirty-safety like remove
+  unless --force. Always finish with `git worktree prune`. Process
+  candidates independently, continue after removal or branch-deletion
+  failures, and report failures together after the registry refresh. Branch
+  deletion: merged/gone candidates get their branch deleted (that is the
+  point of pruning); protected branches never; missing-dir entries never (we
+  only clean the registry).
+- fetch: remote = `--remote` > configured `origin` > first remote name
+  alphabetically. No remotes configured ⇒ `Error::Other` ("no configured
+  remotes"). Runs `git fetch --prune` (stale remote-tracking refs would keep
+  upstream-gone status false). Prints one stdout summary line — "fetched
+  `<remote>` (`<N>` refs)" or "(no refs updated)" — suppressed by
+  `--quiet`.
 - open: resolve worktree (picker if omitted); `--with <cmd>` ⇒ run via
   `sh -c` with cwd = worktree, wait, propagate failure; else editor =
   config.editor > $VISUAL > $EDITOR (error Config if none set). Preflight the

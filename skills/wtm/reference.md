@@ -118,6 +118,17 @@ for merged/gone candidates are deleted as part of pruning; missing-directory
 entries only lose their registry entry. Always finishes with
 `git worktree prune`.
 
+### `wtm fetch`
+
+Run `git fetch --prune` against the default remote (`origin` if configured,
+otherwise the first remote name alphabetically) so ahead/behind counts and
+`wtm prune --gone` see a current picture. Shells out to `git` so SSH
+agents and `credential.helper` keep working.
+
+| Flag | Description |
+|---|---|
+| `--remote <name>` | Fetch this remote instead of the default. |
+
 ### `wtm open [name]`
 
 Open a worktree in the editor (resolves `<name>`, or shows the picker if

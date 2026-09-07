@@ -115,6 +115,7 @@ wtm open feature/login             # open a worktree in $EDITOR
 
 wtm remove hotfix                  # remove a worktree (refuses if dirty)
 wtm prune --merged --gone          # clean up merged / upstream-gone worktrees
+wtm fetch                          # update remote-tracking refs (ahead/behind, gone)
 
 wtm                                 # opens the desktop app on a terminal
 wtm tui                             # or launch the terminal UI directly
@@ -278,7 +279,8 @@ bound.
 `~/.config/wtm/config.toml` (honoring the same `$WTM_CONFIG_DIR`/
 `$XDG_CONFIG_HOME` overrides): `~/.config/wtm/repos.json` (the sidebar's
 repository list) and `~/.config/wtm/gui.json` (appearance, panel visibility,
-window frame, last-opened repo). Neither is read by the CLI. The app never
+window frame, last-opened repo, terminal app, sort mode, and recent Run
+Command suggestions). Neither is read by the CLI. The app never
 writes to `.worktree.toml` or `config.toml` — those stay exactly what the
 [Configuration](#configuration) section below describes, shared read-only
 with the CLI (the settings sheet shows the effective values with a link to
@@ -320,6 +322,7 @@ files, recent commits).
 | `y` | Copy worktree path |
 | `/` | Fuzzy filter |
 | `r` | Refresh status |
+| `f` | Fetch from the default remote |
 | `?` | Help overlay |
 | `q` / `Esc` | Quit |
 
@@ -459,6 +462,17 @@ the point); missing-directory entries only have their registry entry
 cleaned up — their branch, if any, is left alone. Always finishes with
 `git worktree prune`.
 
+### `wtm fetch`
+
+Run `git fetch --prune` against the default remote (`origin` if configured,
+otherwise the first remote name alphabetically) so ahead/behind counts and
+`wtm prune --gone` see a current picture. Shells out to `git` so SSH
+agents and `credential.helper` keep working.
+
+| Flag | Description |
+| --- | --- |
+| `--remote <name>` | Fetch this remote instead of the default. |
+
 ### `wtm open [name]`
 
 Open a worktree in your editor (resolves `<name>`, or shows the picker if
@@ -475,7 +489,9 @@ none is set and `--with` wasn't given.
 
 Print a worktree's path and nothing else — no interactive picker, ever, so
 it's safe to use in scripts. If `<name>` is omitted, prints the nearest Git
-worktree root containing your current directory.
+worktree root containing your current directory. With `-C <repo>`,
+containment is limited to that repository's registry: if cwd is not inside
+one of its worktrees, the command prints that repository's main worktree.
 
 ### `wtm app` (alias: `gui`)
 

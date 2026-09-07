@@ -150,7 +150,10 @@ impl WtmApp {
     }
 
     /// Apply a finished listing, ignoring results from a superseded load.
-    fn apply_rows(
+    /// `pub(super)` (rather than private) so `app::integration_tests` can
+    /// drive the fast pass and the with-status pass independently — see
+    /// e.g. `fast_pass_does_not_clear_an_open_prune_dialog`.
+    pub(super) fn apply_rows(
         &mut self,
         generation: u64,
         result: Result<Vec<WorktreeInfo>, String>,
@@ -227,7 +230,29 @@ impl WtmApp {
                 // can itself have picked a now-hidden row; both are why
                 // this runs *after* it rather than folding into it.
                 self.clamp_selection_to_filter(cx);
+                // Merged/gone detection needs status — every row still
+                // carries `status == None` on the fast pass, which would
+                // otherwise empty an open, populated Prune dialog's
+                // candidate list (and flip `delete_branch` back to false)
+                // until the status pass lands right after it.
+                if with_status {
+                    if let Some(Dialog::Prune(state)) = &mut self.dialog {
+                        if !state.busy {
+                            if let Some(repo) = self.active.clone() {
+                                state.recompute(&repo, &self.rows);
+                            }
+                        }
+                    }
+                }
                 self.sync_watcher(cx);
+                if with_status {
+                    // Force a refresh even though the selected path hasn't
+                    // changed: the detail panel's dirty count is only
+                    // accurate once status has landed, and
+                    // `load_details_for_selection` is normally a no-op when
+                    // `details_path` already matches the selection.
+                    self.details_path = None;
+                }
                 self.load_details_for_selection(cx);
                 self.spawn_activity_load(generation, cx);
                 // A right-click menu open for a worktree row that a
@@ -324,12 +349,29 @@ impl WtmApp {
     // -------------------------------------------------------------
 
     /// Keep filesystem notifications cheap while the window is hidden. The
-    /// activation observer is the only place that turns the coalesced stale
-    /// bit back into work, so an arbitrary burst of background Git activity
-    /// results in one refresh at most.
+    /// activation observer turns the coalesced stale bit back into work, so
+    /// a burst of background Git activity results in one refresh at most.
+    ///
+    /// Becoming active also rescans even when the watcher saw nothing:
+    /// worktree roots are watched non-recursively, so an edit under `src/`
+    /// never marks the repository stale, and dirty pills would otherwise
+    /// stay wrong until the next ⌘R or `.git` event.
+    ///
+    /// Guards on `loading`/`prune_in_flight` exactly like `on_watcher_change`
+    /// does: an activation while a load or a prune is already in flight must
+    /// not start a second, concurrent one — the in-flight pass's own
+    /// with-status `apply_rows`, or the prune's completion reload, already
+    /// picks up `repository_stale` and reloads once on its own.
     pub(super) fn on_window_activation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let was_active = self.window_active;
         self.window_active = window.is_window_active();
-        if self.window_active && self.repository_stale {
+        if !self.window_active {
+            return;
+        }
+        if self.loading || self.prune_in_flight {
+            return;
+        }
+        if !was_active || self.repository_stale {
             self.reload(cx);
         }
     }

@@ -198,21 +198,29 @@ fn draw_details(f: &mut Frame, app: &App, area: Rect) {
                     ]));
 
                     lines.push(Line::raw(""));
-                    lines.push(Line::styled(
-                        format!("changes ({})", details.dirty_total),
-                        Style::new().add_modifier(Modifier::BOLD),
-                    ));
-                    for file in &details.dirty_files {
-                        lines.push(Line::from(format!("  {file}")));
-                    }
-                    let more = details
-                        .dirty_total
-                        .saturating_sub(details.dirty_files.len());
-                    if more > 0 {
-                        lines.push(Line::styled(
-                            format!("  … and {more} more"),
-                            Style::new().fg(Color::DarkGray),
-                        ));
+                    match details.dirty_total {
+                        Some(total) => {
+                            lines.push(Line::styled(
+                                format!("changes ({total})"),
+                                Style::new().add_modifier(Modifier::BOLD),
+                            ));
+                            for file in &details.dirty_files {
+                                lines.push(Line::from(format!("  {file}")));
+                            }
+                            let more = total.saturating_sub(details.dirty_files.len());
+                            if more > 0 {
+                                lines.push(Line::styled(
+                                    format!("  … and {more} more"),
+                                    Style::new().fg(Color::DarkGray),
+                                ));
+                            }
+                        }
+                        None => {
+                            lines.push(Line::styled(
+                                "changes (unavailable)",
+                                Style::new().add_modifier(Modifier::BOLD),
+                            ));
+                        }
                     }
 
                     lines.push(Line::raw(""));
@@ -281,6 +289,7 @@ fn draw_help(f: &mut Frame) {
         ("y", "copy path to clipboard"),
         ("/", "fuzzy filter (esc clears)"),
         ("r", "refresh status"),
+        ("f", "fetch from the default remote"),
         ("?", "this help"),
         ("q / esc", "quit"),
     ];
@@ -562,7 +571,7 @@ mod tests {
             Some(crate::worktree::WorktreeDetails {
                 upstream: Some("origin/main".to_string()),
                 dirty_files: vec!["src/lib.rs".to_string()],
-                dirty_total: 18,
+                dirty_total: Some(18),
                 commits: vec![crate::worktree::CommitLine {
                     id: "abc1234".to_string(),
                     summary: "initial commit".to_string(),
@@ -576,6 +585,29 @@ mod tests {
         assert!(out.contains("src/lib.rs"));
         assert!(out.contains("… and 17 more"));
         assert!(out.contains("initial commit"));
+    }
+
+    #[test]
+    fn detail_pane_does_not_report_a_failed_dirty_scan_as_clean() {
+        let mut app = app();
+        app.details.insert(
+            PathBuf::from("/wt/main"),
+            Some(crate::worktree::WorktreeDetails {
+                upstream: None,
+                dirty_files: vec![],
+                dirty_total: None,
+                commits: vec![],
+            }),
+        );
+        let out = render(&app);
+        assert!(
+            out.contains("changes (unavailable)"),
+            "a failed status scan must not look like zero dirty files: {out}"
+        );
+        assert!(
+            !out.contains("changes (0)"),
+            "a failed status scan must not render as known-clean: {out}"
+        );
     }
 
     #[test]

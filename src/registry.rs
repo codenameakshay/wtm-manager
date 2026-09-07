@@ -98,6 +98,14 @@ impl Registry {
         self.repos.retain(|r| r.path != path);
         self.repos.len() != before
     }
+
+    /// Drop every entry whose path is no longer a directory. Returns how
+    /// many entries were removed. Nothing on disk is touched.
+    pub fn forget_missing(&mut self) -> usize {
+        let before = self.repos.len();
+        self.repos.retain(|r| r.exists());
+        before - self.repos.len()
+    }
 }
 
 /// Path of the registry file, or `None` when no config directory can be
@@ -210,5 +218,23 @@ mod tests {
 
         let names: Vec<String> = registry.entries().into_iter().map(|e| e.name).collect();
         assert_eq!(names, vec!["b".to_string()]);
+    }
+
+    #[test]
+    fn forget_missing_drops_only_paths_that_are_not_directories() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let present = tmp.path().join("present");
+        std::fs::create_dir(&present).unwrap();
+        let mut registry = Registry::default();
+        registry.remember(&present, "present");
+        registry.remember(
+            Path::new("/tmp/wtm-does-not-exist-for-forget-missing"),
+            "gone",
+        );
+
+        assert_eq!(registry.forget_missing(), 1);
+        let names: Vec<String> = registry.entries().into_iter().map(|e| e.name).collect();
+        assert_eq!(names, vec!["present".to_string()]);
+        assert_eq!(registry.forget_missing(), 0);
     }
 }

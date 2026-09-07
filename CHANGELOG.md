@@ -5,6 +5,60 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] - 2026-09-07
+
+### Added
+
+- **App: sort mode and recent commands survive a restart.** Name / Recent /
+  Status and per-repository Run Command suggestions are stored in `gui.json`.
+- **App: Settings can set the terminal app.** The Terminal field writes
+  `gui.json` and takes precedence over `$WTM_TERMINAL`. Leave it empty
+  for the environment variable or the platform default.
+- **`wtm fetch` and TUI `f`.** Fetch from the default remote so CLI and
+  TUI ahead/behind and prune --gone match the app's Fetch button.
+- **App: Remove Missing from Sidebar.** One palette / empty-space menu
+  action forgets every sidebar entry whose folder is gone. It does not
+  touch anything on disk.
+
+### Changed
+
+- **`WorktreeDetails::dirty_total` is `Option<usize>`.** `None` means the
+  scan failed.
+
+### Fixed
+
+- **App: picking a remote-only branch in New Worktree now branches from
+  that tracking ref.** The picker used to strip `origin/` and create a
+  new local branch from `default_base`/`HEAD`, so clicking `origin/foo`
+  could land you on an unrelated commit.
+- **`wtm prune` refuses the worktree that contains the current directory**,
+  the same way `wtm remove` already does. Pruning from inside a merged
+  worktree used to delete the directory the shell was standing in.
+- **App: dirty counts refresh when the window becomes active.** Nested
+  file edits do not fire the worktree watcher (it does not recurse into
+  `src/` or `node_modules`). Returning to the app now rescans status, so
+  a worktree you dirtied in an editor no longer looks clean until ⌘R.
+- **A failed dirty scan is no longer shown as zero dirty files.** The
+  detail pane and Changes tab used to print `changes (0)` when libgit2
+  could not scan the worktree. They now say `unavailable`, matching
+  `wtm list`.
+- **App: the Prune dialog updates when status finishes loading.** Opening
+  Prune during the fast listing, then turning on Merged/Gone, used to keep
+  an empty candidate list even after status landed. The open dialog now
+  recomputes from the new rows.
+- **App: untracked directories show an Untracked badge in the Files tab.**
+  git2 reports a new directory as `src/`; the tree looked up `src` and
+  left the row unbadged.
+- **App: a late branch/ref listing cannot fill a newer New Worktree
+  dialog.** Switching repository and reopening Create could apply the
+  previous repo's branches to the new form. Each dialog now has a load
+  id, and stale results are ignored.
+- **App: Settings names `gui.json`, not `prefs.json`.** The terminal
+  hint pointed at a file that does not exist.
+- **TUI: idle frames no longer full-redraw at 10 Hz.** The loop still
+  polls every 100ms so status can land, but it paints only when the
+  model changed.
+
 ## [0.8.0] - 2026-09-07
 
 ### Changed
@@ -46,6 +100,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fails mid-write (for example `wl-copy` on an X11 session) no longer
   aborts the copy; the TUI moves on to the next tool and finally to
   OSC 52.
+- **App: background repository refresh no longer runs while the window
+  is hidden.** Watcher events while inactive only mark the repository
+  stale; one reload runs when the window becomes active again.
 - **`scripts/bundle-mac.sh` honors `CARGO_TARGET_DIR`**, matching the
   Linux packaging script.
 

@@ -143,8 +143,10 @@ pub struct WorktreeDetails {
     pub upstream: Option<String>,
     /// Dirty/untracked file paths, at most `DETAIL_DIRTY_CAP` entries.
     pub dirty_files: Vec<String>,
-    /// Exact total number of dirty/untracked entries.
-    pub dirty_total: usize,
+    /// Exact total number of dirty/untracked entries. `None` when the
+    /// status scan failed — never `Some(0)` in that case, which would
+    /// render as a known-clean worktree.
+    pub dirty_total: Option<usize>,
     /// Most recent commits from HEAD, at most `DETAIL_COMMIT_CAP` entries.
     pub commits: Vec<CommitLine>,
 }
@@ -183,9 +185,9 @@ pub fn details(path: &Path) -> Option<WorktreeDetails> {
                 .take(DETAIL_DIRTY_CAP)
                 .filter_map(|e| e.path().ok().map(str::to_owned))
                 .collect();
-            (files, statuses.len())
+            (files, Some(statuses.len()))
         }
-        Err(_) => (Vec::new(), 0),
+        Err(_) => (Vec::new(), None),
     };
 
     // Recent history from HEAD; an unborn branch yields no commits.
@@ -747,7 +749,7 @@ mod tests {
 
         let d = details(&dest).unwrap();
         assert_eq!(d.upstream.as_deref(), Some("main"));
-        assert_eq!(d.dirty_total, 1);
+        assert_eq!(d.dirty_total, Some(1));
         assert_eq!(d.dirty_files, vec!["dirty.txt".to_string()]);
         // README.md + one.txt + two.txt, newest first.
         assert_eq!(d.commits.len(), 3);
@@ -757,7 +759,7 @@ mod tests {
         // The main worktree has no upstream and no dirty files.
         let main = details(&ctx.main_root).unwrap();
         assert_eq!(main.upstream, None);
-        assert_eq!(main.dirty_total, 0);
+        assert_eq!(main.dirty_total, Some(0));
         assert!(main.dirty_files.is_empty());
     }
 
@@ -776,7 +778,7 @@ mod tests {
         }
         let d = details(&dest).unwrap();
         assert_eq!(d.dirty_files.len(), DETAIL_DIRTY_CAP);
-        assert_eq!(d.dirty_total, DETAIL_DIRTY_CAP + 5);
+        assert_eq!(d.dirty_total, Some(DETAIL_DIRTY_CAP + 5));
         assert_eq!(d.commits.len(), DETAIL_COMMIT_CAP);
 
         assert!(details(&tmp.path().join("no-such-dir")).is_none());

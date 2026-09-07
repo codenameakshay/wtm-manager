@@ -57,6 +57,13 @@ pub fn run(args: &PruneArgs, global: &GlobalArgs) -> Result<()> {
         args.gone,
         global.verbose,
     );
+    let (candidates, cwd_skipped) = exclude_cwd(candidates);
+    for c in &cwd_skipped {
+        eprintln!(
+            "warning: skipping '{}': it contains the current directory (cd elsewhere first)",
+            c.info.display_name()
+        );
+    }
 
     if candidates.is_empty() {
         if !global.quiet {
@@ -184,6 +191,17 @@ pub fn selection_candidates(items: Vec<WorktreeInfo>, protected: &[String]) -> V
             }
         })
         .collect()
+}
+
+/// Split `candidates` into (kept, skipped), pulling out any candidate whose
+/// path contains the current working directory. Selection (dry-run,
+/// confirm overlays) must apply this before showing counts or a list, so a
+/// worktree the caller is standing in never appears as a would-prune item
+/// only to be silently skipped by `execute` later.
+pub fn exclude_cwd(candidates: Vec<PruneCandidate>) -> (Vec<PruneCandidate>, Vec<PruneCandidate>) {
+    candidates
+        .into_iter()
+        .partition(|c| !super::remove::contains_cwd(&c.info.path))
 }
 
 /// How many worktrees are removed concurrently. Removal is I/O bound (git's
@@ -362,6 +380,23 @@ mod tests {
             reasons: vec!["prunable"],
             delete_branch: false,
         }
+    }
+
+    #[test]
+    fn exclude_cwd_skips_the_candidate_at_current_dir_and_keeps_others() {
+        let cwd = std::env::current_dir().unwrap();
+        let elsewhere = std::env::temp_dir().join("wtm-exclude-cwd-test-does-not-exist");
+        let cands = vec![
+            candidate(cwd.clone(), "here"),
+            candidate(elsewhere.clone(), "elsewhere"),
+        ];
+
+        let (kept, skipped) = exclude_cwd(cands);
+
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].info.path, elsewhere);
+        assert_eq!(skipped.len(), 1);
+        assert_eq!(skipped[0].info.path, cwd);
     }
 
     #[test]

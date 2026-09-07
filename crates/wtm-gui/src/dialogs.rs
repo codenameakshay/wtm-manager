@@ -102,6 +102,10 @@ pub struct CreateState {
     /// where the option went.
     pub setup_available: bool,
     pub phase: CreatePhase,
+    /// Identifies this dialog instance so a background `list_branches` /
+    /// `list_refs` result from a previous create dialog cannot fill this
+    /// one after a fast repo switch and reopen.
+    pub load_id: u64,
 }
 
 /// The create dialog has exactly two phases: filling out the form, and
@@ -193,7 +197,12 @@ impl CreateState {
     /// place in this module that needs `Context<WtmApp>` rather than plain
     /// data, because a `Subscription` is only meaningful in terms of the
     /// entity that outlives it.
-    pub fn new(repo: &OpenRepo, window: &mut gpui::Window, cx: &mut Context<WtmApp>) -> Self {
+    pub fn new(
+        repo: &OpenRepo,
+        load_id: u64,
+        window: &mut gpui::Window,
+        cx: &mut Context<WtmApp>,
+    ) -> Self {
         let base_placeholder = repo
             .config
             .default_base
@@ -283,6 +292,7 @@ impl CreateState {
             run_setup: setup_available,
             setup_available,
             phase: CreatePhase::Form,
+            load_id,
         }
     }
 
@@ -329,46 +339,68 @@ pub fn filter_branches<'a>(branches: &'a [BranchInfo], query: &str) -> Vec<&'a B
     substring_filter(branches, query, |b| b.name.as_str())
 }
 
+/// Element id for a branch-picker row. Local rows are already unique by
+/// name; remote-only rows are keyed on the full tracking ref, not just the
+/// short name, since two remotes (`origin`, `upstream`, ...) can track a
+/// branch with the same short name.
+fn branch_row_id(branch: &BranchInfo) -> String {
+    match &branch.from_remote {
+        Some(from_remote) => format!("branch-remote-{from_remote}"),
+        None => format!("branch-local-{}", branch.name),
+    }
+}
+
+/// The remote name shown in a remote-only row's pill: the part of
+/// `from_remote` before the first `/` (`origin/foo` -> `origin`).
+fn remote_pill_name(from_remote: &str) -> &str {
+    from_remote
+        .split_once('/')
+        .map_or(from_remote, |(remote, _)| remote)
+}
+
 /// One row in the branch picker: name, plus a "checked out" hint (disabled,
-/// per `wtm add`'s `BranchInUse` refusal) or a "gone" pill for a local
-/// branch whose upstream disappeared. Purely presentational — the caller
-/// decides whether to attach a click handler based on `branch.is_checked_out`.
+/// per `wtm add`'s `BranchInUse` refusal), a pill naming the remote for a
+/// tracking ref with no local branch (`origin`, `upstream`, ... — two
+/// remotes tracking the same branch name otherwise render as identical
+/// rows), or a "gone" pill for a local branch whose upstream disappeared.
+/// Purely presentational — the caller decides whether to attach a click
+/// handler based on `branch.is_checked_out`.
 pub fn render_branch_row(branch: &BranchInfo, theme: &Theme) -> Stateful<Div> {
     let disabled = branch.is_checked_out;
+    let remote_name = branch.from_remote.as_deref().map(remote_pill_name);
 
-    ui::row(
-        SharedString::from(format!("branch-{}", branch.name)),
-        false,
-        theme,
-    )
-    .flex()
-    .items_center()
-    .justify_between()
-    .gap(px(SPACE_8))
-    .child(
-        div()
-            .min_w_0()
-            .truncate()
-            .text_size(px(TEXT_BASE))
-            .text_color(if disabled {
-                theme.text_ghost
-            } else {
-                theme.text
-            })
-            .child(branch.name.clone()),
-    )
-    .when(disabled, |this| {
-        this.child(
+    ui::row(SharedString::from(branch_row_id(branch)), false, theme)
+        .flex()
+        .items_center()
+        .justify_between()
+        .gap(px(SPACE_8))
+        .child(
             div()
-                .flex_none()
-                .text_size(px(TEXT_XS))
-                .text_color(theme.text_ghost)
-                .child("checked out"),
+                .min_w_0()
+                .truncate()
+                .text_size(px(TEXT_BASE))
+                .text_color(if disabled {
+                    theme.text_ghost
+                } else {
+                    theme.text
+                })
+                .child(branch.name.clone()),
         )
-    })
-    .when(!disabled && branch.upstream_gone, |this| {
-        this.child(ui::pill("gone", theme.danger))
-    })
+        .when(disabled, |this| {
+            this.child(
+                div()
+                    .flex_none()
+                    .text_size(px(TEXT_XS))
+                    .text_color(theme.text_ghost)
+                    .child("checked out"),
+            )
+        })
+        .when_some(remote_name.filter(|_| !disabled), |this, remote_name| {
+            this.child(ui::pill(remote_name.to_string(), theme.info))
+        })
+        .when(!disabled && branch.upstream_gone, |this| {
+            this.child(ui::pill("gone", theme.danger))
+        })
 }
 
 /// A log line, tinted by what kind of setup step it reports: quiet info for
@@ -774,6 +806,7 @@ mod tests {
     fn branch(name: &str, checked_out: bool) -> BranchInfo {
         BranchInfo {
             name: name.to_string(),
+            from_remote: None,
             is_checked_out: checked_out,
             upstream_gone: false,
         }
@@ -921,6 +954,28 @@ mod tests {
         let filtered = filter_branches(&branches, "login");
         let names: Vec<&str> = filtered.iter().map(|b| b.name.as_str()).collect();
         assert_eq!(names, vec!["feature-Login", "bugfix/LOGIN-crash"]);
+    }
+
+    #[test]
+    fn branch_row_id_disambiguates_remotes_tracking_the_same_short_name() {
+        let mut origin_foo = branch("foo", false);
+        origin_foo.from_remote = Some("origin/foo".to_string());
+        let mut upstream_foo = branch("foo", false);
+        upstream_foo.from_remote = Some("upstream/foo".to_string());
+
+        assert_eq!(branch_row_id(&origin_foo), "branch-remote-origin/foo");
+        assert_eq!(branch_row_id(&upstream_foo), "branch-remote-upstream/foo");
+        assert_ne!(branch_row_id(&origin_foo), branch_row_id(&upstream_foo));
+        assert_eq!(branch_row_id(&branch("foo", false)), "branch-local-foo");
+    }
+
+    #[test]
+    fn remote_pill_name_is_the_part_before_the_first_slash() {
+        assert_eq!(remote_pill_name("origin/foo"), "origin");
+        assert_eq!(remote_pill_name("upstream/feature/x"), "upstream");
+        // No slash at all shouldn't happen in practice, but degrade to the
+        // whole string rather than panicking.
+        assert_eq!(remote_pill_name("origin"), "origin");
     }
 
     #[test]

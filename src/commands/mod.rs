@@ -5,6 +5,7 @@ pub mod add;
 pub mod app;
 pub mod completions;
 pub mod config_cmd;
+pub mod fetch;
 pub mod init;
 pub mod list;
 pub mod open;
@@ -33,6 +34,7 @@ pub fn dispatch(cli: &Cli) -> Result<()> {
         Command::Remove(args) => remove::run(args, &cli.global),
         Command::Switch(args) => switch::run(args, &cli.global),
         Command::Prune(args) => prune::run(args, &cli.global),
+        Command::Fetch(args) => fetch::run(args, &cli.global),
         Command::Open(args) => open::run(args, &cli.global),
         Command::Path(args) => path::run(args, &cli.global),
         Command::App => launch_app(&cli.global),
