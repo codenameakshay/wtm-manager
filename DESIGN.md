@@ -381,8 +381,8 @@ pub enum Command {
     Path(PathArgs),
     App,                 // alias: gui; open the desktop app
     Tui,                 // alias: ui; the full-screen interactive TUI
-    Init(InitArgs),      // shell: zsh|bash (ValueEnum Shell)
-    Completions(CompletionsArgs),
+    Init(InitArgs),      // shell: zsh|bash; fish is completions-only
+    Completions(CompletionsArgs),  // zsh|bash|fish
     Config(ConfigArgs),  // subcommands: path, init
 }
 ```
@@ -471,8 +471,9 @@ Key behaviors:
   paying for a full registry listing. An explicit `-C` instead scopes
   containment to that repository's registry.
 - init: print the shell function + `eval` of completions for zsh or bash to
-  stdout (see wrapper below).
-- completions: clap_complete::generate to stdout.
+  stdout. Fish has no wrapper: `init fish` returns an error pointing at
+  `wtm completions fish`.
+- completions: clap_complete::generate to stdout (zsh, bash, fish).
 - config path: print global path and (if in a repo) repo-level paths with
   existence markers. config init: scaffold_repo_config.
 

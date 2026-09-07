@@ -92,8 +92,9 @@ cargo install --git https://github.com/codenameakshay/wtm-manager --locked
 
 > **Note:** install from git as shown above — the crate name `wtm` on
 > crates.io belongs to a different, unrelated project, so `cargo install wtm`
-> will **not** install this tool. Homebrew support is planned but not wired
-> up yet.
+> will **not** install this tool. A Homebrew tap is not published yet; the
+> formula name will be `wtm-manager` (not `wtm`) so it does not collide with
+> the crates.io crate. Until then, install from git or the shell installer.
 
 After installing, wire up the shell integration so `wtm switch` and the TUI's
 `Enter` can actually `cd` you into a worktree — see [Shell setup](#shell-setup).
@@ -364,6 +365,13 @@ eval "$(command wtm init zsh)"
 eval "$(command wtm init bash)"
 ```
 
+**fish** (completions only — there is no `wtm init fish` cd wrapper yet):
+
+```sh
+mkdir -p ~/.config/fish/completions
+wtm completions fish > ~/.config/fish/completions/wtm.fish
+```
+
 Open a new shell (or `source` your rc file) afterwards. Without this, `wtm
 switch`/`wtm add --cd`/the TUI's `Enter` still work, but only print the
 target path — they can't move you there themselves; `wtm switch`'s stderr
@@ -519,11 +527,12 @@ installed; elsewhere it prints help.
 ### `wtm init <shell>`
 
 Print the shell integration snippet for `zsh` or `bash` — see
-[Shell setup](#shell-setup).
+[Shell setup](#shell-setup). Fish has no wrapper yet; `wtm init fish`
+exits with a pointer to `wtm completions fish`.
 
 ### `wtm completions <shell>`
 
-Print a shell completion script for the given shell.
+Print a shell completion script for `zsh`, `bash`, or `fish`.
 
 ### `wtm config path` / `wtm config init`
 
@@ -695,7 +704,7 @@ Codex and other agents that read a repo-root `AGENTS.md` pick up
 something like "install and use the wtm worktree manager" just works. The
 skill's `skills/wtm/scripts/install.sh` also works standalone as an
 automated installer (git check, best-available install method, optional
-zsh/bash shell integration).
+zsh/bash shell integration). Fish users can run `wtm completions fish`.
 
 ## License
 

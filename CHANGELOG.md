@@ -27,6 +27,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   mutation JSON, `dirty_count`, `lock_reason`, and `head_time`. Copy the
   same folder into `~/.claude/skills` or `~/.cursor/skills`. Repo-root
   `AGENTS.md` tells coding agents never to run bare `wtm`.
+- **Fish completions.** `wtm completions fish` writes a Fish script.
+  `wtm init fish` still has no cd wrapper. A Homebrew tap is not
+  published; the formula name will be `wtm-manager`.
 
 ### Fixed
 

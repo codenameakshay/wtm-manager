@@ -36,11 +36,15 @@ cargo-dist-version = "0.32.0"
 # CI backends to support
 ci = "github"
 # The installers to generate for each app.
-# Homebrew is intentionally omitted for now — there's no published tap yet, so
-# a generated formula would only advertise a `brew install` that doesn't work.
-# To add it later: set installers to ["shell", "homebrew"], add
-# `tap = "codenameakshay/homebrew-tap"` (create that repo first) and
-# `publish-jobs = ["homebrew"]`, then re-run `dist generate`.
+# Homebrew is not enabled: there is no published tap yet, so a generated
+# formula would advertise a `brew install` that does not work.
+# To add it later:
+#   1. Create github.com/codenameakshay/homebrew-tap
+#   2. Set installers = ["shell", "homebrew"]
+#      tap = "codenameakshay/homebrew-tap"
+#      publish-jobs = ["homebrew"]
+#   3. Name the formula `wtm-manager` (crates.io `wtm` is a different crate)
+#   4. Run `dist generate` and review the CI rewrite before merging
 installers = ["shell"]
 # Target platforms to build apps for (Rust target-triple syntax)
 targets = ["aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]

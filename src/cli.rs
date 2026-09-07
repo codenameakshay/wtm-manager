@@ -280,6 +280,8 @@ pub enum ShellKind {
     Zsh,
     /// GNU Bourne-Again Shell.
     Bash,
+    /// Fish shell. Completions only — `wtm init fish` has no cd wrapper.
+    Fish,
 }
 
 impl ShellKind {
@@ -288,6 +290,7 @@ impl ShellKind {
         match self {
             ShellKind::Zsh => clap_complete::Shell::Zsh,
             ShellKind::Bash => clap_complete::Shell::Bash,
+            ShellKind::Fish => clap_complete::Shell::Fish,
         }
     }
 }

@@ -196,11 +196,17 @@ a UI.
 ### `wtm init <zsh|bash>`
 
 Print the shell integration snippet: the `wtm` wrapper function plus
-completion loading. See [Shell wrapper](#shell-wrapper).
+completion loading. See [Shell wrapper](#shell-wrapper). `wtm init fish`
+exits: there is no Fish cd wrapper yet.
 
-### `wtm completions <zsh|bash>`
+### `wtm completions <zsh|bash|fish>`
 
-Print a shell completion script for the given shell.
+Print a shell completion script for the given shell. For Fish:
+
+```sh
+mkdir -p ~/.config/fish/completions
+wtm completions fish > ~/.config/fish/completions/wtm.fish
+```
 
 ### `wtm config path` / `wtm config init`
 
