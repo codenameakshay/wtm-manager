@@ -95,8 +95,12 @@ pub fn run(global: &GlobalArgs) -> Result<()> {
     Ok(())
 }
 
-/// The runtime loop: draw, poll input with a 100ms timeout, drain background
-/// messages, and execute effects. Returns the switch target, if any.
+/// The runtime loop: drain effects and background messages, draw only when
+/// the model changed, then poll input. Returns the switch target, if any.
+///
+/// Idle frames used to `draw` on every 100ms poll (~10 Hz) even when
+/// nothing changed. Polling still wakes to drain status/detail channels;
+/// painting does not.
 fn event_loop(
     app: &mut App,
     terminal: &mut Tui,
@@ -106,6 +110,7 @@ fn event_loop(
 ) -> Result<Option<PathBuf>> {
     let (tx, rx) = mpsc::channel::<Msg>();
     let mut effects: VecDeque<Effect> = pending.into();
+    let mut needs_draw = true;
 
     loop {
         // Execute queued effects; immediate outcomes feed straight back into
@@ -118,6 +123,7 @@ fn event_loop(
                     if let Some(msg) = run_effect(other, terminal, ctx, config, &tx)? {
                         effects.extend(app.update(msg));
                     }
+                    needs_draw = true;
                 }
             }
         }
@@ -125,16 +131,21 @@ fn event_loop(
         // Drain background results (status listings, detail loads).
         while let Ok(msg) = rx.try_recv() {
             effects.extend(app.update(msg));
+            needs_draw = true;
         }
         if !effects.is_empty() {
             continue;
         }
 
-        terminal.draw(|f| view::draw(f, app))?;
+        if needs_draw {
+            terminal.draw(|f| view::draw(f, app))?;
+            needs_draw = false;
+        }
 
         if event::poll(Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
                 effects.extend(app.update(Msg::Key(key)));
+                needs_draw = true;
             }
         }
     }
