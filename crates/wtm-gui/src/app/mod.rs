@@ -323,11 +323,6 @@ pub struct WtmApp {
     /// way — see [`crate::run_panel::RunCommandState`]'s module doc for why
     /// this is its own field rather than a fourth `dialogs::Dialog` variant.
     run_command: Option<RunCommandState>,
-    /// Commands recently run via the Run Command dialog, most-recent-first,
-    /// keyed by repository (its main worktree root, `OpenRepo::path()`) so a
-    /// build/test command typed in one repo doesn't clutter another's
-    /// suggestions. Persisted in `Prefs::recent_commands`.
-    recent_commands: HashMap<PathBuf, Vec<String>>,
     /// Incremented each time the create dialog opens. Background branch/ref
     /// loads capture the value and ignore their result if it no longer
     /// matches the dialog currently on screen.
@@ -373,10 +368,20 @@ fn sidebar_sorted(mut entries: Vec<RepoEntry>) -> Vec<RepoEntry> {
 impl WtmApp {
     pub fn new(
         initial: Option<OpenRepo>,
-        prefs: Prefs,
+        mut prefs: Prefs,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        // `prefs.recent_commands` is the single store for this list (see
+        // `WtmApp`'s doc on why there is no separate in-memory field) — cap
+        // each repository's list on load the same way every write already
+        // does, so a `gui.json` from an older build (or hand-edited) can
+        // never hand the Run Command dialog more suggestions than it's
+        // meant to show.
+        for recent in prefs.recent_commands.values_mut() {
+            recent.truncate(run_panel::MAX_RECENT_STORED);
+        }
+
         let filter_input = cx.new(|cx| TextInput::new("Filter", cx));
         // Only ever calls back through `WtmApp`'s own methods — same
         // discipline `dialogs::CreateState::new` and `palette::PaletteState::new`
@@ -389,18 +394,20 @@ impl WtmApp {
             }
         });
 
-        let terminal_input = cx.new(|cx| TextInput::new("Terminal", cx));
+        let terminal_input =
+            cx.new(|cx| TextInput::new(data::effective_terminal(prefs.terminal.as_deref()), cx));
         if let Some(name) = prefs.terminal.as_deref() {
             terminal_input.update(cx, |input, cx| {
                 input.set_value(name.to_string(), window, cx);
             });
         }
         let terminal_sub = cx.subscribe_in(&terminal_input, window, {
-            move |app: &mut WtmApp, input, event, _window, cx| {
-                if matches!(event, InputEvent::Changed) {
+            move |app: &mut WtmApp, input, event, window, cx| match event {
+                InputEvent::Changed => {
                     let value = input.read(cx).value().to_string();
-                    app.set_terminal(value, cx);
+                    app.update_terminal_pref(value, cx);
                 }
+                InputEvent::Cancel | InputEvent::Submit => app.close_dialog(window, cx),
             }
         });
 
@@ -443,7 +450,6 @@ impl WtmApp {
             context_menu: ContextMenu::new(),
             context_menu_target: None,
             settings_open: false,
-            recent_commands: prefs.recent_commands.clone(),
             prefs,
             terminal_input,
             _terminal_sub: terminal_sub,

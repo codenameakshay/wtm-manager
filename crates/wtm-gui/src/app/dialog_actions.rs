@@ -185,6 +185,14 @@ impl WtmApp {
         let closed_dialog = self.dialog.take().is_some();
         let closed_settings = self.settings_open;
         self.settings_open = false;
+        if closed_settings {
+            // The Terminal field's `Changed` handler only updates
+            // `self.prefs` in memory (see `update_terminal_pref`) so typing
+            // doesn't write `gui.json` on every keystroke — persist once
+            // here instead, covering both Escape/Cancel and Submit (which
+            // also routes through this method).
+            self.save_prefs();
+        }
         let closed_palette = self.palette.take().is_some();
         let closed_bulk_remove = self.bulk_remove.take().is_some();
         // Taking `run_command` here does not stop whatever command is still
@@ -268,9 +276,13 @@ impl WtmApp {
         input.update(cx, |input, cx| input.set_value(name, window, cx));
         // A remote-only picker row must also fill Base, otherwise create
         // makes a new branch from default_base / HEAD and the clicked tip
-        // is ignored.
+        // is ignored. Picking a LOCAL row after a remote one must clear
+        // whatever that remote pick left behind — Base is meaningless for
+        // an existing local branch.
         if let Some(remote) = from_remote {
             base_input.update(cx, |input, cx| input.set_value(remote, window, cx));
+        } else {
+            base_input.update(cx, |input, cx| input.set_value(String::new(), window, cx));
         }
     }
 
@@ -1280,9 +1292,8 @@ impl WtmApp {
         cx.notify();
 
         if let Some(repo_key) = self.active.as_ref().map(|r| r.path().to_path_buf()) {
-            let recent = self.recent_commands.entry(repo_key).or_default();
+            let recent = self.prefs.recent_commands.entry(repo_key).or_default();
             run_panel::record_recent_command(recent, command.clone(), run_panel::MAX_RECENT_STORED);
-            self.prefs.recent_commands = self.recent_commands.clone();
             self.save_prefs();
         }
 
@@ -1363,7 +1374,7 @@ impl WtmApp {
         let recent: &[String] = self
             .active
             .as_ref()
-            .and_then(|repo| self.recent_commands.get(repo.path()))
+            .and_then(|repo| self.prefs.recent_commands.get(repo.path()))
             .map(Vec::as_slice)
             .unwrap_or(&[]);
         run_panel::render(state, recent, theme, cx)
