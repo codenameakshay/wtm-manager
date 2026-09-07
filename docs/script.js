@@ -37,6 +37,14 @@ const platformMatchers = {
   "linux-arm64": ["aarch64-unknown-linux-gnu"]
 };
 
+const appAssetMatchers = {
+  "macos-app": ["WTM-macOS.zip"],
+  "linux-x64-app": ["WTM-linux-x86_64.deb"],
+  "linux-x64-app-tar": ["WTM-linux-x86_64.tar.xz"],
+  "linux-arm64-app": ["WTM-linux-aarch64.deb"],
+  "linux-arm64-app-tar": ["WTM-linux-aarch64.tar.xz"]
+};
+
 const fallbackRelease = "https://github.com/" + REPO + "/releases/latest";
 
 function setDemo(name) {
@@ -73,6 +81,51 @@ function formatBytes(bytes) {
 
 function matchingAsset(assets, patterns) {
   return assets.find((asset) => patterns.some((pattern) => asset.name.includes(pattern)));
+}
+
+function fillAppAssetMeta(assets) {
+  const sizeFor = (key) => {
+    const asset = matchingAsset(assets, appAssetMatchers[key]);
+    return asset ? formatBytes(asset.size) : null;
+  };
+  const macosMeta = document.querySelector('[data-platform="macos-app"] .asset-meta');
+  const macosSize = sizeFor("macos-app");
+  if (macosMeta && macosSize) macosMeta.textContent = macosSize + " · WTM-macOS.zip";
+
+  ["linux-x64-app", "linux-arm64-app"].forEach((platform) => {
+    const meta = document.querySelector('[data-platform="' + platform + '"] .asset-meta');
+    if (!meta) return;
+    const debSize = sizeFor(platform);
+    const tarSize = sizeFor(platform + "-tar");
+    if (debSize && tarSize) meta.textContent = debSize + " .deb · " + tarSize + " .tar.xz";
+  });
+}
+
+function applyPlatformDefaults() {
+  try {
+    const platformStr = (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || navigator.userAgent || "";
+    if (!/linux/i.test(platformStr) || /android/i.test(platformStr)) return;
+
+    const heroButton = document.querySelector("#hero-download");
+    if (heroButton) {
+      heroButton.textContent = "Download for Linux (.deb)";
+      heroButton.href = "https://github.com/" + REPO + "/releases/latest/download/WTM-linux-x86_64.deb";
+      heroButton.title = "ARM64 build in the download section";
+    }
+
+    const macosTag = document.querySelector('[data-platform="macos-app"] .recommended');
+    if (macosTag) macosTag.remove();
+
+    const linuxTop = document.querySelector('[data-platform="linux-x64-app"] .download-card-top');
+    if (linuxTop && !linuxTop.querySelector(".recommended")) {
+      const tag = document.createElement("span");
+      tag.className = "recommended";
+      tag.textContent = "Recommended";
+      linuxTop.appendChild(tag);
+    }
+  } catch (error) {
+    /* platform detection is a progressive enhancement only */
+  }
 }
 
 function setFallbackLinks() {
@@ -116,6 +169,8 @@ async function loadLatestRelease() {
       }
     });
 
+    fillAppAssetMeta(assets);
+
     const installer = assets.find((asset) => /installer\.sh$/i.test(asset.name));
     document.querySelectorAll("[data-installer]").forEach((link) => {
       link.href = installer ? installer.browser_download_url : fallbackRelease;
@@ -127,4 +182,5 @@ async function loadLatestRelease() {
   }
 }
 
+applyPlatformDefaults();
 loadLatestRelease();

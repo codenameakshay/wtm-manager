@@ -19,14 +19,14 @@
         <span>wtm</span>
       </a>
       <nav class="nav-links" aria-label="Primary navigation">
+        <a href="#app">App</a>
         <a href="#why">Why wtm</a>
         <a href="#demo">Demo</a>
-        <a href="#app">App</a>
         <a href="#docs">Docs</a>
         <a href="#download">Download</a>
         <a href="https://github.com/codenameakshay/wtm-manager" target="_blank" rel="noreferrer">GitHub <span aria-hidden="true">↗</span></a>
       </nav>
-      <a class="nav-cta" href="#download">Get wtm <span aria-hidden="true">↓</span></a>
+      <a class="nav-cta" href="#download">Download app <span aria-hidden="true">↓</span></a>
     </div>
   </header>
 
@@ -34,43 +34,32 @@
     <section class="hero" id="top">
       <div class="container hero-grid">
         <div class="hero-copy">
-          <p class="eyebrow"><span class="eyebrow-dot"></span> Git worktrees, without the friction</p>
+          <p class="eyebrow"><span class="eyebrow-dot"></span> A native Git worktree manager for macOS and Linux</p>
           <h1>One repo.<br><em>Many branches.</em><br>Zero context switching.</h1>
-          <p class="hero-lede">wtm makes Git worktrees feel like a first-class workflow: create them quickly, see what needs attention, and move between branches without tearing down your context.</p>
+          <p class="hero-lede">The wtm desktop app shows every repo and every worktree at a glance, so you can create, switch, and prune without leaving it. A CLI and a full-screen TUI ship alongside it for when you live in the terminal.</p>
           <div class="hero-actions">
-            <a class="button button-primary" href="#download">Install wtm <span aria-hidden="true">↗</span></a>
-            <a class="button button-ghost" href="#demo">See it in action <span aria-hidden="true">↓</span></a>
+            <a class="button button-primary" id="hero-download" href="https://github.com/codenameakshay/wtm-manager/releases/latest/download/WTM-macOS.zip">Download for macOS <span aria-hidden="true">↗</span></a>
+            <a class="button button-ghost" href="#app">See the app <span aria-hidden="true">↓</span></a>
+            <a class="hero-secondary-link" href="#cli">Prefer the terminal? Install the CLI <span aria-hidden="true">→</span></a>
           </div>
-          <div class="command-pill" aria-label="Example command">
-            <span class="command-prompt">~/acme $</span>
-            <code>wtm add feature/login</code>
-            <span class="command-cursor" aria-hidden="true"></span>
-          </div>
+          <p class="hero-meta">macOS (Apple Silicon) · Linux .deb and tarball · CLI and TUI included</p>
         </div>
 
-        <div class="hero-visual" aria-label="wtm terminal preview">
+        <div class="hero-visual" aria-label="wtm desktop app preview">
           <div class="glow glow-orange"></div>
           <div class="glow glow-red"></div>
-          <div class="terminal-window hero-terminal">
-            <div class="terminal-topbar">
-              <div class="window-dots"><i></i><i></i><i></i></div>
-              <span>wtm list</span>
-              <span class="topbar-status">● live</span>
+          <div class="demo-screen">
+            <div class="demo-screen-top">
+              <span class="live-dot"></span>
+              <span>WTM.app</span>
             </div>
-            <div class="terminal-content">
-              <div class="terminal-line terminal-dim">NAME                 PATH                              HEAD       AHEAD/BEHIND  STATUS</div>
-              <div class="terminal-rule"></div>
-              <div class="terminal-row"><strong>main *</strong><span>~/acme</span><span>9a4c1f2</span><span>↑0 ↓0</span><b class="badge badge-blue">main</b></div>
-              <div class="terminal-row"><strong>feature/login</strong><span>~/acme-worktrees/feature/login</span><span>c18d2aa</span><span class="terminal-cyan">↑2 ↓0</span><b class="badge badge-green">clean</b></div>
-              <div class="terminal-row"><strong>feature/search</strong><span>~/acme-worktrees/feature/search</span><span>1f2b8e0</span><span>↑1 ↓0</span><b class="badge badge-yellow">dirty</b></div>
-              <div class="terminal-row"><strong>hotfix/crash</strong><span>~/acme-worktrees/hotfix/crash</span><span>7e9a113</span><span>↑0 ↓0</span><b class="badge badge-red">merged</b></div>
-              <div class="terminal-rule"></div>
-              <div class="terminal-line terminal-dim">4 worktrees · registry discovered · status in parallel</div>
+            <div class="demo-image-wrap">
+              <img src="https://raw.githubusercontent.com/codenameakshay/wtm-manager/main/assets/app.png" alt="wtm's main window: a sidebar listing repositories, a worktree list with New Worktree/Fetch/Prune…/Filter controls and dirty file counts on each row, and a detail panel open on the Details tab showing path, HEAD, upstream, and recent commits">
             </div>
           </div>
           <div class="visual-caption">
             <span class="caption-line"></span>
-            <span>Every worktree. One glance.</span>
+            <span>Every repo. Every worktree. One window.</span>
           </div>
         </div>
       </div>
@@ -82,6 +71,71 @@
         <div><strong>64-tree audited</strong><span>Cold and warm release gates in CI</span></div>
         <div><strong>macOS + Linux</strong><span>Apple Silicon, Intel, x86_64, ARM64</span></div>
         <div><strong>MIT / Apache-2.0</strong><span>Open source and yours to use</span></div>
+      </div>
+    </section>
+
+    <section class="section" id="app">
+      <div class="container">
+        <div class="section-heading split-heading">
+          <div>
+            <p class="eyebrow">The app</p>
+            <h2>Every repo. Every worktree. One window.</h2>
+          </div>
+          <p>Built with <a href="https://github.com/zed-industries/zed/tree/main/crates/gpui" target="_blank" rel="noreferrer">GPUI</a>, the UI framework behind Zed. It shares every git and worktree operation with the CLI and TUI — nothing about the CLI itself changes.</p>
+        </div>
+
+        <div class="demo-screen app-screenshot">
+          <div class="demo-screen-top">
+            <span class="live-dot"></span>
+            <span>WTM.app</span>
+            <a href="https://raw.githubusercontent.com/codenameakshay/wtm-manager/main/assets/app.png" target="_blank" rel="noreferrer">Open full size ↗</a>
+          </div>
+          <div class="demo-image-wrap">
+            <img src="https://raw.githubusercontent.com/codenameakshay/wtm-manager/main/assets/app.png" alt="wtm's main window: a sidebar listing repositories, a worktree list with New Worktree/Fetch/Prune…/Filter controls and dirty file counts on each row, and a detail panel open on the Details tab showing path, HEAD, upstream, and recent commits">
+          </div>
+        </div>
+
+        <div class="docs-grid">
+          <article class="doc-card">
+            <div class="doc-card-heading"><span class="doc-symbol">⌘</span><h3>What it does</h3></div>
+            <dl>
+              <div><dt>Sidebar</dt><dd>Every repo you've opened, sorted alphabetically and stable.</dd></div>
+              <div><dt>Live status</dt><dd>A filesystem watcher keeps the list current, no reload.</dd></div>
+              <div><dt>Dirty counts</dt><dd>Every row shows exactly how many files are dirty.</dd></div>
+              <div><dt>Keyboard-first</dt><dd>Visible focus ring; dialogs trap <code>Tab</code> inside them.</dd></div>
+              <div><dt>Command palette</dt><dd><code>⌘K</code> fuzzy search over worktrees and actions.</dd></div>
+              <div><dt>Everything else</dt><dd>Create, remove, prune, multi-select, an adaptive detail panel.</dd></div>
+            </dl>
+          </article>
+          <article class="doc-card">
+            <div class="doc-card-heading"><span class="doc-symbol">▸</span><h3>Bare <code>wtm</code> opens it</h3></div>
+            <p>On a terminal, running <code>wtm</code> with no subcommand now opens the desktop app, falling back to the full-screen TUI when the app isn't installed. Piped, scripted, and agent invocations are unaffected: no TTY still means help text and exit&nbsp;0, never a window.</p>
+          </article>
+          <article class="doc-card doc-card-wide">
+            <div class="doc-card-heading"><span class="doc-symbol">&lt;/&gt;</span><h3>Get the app</h3></div>
+            <p>macOS and Linux both ship prebuilt releases now; Windows doesn't — GPUI has a Windows backend, but this app has never been built against it. Linux is verified in CI (build, test suite, and Clippy on <code>ubuntu-latest</code> and <code>ubuntu-24.04-arm</code>) but hasn't yet been run on a real Linux desktop by the maintainer.</p>
+            <pre><code># macOS — download, unzip, drag to Applications
+unzip WTM-macOS.zip
+mv WTM.app /Applications/
+# right-click WTM.app → Open the first time
+
+# Linux — .deb, or the tarball's bundled installer
+sudo apt install ./WTM-linux-x86_64.deb
+# or: tar -xJf WTM-linux-x86_64.tar.xz && ./wtm-gui-*-linux/install.sh
+
+# or build it yourself
+scripts/bundle-mac.sh</code></pre>
+          </article>
+        </div>
+
+        <div class="safety-callout app-note">
+          <div class="safety-mark" aria-hidden="true">!</div>
+          <div>
+            <p class="eyebrow">Be aware</p>
+            <h3>It's ad-hoc signed, not notarized by Apple.</h3>
+            <p>There's no Developer ID certificate behind it. The first time you launch it, Gatekeeper will refuse to open it normally — right-click <code>WTM.app</code> and choose <strong>Open</strong>, then confirm, to get past that one-time warning.</p>
+          </div>
+        </div>
       </div>
     </section>
 
@@ -194,69 +248,6 @@ wtm prune --merged --gone</code></pre>
       </div>
     </section>
 
-    <section class="section" id="app">
-      <div class="container">
-        <div class="section-heading split-heading">
-          <div>
-            <p class="eyebrow">Now on the desktop</p>
-            <h2>A native app for when the terminal isn’t enough.</h2>
-          </div>
-          <p>Built with <a href="https://github.com/zed-industries/zed/tree/main/crates/gpui" target="_blank" rel="noreferrer">GPUI</a>, the UI framework behind Zed. It shares every git and worktree operation with the CLI and TUI — nothing about the CLI itself changes.</p>
-        </div>
-
-        <div class="demo-screen app-screenshot">
-          <div class="demo-screen-top">
-            <span class="live-dot"></span>
-            <span>WTM.app</span>
-            <a href="https://raw.githubusercontent.com/codenameakshay/wtm-manager/main/assets/app.png" target="_blank" rel="noreferrer">Open full size ↗</a>
-          </div>
-          <div class="demo-image-wrap">
-            <img src="https://raw.githubusercontent.com/codenameakshay/wtm-manager/main/assets/app.png" alt="wtm's main window: a sidebar listing repositories, a worktree list with New Worktree/Fetch/Prune…/Filter controls and dirty file counts on each row, and a detail panel open on the Details tab showing path, HEAD, upstream, and recent commits">
-          </div>
-        </div>
-
-        <div class="docs-grid">
-          <article class="doc-card">
-            <div class="doc-card-heading"><span class="doc-symbol">⌘</span><h3>What it does</h3></div>
-            <dl>
-              <div><dt>Sidebar</dt><dd>Every repo you've opened, sorted alphabetically and stable.</dd></div>
-              <div><dt>Live status</dt><dd>A filesystem watcher keeps the list current, no reload.</dd></div>
-              <div><dt>Dirty counts</dt><dd>Every row shows exactly how many files are dirty.</dd></div>
-              <div><dt>Keyboard-first</dt><dd>Visible focus ring; dialogs trap <code>Tab</code> inside them.</dd></div>
-              <div><dt>Command palette</dt><dd><code>⌘K</code> fuzzy search over worktrees and actions.</dd></div>
-              <div><dt>Everything else</dt><dd>Create, remove, prune, multi-select, an adaptive detail panel.</dd></div>
-            </dl>
-          </article>
-          <article class="doc-card">
-            <div class="doc-card-heading"><span class="doc-symbol">▸</span><h3>Bare <code>wtm</code> opens it</h3></div>
-            <p>On a terminal, running <code>wtm</code> with no subcommand now opens the desktop app, falling back to the full-screen TUI when the app isn't installed. Piped, scripted, and agent invocations are unaffected: no TTY still means help text and exit&nbsp;0, never a window.</p>
-          </article>
-          <article class="doc-card doc-card-wide">
-            <div class="doc-card-heading"><span class="doc-symbol">&lt;/&gt;</span><h3>Get the app</h3></div>
-            <p>macOS and Linux both ship prebuilt releases now; Windows doesn't — GPUI has a Windows backend, but this app has never been built against it. Linux is verified in CI (build, test suite, and Clippy on <code>ubuntu-latest</code> and <code>ubuntu-24.04-arm</code>) but hasn't yet been run on a real Linux desktop by the maintainer.</p>
-            <pre><code># macOS — build it yourself
-scripts/bundle-mac.sh
-cp -R target/bundle/WTM.app /Applications/
-# or download WTM-macOS.zip from the latest release and unzip it
-
-# Linux — self-contained tarball with a bundled installer
-tar -xJf WTM-linux-x86_64.tar.xz
-./wtm-gui-*-linux/install.sh
-# or install the .deb: sudo apt install ./WTM-linux-x86_64.deb</code></pre>
-          </article>
-        </div>
-
-        <div class="safety-callout app-note">
-          <div class="safety-mark" aria-hidden="true">!</div>
-          <div>
-            <p class="eyebrow">Be aware</p>
-            <h3>It's ad-hoc signed, not notarized by Apple.</h3>
-            <p>There's no Developer ID certificate behind it. The first time you launch it, Gatekeeper will refuse to open it normally — right-click <code>WTM.app</code> and choose <strong>Open</strong>, then confirm, to get past that one-time warning.</p>
-          </div>
-        </div>
-      </div>
-    </section>
-
     <section class="section docs-section" id="docs">
       <div class="container">
         <div class="section-heading">
@@ -318,7 +309,7 @@ commands = ["npm install"]</code></pre>
         <div class="section-heading split-heading">
           <div>
             <p class="eyebrow">Ready when you are</p>
-            <h2>Install once. Keep every branch close.</h2>
+            <h2>Get the app. Keep every branch close.</h2>
           </div>
           <div class="release-pill">
             <span class="release-dot"></span>
@@ -327,29 +318,65 @@ commands = ["npm install"]</code></pre>
           </div>
         </div>
 
-        <div class="download-grid">
-          <article class="download-card download-card-featured">
-            <div class="download-card-top"><span class="platform-icon">⌘</span><span class="recommended">Recommended</span></div>
-            <h3>One-line installer</h3>
-            <p>Detects your platform and installs the latest prebuilt binary.</p>
-            <a class="download-button installer-link" data-installer href="https://github.com/codenameakshay/wtm-manager/releases/latest/download/wtm-installer.sh" target="_blank" rel="noreferrer">Install script <span aria-hidden="true">↗</span></a>
-            <code class="install-command">curl --proto '=https' --tlsv1.2 -LsSf<br>https://github.com/codenameakshay/wtm-manager/releases/latest/download/wtm-installer.sh | sh</code>
-          </article>
-          <article class="download-card" data-platform="macos-arm64">
-            <div class="platform-icon">⌁</div><h3>macOS · Apple Silicon</h3><p>For M-series Macs.</p><a class="download-link" href="https://github.com/codenameakshay/wtm-manager/releases/latest" target="_blank" rel="noreferrer">View latest build <span aria-hidden="true">↗</span></a><small class="asset-meta">Release asset</small>
-          </article>
-          <article class="download-card" data-platform="macos-intel">
-            <div class="platform-icon">⌁</div><h3>macOS · Intel</h3><p>For Intel-based Macs.</p><a class="download-link" href="https://github.com/codenameakshay/wtm-manager/releases/latest" target="_blank" rel="noreferrer">View latest build <span aria-hidden="true">↗</span></a><small class="asset-meta">Release asset</small>
-          </article>
-          <article class="download-card" data-platform="linux-x64">
-            <div class="platform-icon">▣</div><h3>Linux · x86_64</h3><p>For standard 64-bit Linux.</p><a class="download-link" href="https://github.com/codenameakshay/wtm-manager/releases/latest" target="_blank" rel="noreferrer">View latest build <span aria-hidden="true">↗</span></a><small class="asset-meta">Release asset</small>
-          </article>
-          <article class="download-card" data-platform="linux-arm64">
-            <div class="platform-icon">▣</div><h3>Linux · ARM64</h3><p>For ARM-based Linux systems.</p><a class="download-link" href="https://github.com/codenameakshay/wtm-manager/releases/latest" target="_blank" rel="noreferrer">View latest build <span aria-hidden="true">↗</span></a><small class="asset-meta">Release asset</small>
-          </article>
-          <article class="download-card download-card-source">
-            <div class="platform-icon">&lt;/&gt;</div><h3>Build from source</h3><p>Use Rust and install directly from GitHub.</p><a class="download-link" href="https://github.com/codenameakshay/wtm-manager#from-source-cargo" target="_blank" rel="noreferrer">Read source install <span aria-hidden="true">↗</span></a><small class="asset-meta">Rust 1.88+</small>
-          </article>
+        <div class="download-group">
+          <div class="download-group-heading"><h3>Desktop app</h3></div>
+          <div class="download-grid">
+            <article class="download-card download-card-featured" data-platform="macos-app">
+              <div class="download-card-top"><span class="platform-icon">⌘</span><span class="recommended">Recommended</span></div>
+              <h3>wtm for macOS</h3>
+              <p>Apple Silicon · ad-hoc signed, right-click → Open the first time.</p>
+              <a class="download-button" id="download-macos" href="https://github.com/codenameakshay/wtm-manager/releases/latest/download/WTM-macOS.zip" target="_blank" rel="noreferrer">Download WTM-macOS.zip <span aria-hidden="true">↗</span></a>
+              <small class="asset-meta">Release asset</small>
+            </article>
+            <article class="download-card" data-platform="linux-x64-app">
+              <div class="download-card-top"><span class="platform-icon">▣</span></div>
+              <h3>Linux · x86_64</h3>
+              <p>Install the .deb, or unpack the self-contained tarball.</p>
+              <div class="download-links">
+                <a class="download-button" href="https://github.com/codenameakshay/wtm-manager/releases/latest/download/WTM-linux-x86_64.deb" target="_blank" rel="noreferrer">.deb <span aria-hidden="true">↗</span></a>
+                <a class="download-button" href="https://github.com/codenameakshay/wtm-manager/releases/latest/download/WTM-linux-x86_64.tar.xz" target="_blank" rel="noreferrer">.tar.xz <span aria-hidden="true">↗</span></a>
+              </div>
+              <small class="asset-meta">Release asset</small>
+            </article>
+            <article class="download-card" data-platform="linux-arm64-app">
+              <div class="download-card-top"><span class="platform-icon">▣</span></div>
+              <h3>Linux · ARM64</h3>
+              <p>Install the .deb, or unpack the self-contained tarball.</p>
+              <div class="download-links">
+                <a class="download-button" href="https://github.com/codenameakshay/wtm-manager/releases/latest/download/WTM-linux-aarch64.deb" target="_blank" rel="noreferrer">.deb <span aria-hidden="true">↗</span></a>
+                <a class="download-button" href="https://github.com/codenameakshay/wtm-manager/releases/latest/download/WTM-linux-aarch64.tar.xz" target="_blank" rel="noreferrer">.tar.xz <span aria-hidden="true">↗</span></a>
+              </div>
+              <small class="asset-meta">Release asset</small>
+            </article>
+          </div>
+        </div>
+
+        <div class="download-group">
+          <div class="download-group-heading" id="cli"><h3>Command-line tool</h3></div>
+          <div class="download-grid">
+            <article class="download-card download-card-wide">
+              <div class="download-card-top"><span class="platform-icon">⌘</span></div>
+              <h3>One-line installer</h3>
+              <p>Detects your platform and installs the latest prebuilt binary.</p>
+              <a class="download-button installer-link" data-installer href="https://github.com/codenameakshay/wtm-manager/releases/latest/download/wtm-installer.sh" target="_blank" rel="noreferrer">Install script <span aria-hidden="true">↗</span></a>
+              <code class="install-command">curl --proto '=https' --tlsv1.2 -LsSf<br>https://github.com/codenameakshay/wtm-manager/releases/latest/download/wtm-installer.sh | sh</code>
+            </article>
+            <article class="download-card" data-platform="macos-arm64">
+              <div class="platform-icon">⌁</div><h3>macOS · Apple Silicon</h3><p>For M-series Macs.</p><a class="download-link" href="https://github.com/codenameakshay/wtm-manager/releases/latest" target="_blank" rel="noreferrer">View latest build <span aria-hidden="true">↗</span></a><small class="asset-meta">Release asset</small>
+            </article>
+            <article class="download-card" data-platform="macos-intel">
+              <div class="platform-icon">⌁</div><h3>macOS · Intel</h3><p>For Intel-based Macs.</p><a class="download-link" href="https://github.com/codenameakshay/wtm-manager/releases/latest" target="_blank" rel="noreferrer">View latest build <span aria-hidden="true">↗</span></a><small class="asset-meta">Release asset</small>
+            </article>
+            <article class="download-card" data-platform="linux-x64">
+              <div class="platform-icon">▣</div><h3>Linux · x86_64</h3><p>For standard 64-bit Linux.</p><a class="download-link" href="https://github.com/codenameakshay/wtm-manager/releases/latest" target="_blank" rel="noreferrer">View latest build <span aria-hidden="true">↗</span></a><small class="asset-meta">Release asset</small>
+            </article>
+            <article class="download-card" data-platform="linux-arm64">
+              <div class="platform-icon">▣</div><h3>Linux · ARM64</h3><p>For ARM-based Linux systems.</p><a class="download-link" href="https://github.com/codenameakshay/wtm-manager/releases/latest" target="_blank" rel="noreferrer">View latest build <span aria-hidden="true">↗</span></a><small class="asset-meta">Release asset</small>
+            </article>
+            <article class="download-card download-card-source">
+              <div class="platform-icon">&lt;/&gt;</div><h3>Build from source</h3><p>Use Rust and install directly from GitHub.</p><a class="download-link" href="https://github.com/codenameakshay/wtm-manager#from-source-cargo" target="_blank" rel="noreferrer">Read source install <span aria-hidden="true">↗</span></a><small class="asset-meta">Rust 1.88+</small>
+            </article>
+          </div>
         </div>
 
         <div class="source-links">
