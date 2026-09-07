@@ -5,7 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.8.0] - 2026-09-07
+
+### Changed
+
+- **The desktop app is the headline.** The website and README now lead
+  with the app: a direct download for macOS (`WTM-macOS.zip`) and Linux
+  (`.deb` and tarball, x86_64 and ARM64) sits first, and the CLI's
+  one-line installer follows as the terminal companion. The release
+  assets themselves are unchanged.
 
 ### Fixed
 
