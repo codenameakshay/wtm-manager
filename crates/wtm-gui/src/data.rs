@@ -409,6 +409,10 @@ pub fn copy_to_clipboard(text: &str) -> Result<(), String> {
 #[derive(Debug, Clone)]
 pub struct BranchInfo {
     pub name: String,
+    /// When this row came from a remote-tracking ref with no local
+    /// counterpart, the full remote-tracking name (`origin/foo`). Selecting
+    /// the row must create local `name` from this ref, not from `default_base`.
+    pub from_remote: Option<String>,
     /// Already checked out in some worktree of this repository (a `wtm add`
     /// for it would fail with `BranchInUse`).
     pub is_checked_out: bool,
@@ -419,8 +423,10 @@ pub struct BranchInfo {
 
 /// Branches available to create a worktree from: local branches first
 /// (alphabetical), then remote-tracking branches (alphabetical, remote
-/// prefix stripped, `<remote>/HEAD` excluded, and any name already covered
-/// by a local branch or another remote removed).
+/// prefix stripped from the display name, `<remote>/HEAD` excluded, and any
+/// short name already covered by a local branch removed). Remote-only rows
+/// keep the full tracking ref in [`BranchInfo::from_remote`] so a picker
+/// click can create the local branch from that tip, not from `default_base`.
 pub fn list_branches(repo: &OpenRepo) -> Result<Vec<BranchInfo>, String> {
     let git_repo = repo.ctx.open_main().map_err(|e| e.to_string())?;
 
@@ -453,6 +459,7 @@ pub fn list_branches(repo: &OpenRepo) -> Result<Vec<BranchInfo>, String> {
         locals.push(BranchInfo {
             is_checked_out: checked_out.contains(&name),
             name,
+            from_remote: None,
             upstream_gone,
         });
     }
@@ -476,17 +483,22 @@ pub fn list_branches(repo: &OpenRepo) -> Result<Vec<BranchInfo>, String> {
         if local_names.contains(short) {
             continue; // Already represented by its local branch.
         }
+        let short = short.to_string();
         remotes.push(BranchInfo {
-            name: short.to_string(),
-            is_checked_out: checked_out.contains(short),
+            name: short.clone(),
+            from_remote: Some(full_name),
+            is_checked_out: checked_out.contains(&short),
             upstream_gone: false,
         });
     }
-    remotes.sort_by(|a, b| a.name.cmp(&b.name));
-    // Two remotes tracking the same branch name (e.g. origin/main and
-    // upstream/main) collapse to one entry now that the remote prefix is
-    // gone.
-    remotes.dedup_by(|a, b| a.name == b.name);
+    remotes.sort_by(|a, b| {
+        a.name
+            .cmp(&b.name)
+            .then(a.from_remote.cmp(&b.from_remote))
+    });
+    // Identical (short name, tracking ref) pairs only — origin/foo and
+    // upstream/foo stay two rows so each can set a different base.
+    remotes.dedup_by(|a, b| a.name == b.name && a.from_remote == b.from_remote);
 
     locals.extend(remotes);
     Ok(locals)
@@ -1848,6 +1860,32 @@ mod tests {
         let default = refs.iter().find(|r| r.kind == RefKind::Default).unwrap();
         assert_eq!(default.name, "HEAD");
         assert!(default.subject.is_some());
+    }
+
+    #[test]
+    fn list_branches_remote_only_keeps_the_tracking_ref_as_from_remote() {
+        let (_tmp, main) = fixture();
+        git(
+            &main,
+            &["update-ref", "refs/remotes/origin/only-remote", "HEAD"],
+        );
+        let repo = test_repo(&main);
+        let branches = list_branches(&repo).unwrap();
+        let remote = branches
+            .iter()
+            .find(|b| b.name == "only-remote")
+            .expect("remote-only branch must appear under its short name");
+        assert_eq!(
+            remote.from_remote.as_deref(),
+            Some("origin/only-remote"),
+            "picking this row must create from the remote-tracking ref, not default_base"
+        );
+        assert!(!remote.is_checked_out);
+        let main_row = branches
+            .iter()
+            .find(|b| b.name == "main")
+            .expect("local main must still be listed");
+        assert_eq!(main_row.from_remote, None);
     }
 
     // ---------------- list_files ----------------

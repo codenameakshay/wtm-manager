@@ -107,8 +107,14 @@ impl WtmApp {
                                     ui::disabled(row).into_any_element()
                                 } else {
                                     let name = branch.name.clone();
+                                    let from_remote = branch.from_remote.clone();
                                     row.on_click(cx.listener(move |this, _, window, cx| {
-                                        this.select_branch_in_create(name.clone(), window, cx);
+                                        this.select_branch_in_create(
+                                            name.clone(),
+                                            from_remote.clone(),
+                                            window,
+                                            cx,
+                                        );
                                     }))
                                     .into_any_element()
                                 }

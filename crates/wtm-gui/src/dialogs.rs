@@ -330,14 +330,19 @@ pub fn filter_branches<'a>(branches: &'a [BranchInfo], query: &str) -> Vec<&'a B
 }
 
 /// One row in the branch picker: name, plus a "checked out" hint (disabled,
-/// per `wtm add`'s `BranchInUse` refusal) or a "gone" pill for a local
-/// branch whose upstream disappeared. Purely presentational — the caller
-/// decides whether to attach a click handler based on `branch.is_checked_out`.
+/// per `wtm add`'s `BranchInUse` refusal), a "remote" pill for a tracking
+/// ref with no local branch, or a "gone" pill for a local branch whose
+/// upstream disappeared. Purely presentational — the caller decides whether
+/// to attach a click handler based on `branch.is_checked_out`.
 pub fn render_branch_row(branch: &BranchInfo, theme: &Theme) -> Stateful<Div> {
     let disabled = branch.is_checked_out;
+    let row_id = branch
+        .from_remote
+        .as_deref()
+        .unwrap_or(branch.name.as_str());
 
     ui::row(
-        SharedString::from(format!("branch-{}", branch.name)),
+        SharedString::from(format!("branch-{row_id}")),
         false,
         theme,
     )
@@ -365,6 +370,9 @@ pub fn render_branch_row(branch: &BranchInfo, theme: &Theme) -> Stateful<Div> {
                 .text_color(theme.text_ghost)
                 .child("checked out"),
         )
+    })
+    .when(!disabled && branch.from_remote.is_some(), |this| {
+        this.child(ui::pill("remote", theme.info))
     })
     .when(!disabled && branch.upstream_gone, |this| {
         this.child(ui::pill("gone", theme.danger))
@@ -774,6 +782,7 @@ mod tests {
     fn branch(name: &str, checked_out: bool) -> BranchInfo {
         BranchInfo {
             name: name.to_string(),
+            from_remote: None,
             is_checked_out: checked_out,
             upstream_gone: false,
         }

@@ -243,6 +243,7 @@ impl WtmApp {
     pub(super) fn select_branch_in_create(
         &mut self,
         name: String,
+        from_remote: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -250,7 +251,14 @@ impl WtmApp {
             return;
         };
         let input = state.branch_input.clone();
+        let base_input = state.base_input.clone();
         input.update(cx, |input, cx| input.set_value(name, window, cx));
+        // A remote-only picker row must also fill Base, otherwise create
+        // makes a new branch from default_base / HEAD and the clicked tip
+        // is ignored.
+        if let Some(remote) = from_remote {
+            base_input.update(cx, |input, cx| input.set_value(remote, window, cx));
+        }
     }
 
     /// Load the refs the Base field's picker offers, mirroring

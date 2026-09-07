@@ -121,8 +121,11 @@ reloading over it.
 
 **Create** (⌘N) is a two-phase dialog: fill in a branch name (with a
 filtered picker of existing branches below it, showing which are already
-checked out elsewhere or have a gone upstream) and an optional base ref,
-then submit. The Base field doubles as a searchable ref picker: typing (or
+checked out elsewhere, which exist only as a remote-tracking ref, or have
+a gone upstream) and an optional base ref, then submit. Picking a
+remote-only row fills the branch with the short name and the base with
+the tracking ref (`origin/foo`), so the new worktree is created from that
+tip rather than from `default_base`/`HEAD`. The Base field doubles as a searchable ref picker: typing (or
 just focusing the field) shows local branches, remote-tracking branches, and
 two synthetic entries — `current` (whatever the worktree you were looking at
 has checked out) and `default` (the repo's configured `default_base`, or

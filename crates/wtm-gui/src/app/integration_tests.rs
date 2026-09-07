@@ -570,6 +570,84 @@ fn create_rejects_branch_checked_out_elsewhere(cx: &mut TestAppContext) {
     );
 }
 
+#[gpui::test]
+fn picking_a_remote_only_branch_creates_from_that_tracking_ref(cx: &mut TestAppContext) {
+    let fx = Fixture::new();
+    let remote_sha = git(fx.root(), &["rev-parse", "develop"]);
+    git(
+        fx.root(),
+        &[
+            "update-ref",
+            "refs/remotes/origin/only-remote",
+            &remote_sha,
+        ],
+    );
+    let repo = fx.open();
+    let (view, cx) = open_app(cx, Some(repo));
+    cx.run_until_parked();
+
+    cx.simulate_keystrokes("cmd-n");
+    cx.run_until_parked();
+
+    view.update_in(cx, |app, window, cx| {
+        let Some(Dialog::Create(state)) = &app.dialog else {
+            panic!("dialog must be open");
+        };
+        let remote = state
+            .branches
+            .iter()
+            .find(|b| b.name == "only-remote")
+            .cloned()
+            .expect("remote-only branch must be in the picker");
+        assert_eq!(
+            remote.from_remote.as_deref(),
+            Some("origin/only-remote")
+        );
+        app.select_branch_in_create(remote.name, remote.from_remote, window, cx);
+    });
+
+    view.read_with(cx, |app, cx| {
+        let Some(Dialog::Create(state)) = &app.dialog else {
+            panic!("dialog must still be open");
+        };
+        assert_eq!(state.branch_input.read(cx).value(), "only-remote");
+        assert_eq!(
+            state.base_input.read(cx).value(),
+            "origin/only-remote",
+            "the base must be the tracking ref, not an empty/default field"
+        );
+    });
+
+    view.update_in(cx, |app, window, cx| {
+        app.submit_create_dialog(window, cx);
+    });
+    cx.run_until_parked();
+    cx.executor().advance_clock(Duration::from_secs(2));
+
+    view.read_with(cx, |app, _| {
+        let Some(Dialog::Create(state)) = &app.dialog else {
+            panic!("dialog must be open");
+        };
+        let CreatePhase::Progress(progress) = &state.phase else {
+            panic!("expected the progress phase");
+        };
+        progress
+            .outcome
+            .as_ref()
+            .expect("create should have finished")
+            .as_ref()
+            .expect("create from a remote-only picker row must succeed");
+    });
+
+    let new_path = fx.worktree_path("only-remote");
+    assert!(new_path.is_dir());
+    let tip = git(&new_path, &["rev-parse", "HEAD"]);
+    assert_eq!(
+        tip, remote_sha,
+        "the worktree must be branched from origin/only-remote, not main"
+    );
+}
+
 // ---------------------------------------------------------------------
 // 4. Base ref picker
 // ---------------------------------------------------------------------

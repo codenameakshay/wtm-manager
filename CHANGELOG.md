@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **App: picking a remote-only branch in New Worktree now branches from
+  that tracking ref.** The picker used to strip `origin/` and create a
+  new local branch from `default_base`/`HEAD`, so clicking `origin/foo`
+  could land you on an unrelated commit.
+
 ## [0.8.0] - 2026-09-07
 
 ### Changed
