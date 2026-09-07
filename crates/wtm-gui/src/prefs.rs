@@ -28,6 +28,12 @@ use crate::worktree_list::SortMode;
 /// file written by a newer version of the app is ignored rather than
 /// partially trusted, so an older build can never misinterpret a shape it
 /// doesn't understand.
+///
+/// Do not bump this for a new optional field — that discards the *whole*
+/// file for every older build that opens it once, not just the new field.
+/// A new field rides on `#[serde(default)]` (like every field on [`Prefs`]
+/// already does) so older builds silently ignore it and newer ones fill it
+/// in on load.
 const SCHEMA_VERSION: u32 = 1;
 
 const PREFS_FILENAME: &str = "gui.json";
@@ -302,6 +308,58 @@ mod tests {
         assert!(tmp.path().join(PREFS_FILENAME).exists());
         // The atomic-write temp file never survives a successful save.
         assert!(!tmp.path().join("gui.json.tmp").exists());
+    }
+
+    #[test]
+    fn load_ignores_an_unknown_top_level_key_from_a_newer_build() {
+        // A `gui.json` written by a *newer* wtm-gui that added a field this
+        // build doesn't know about yet, but didn't bump SCHEMA_VERSION for
+        // it (per the comment on that const). serde ignores the unknown
+        // key by default (no `deny_unknown_fields`), so every known field
+        // must still come through intact rather than the whole file
+        // degrading to defaults.
+        let tmp = tempfile::tempdir().unwrap();
+        let _guard = EnvGuard::set(tmp.path());
+        std::fs::write(
+            tmp.path().join(PREFS_FILENAME),
+            r#"{"version":1,"appearance":"dark","terminal":"iTerm","sidebar_visible":false,"detail_panel_visible":false,"window":null,"last_repo":null,"reduce_motion":true,"some_future_field":{"nested":true}}"#,
+        )
+        .unwrap();
+
+        let loaded = load();
+        assert_eq!(loaded.appearance, Appearance::Dark);
+        assert_eq!(loaded.terminal, Some("iTerm".to_string()));
+        assert!(!loaded.sidebar_visible);
+        assert!(!loaded.detail_panel_visible);
+        assert!(loaded.reduce_motion);
+    }
+
+    #[test]
+    fn recent_commands_round_trip_per_repo_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _guard = EnvGuard::set(tmp.path());
+
+        let repo_a = tmp.path().join("repo-a");
+        let repo_b = tmp.path().join("repo-b");
+        let mut prefs = Prefs::default();
+        prefs.recent_commands.insert(
+            repo_a.clone(),
+            vec!["cargo test".to_string(), "cargo build".to_string()],
+        );
+        prefs
+            .recent_commands
+            .insert(repo_b.clone(), vec!["ls".to_string()]);
+
+        save(&prefs).unwrap();
+        let loaded = load();
+        assert_eq!(
+            loaded.recent_commands.get(&repo_a),
+            Some(&vec!["cargo test".to_string(), "cargo build".to_string()])
+        );
+        assert_eq!(
+            loaded.recent_commands.get(&repo_b),
+            Some(&vec!["ls".to_string()])
+        );
     }
 
     #[test]

@@ -19,15 +19,14 @@ The app never talks to git directly and never rewrites `.worktree.toml` or
 
 The sidebar lists every repository you've opened in the app, sorted
 alphabetically by name (case-insensitive, path as a tie-break), backed by a
-registry at `~/.config/wtm/repos.json` (`src/registry.rs`). It used to sort
-most-recently-opened first — the same order the registry itself returns.
-The CLI never reads this file: it discovers a repository from the current
-directory or `-C`. `last_opened` still picks the repo a fresh Dock/Spotlight
-window opens. The sidebar sorts its own copy alphabetically so selecting a
-repo does not jump it under the cursor. This is a convenience cache, not a source of truth:
-worktrees are always discovered fresh from git's own registry, the same way
-the CLI does it. A missing, corrupt, or unreadable registry file just means
-an empty sidebar, never a startup failure.
+registry at `~/.config/wtm/repos.json` (`src/registry.rs`). The CLI never
+reads this file: it discovers a repository from the current directory or
+`-C`. `last_opened` still picks the repo a fresh Dock/Spotlight window
+opens. The sidebar sorts its own copy alphabetically so selecting a repo
+does not jump it under the cursor. This is a convenience cache, not a source
+of truth: worktrees are always discovered fresh from git's own registry, the
+same way the CLI does it. A missing, corrupt, or unreadable registry file
+just means an empty sidebar, never a startup failure.
 
 A repository that no longer exists on disk (an unmounted drive, a deleted
 directory) stays in the list, shown greyed out, rather than disappearing —
@@ -127,8 +126,9 @@ checked out elsewhere, which exist only as a remote-tracking ref, or have
 a gone upstream) and an optional base ref, then submit. Picking a
 remote-only row fills the branch with the short name and the base with
 the tracking ref (`origin/foo`), so the new worktree is created from that
-tip rather than from `default_base`/`HEAD`. The Base field doubles as a searchable ref picker: typing (or
-just focusing the field) shows local branches, remote-tracking branches, and
+tip rather than from `default_base`/`HEAD`. The Base field doubles as a
+searchable ref picker: typing (or just focusing the field) shows local
+branches, remote-tracking branches, and
 two synthetic entries — `current` (whatever the worktree you were looking at
 has checked out) and `default` (the repo's configured `default_base`, or
 `HEAD`) — each labeled with what it is. `origin/main` and local `main` are
@@ -247,12 +247,12 @@ reachable from the palette and every row's context menu either way.
 ⌘K opens a fuzzy-search overlay over both the open repository's worktrees
 and the app's own actions (New Worktree, Remove Worktree, Prune, Reload,
 Open in Editor/Terminal, Reveal in Finder, Copy Path, Toggle Sidebar/Detail
-Panel, Settings, Fetch, Add Repository, Detail Panel: Details/Files/Changes
-Tab, Run Command, Open on Remote). The scorer favors matches at word
-boundaries — the start of the string, or right after `/`, `-`, `_`, `.`, a
-space, or a lowercase-to-uppercase transition — so a query like `mwg`
-lands on the initials of `migrate`/`wtm`/`gpui` in a branch like
-`migrate-wtm-to-gpui-app` rather than on some earlier, less meaningful
+Panel, Settings, Fetch, Add Repository, Remove Missing from Sidebar, Detail
+Panel: Details/Files/Changes Tab, Run Command, Open on Remote). The scorer
+favors matches at word boundaries — the start of the string, or right after
+`/`, `-`, `_`, `.`, a space, or a lowercase-to-uppercase transition — so a
+query like `mwg` lands on the initials of `migrate`/`wtm`/`gpui` in a branch
+like `migrate-wtm-to-gpui-app` rather than on some earlier, less meaningful
 triple of letters. Plain Enter (or a plain click) selects a worktree result
 and closes the palette; ⌘+Enter (or a ⌘-click) additionally opens it in your
 editor. Command results ignore that modifier — there's no "jump vs. open"
@@ -324,8 +324,8 @@ Right-clicking the list's own empty space (not a row) opens New Worktree
 (⌘N), Fetch (⌘⇧F) — disabled with "fetching…" while one is already running,
 same as the toolbar button — Prune… (⌘⇧P), and Reload (⌘R) — shown but
 disabled when no repository is open, rather than hidden, so an empty
-window's right-click never looks broken — plus Add Repository… (⌘⇧O),
-which works either way.
+window's right-click never looks broken — plus Add Repository… (⌘⇧O) and
+Remove Missing from Sidebar, which work either way.
 
 Right-clicking a sidebar repository opens it and offers Open, Reveal in
 Finder, Copy Path, and Remove from Sidebar — the last one only forgets the
@@ -469,17 +469,18 @@ papered over:
   `dbus-send` not installed), it falls back to `xdg-open`ing the containing
   directory instead, same as on any system without a compliant file
   manager.
-- **Open in Terminal** (`data::open_in_terminal`) honors `$WTM_TERMINAL`
-  first — a bare name resolved on `$PATH`, or a full path — then tries, in
-  order, `x-terminal-emulator`, `gnome-terminal`, `konsole`, `alacritty`,
-  `kitty`, `wezterm`, `foot`, `xterm`, launching the first one found. Each
-  is spawned with whatever working-directory flag it actually supports
-  (`--workdir` for konsole, `--working-directory` for alacritty and
-  gnome-terminal, `start --cwd` for wezterm, and so on); xterm and
+- **Open in Terminal** (`data::open_in_terminal`) honors the Settings
+  sheet's "Terminal app" field first, then `$WTM_TERMINAL`, then the
+  platform default — a bare name resolved on `$PATH`, or a full path —
+  then tries, in order, `x-terminal-emulator`, `gnome-terminal`, `konsole`,
+  `alacritty`, `kitty`, `wezterm`, `foot`, `xterm`, launching the first one
+  found. Each is spawned with whatever working-directory flag it actually
+  supports (`--workdir` for konsole, `--working-directory` for alacritty
+  and gnome-terminal, `start --cwd` for wezterm, and so on); xterm and
   `x-terminal-emulator` have no such flag and rely on inheriting the
   spawning process's working directory instead. The Settings sheet's
-  read-only "Terminal app" field reflects the same `$WTM_TERMINAL` value
-  here as on macOS.
+  editable "Terminal app" field takes the same precedence here as on
+  macOS.
 - **Copy Path** (`data::copy_to_clipboard`) uses whichever of `wl-copy`,
   `xclip -selection clipboard`, or `xsel -ib` is installed, tried in that
   order.

@@ -276,32 +276,77 @@ fn existing_ancestor(path: &Path) -> Option<PathBuf> {
         .map(Path::to_path_buf)
 }
 
-/// Open a worktree in a terminal app. `app` (`Prefs::terminal`) takes
-/// precedence over `$WTM_TERMINAL`, which takes precedence over the
-/// platform default.
-///
-/// macOS: the resolved name is used for `open -a <app> <path>`, falling
-/// back to `Terminal`.
-///
-/// Linux: the resolved name is the emulator binary to try first (a bare
-/// name resolved on `$PATH`, or a full path); failing that, the first
-/// installed of, in order, `x-terminal-emulator`, `gnome-terminal`,
-/// `konsole`, `alacritty`, `kitty`, `wezterm`, `foot`, `xterm`. Each is
-/// spawned detached (`Command::spawn`, never waited on) rather than launched
-/// the way macOS's `open -a` is: `open` itself exits the moment the app is
-/// launched, but several of these terminals (xterm, alacritty, kitty, foot,
-/// wezterm) run in the foreground and don't return control until their
-/// window closes, so waiting on them here would block for as long as the
-/// user keeps the terminal open.
-pub fn open_in_terminal(path: &Path, app: Option<&str>) -> Result<(), String> {
+/// Linux only: emulators to try, in order, when nothing explicit is
+/// configured -- `x-terminal-emulator`, `gnome-terminal`, `konsole`,
+/// `alacritty`, `kitty`, `wezterm`, `foot`, `xterm`.
+#[cfg(not(target_os = "macos"))]
+const LINUX_TERMINAL_CANDIDATES: &[&str] = &[
+    "x-terminal-emulator",
+    "gnome-terminal",
+    "konsole",
+    "alacritty",
+    "kitty",
+    "wezterm",
+    "foot",
+    "xterm",
+];
+
+/// `app` (`Prefs::terminal`) resolved against `$WTM_TERMINAL` and the
+/// platform default, same precedence [`open_in_terminal`] launches with:
+/// `app` if non-empty, else `$WTM_TERMINAL` if non-empty, else the platform
+/// default (`"Terminal"` on macOS; on Linux, the first of
+/// [`LINUX_TERMINAL_CANDIDATES`] found on `$PATH`, or the last candidate if
+/// none are installed).
+pub fn effective_terminal(app: Option<&str>) -> String {
     let explicit = app
         .filter(|t| !t.is_empty())
         .map(str::to_string)
         .or_else(|| std::env::var("WTM_TERMINAL").ok().filter(|t| !t.is_empty()));
-
+    if let Some(explicit) = explicit {
+        return explicit;
+    }
     #[cfg(target_os = "macos")]
     {
-        let terminal = explicit.unwrap_or_else(|| "Terminal".to_string());
+        "Terminal".to_string()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        LINUX_TERMINAL_CANDIDATES
+            .iter()
+            .find(|name| on_path(name))
+            .unwrap_or(&LINUX_TERMINAL_CANDIDATES[LINUX_TERMINAL_CANDIDATES.len() - 1])
+            .to_string()
+    }
+}
+
+/// Whether an executable named `name` exists on `$PATH`. Used only to pick
+/// the most honest `effective_terminal` fallback name; `open_in_terminal`
+/// itself doesn't need this since it just tries each candidate in turn.
+#[cfg(not(target_os = "macos"))]
+fn on_path(name: &str) -> bool {
+    std::env::var_os("PATH")
+        .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join(name).is_file()))
+}
+
+/// Open a worktree in a terminal app. `app` (`Prefs::terminal`) takes
+/// precedence over `$WTM_TERMINAL`, which takes precedence over the
+/// platform default -- see [`effective_terminal`] for that resolution.
+///
+/// macOS: the resolved name is used for `open -a <app> <path>`.
+///
+/// Linux: if `app` or `$WTM_TERMINAL` is set, its resolved name is the only
+/// emulator tried (a bare name resolved on `$PATH`, or a full path);
+/// otherwise every one of [`LINUX_TERMINAL_CANDIDATES`] is tried in order
+/// until one launches. Each is spawned detached (`Command::spawn`, never
+/// waited on) rather than launched the way macOS's `open -a` is: `open`
+/// itself exits the moment the app is launched, but several of these
+/// terminals (xterm, alacritty, kitty, foot, wezterm) run in the foreground
+/// and don't return control until their window closes, so waiting on them
+/// here would block for as long as the user keeps the terminal open.
+pub fn open_in_terminal(path: &Path, app: Option<&str>) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let terminal = effective_terminal(app);
         std::process::Command::new("open")
             .arg("-a")
             .arg(&terminal)
@@ -318,27 +363,21 @@ pub fn open_in_terminal(path: &Path, app: Option<&str>) -> Result<(), String> {
     }
     #[cfg(not(target_os = "macos"))]
     {
+        let explicit = app
+            .filter(|t| !t.is_empty())
+            .map(str::to_string)
+            .or_else(|| std::env::var("WTM_TERMINAL").ok().filter(|t| !t.is_empty()));
         if let Some(explicit) = explicit {
             return spawn_terminal(&explicit, path);
         }
-        const CANDIDATES: &[&str] = &[
-            "x-terminal-emulator",
-            "gnome-terminal",
-            "konsole",
-            "alacritty",
-            "kitty",
-            "wezterm",
-            "foot",
-            "xterm",
-        ];
-        for name in CANDIDATES {
+        for name in LINUX_TERMINAL_CANDIDATES {
             if spawn_terminal(name, path).is_ok() {
                 return Ok(());
             }
         }
         Err(format!(
             "no terminal emulator found (tried: {})",
-            CANDIDATES.join(", ")
+            LINUX_TERMINAL_CANDIDATES.join(", ")
         ))
     }
 }
@@ -485,16 +524,15 @@ pub fn list_branches(repo: &OpenRepo) -> Result<Vec<BranchInfo>, String> {
         }
         let short = short.to_string();
         remotes.push(BranchInfo {
-            name: short.clone(),
+            name: short,
             from_remote: Some(full_name),
-            is_checked_out: checked_out.contains(&short),
+            // Branches actually checked out are local and were `continue`d
+            // above, so every row that reaches here is not checked out.
+            is_checked_out: false,
             upstream_gone: false,
         });
     }
     remotes.sort_by(|a, b| a.name.cmp(&b.name).then(a.from_remote.cmp(&b.from_remote)));
-    // Identical (short name, tracking ref) pairs only — origin/foo and
-    // upstream/foo stay two rows so each can set a different base.
-    remotes.dedup_by(|a, b| a.name == b.name && a.from_remote == b.from_remote);
 
     locals.extend(remotes);
     Ok(locals)
@@ -1637,6 +1675,19 @@ mod tests {
         // An unrecognized name (e.g. a custom $WTM_TERMINAL) degrades the
         // same way rather than guessing at flags it might not support.
         assert!(terminal_args("some-custom-term", path).is_empty());
+    }
+
+    #[test]
+    fn effective_terminal_prefers_explicit_pref() {
+        assert_eq!(effective_terminal(Some("iTerm")), "iTerm");
+    }
+
+    #[test]
+    fn effective_terminal_falls_back_to_a_default_when_pref_is_empty() {
+        // Exact value depends on $WTM_TERMINAL and, on Linux, on what's
+        // installed -- just assert it never comes back empty.
+        assert!(!effective_terminal(None).is_empty());
+        assert!(!effective_terminal(Some("")).is_empty());
     }
 
     // ---------------- list_refs ordering ----------------

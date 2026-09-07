@@ -339,19 +339,37 @@ pub fn filter_branches<'a>(branches: &'a [BranchInfo], query: &str) -> Vec<&'a B
     substring_filter(branches, query, |b| b.name.as_str())
 }
 
+/// Element id for a branch-picker row. Local rows are already unique by
+/// name; remote-only rows are keyed on the full tracking ref, not just the
+/// short name, since two remotes (`origin`, `upstream`, ...) can track a
+/// branch with the same short name.
+fn branch_row_id(branch: &BranchInfo) -> String {
+    match &branch.from_remote {
+        Some(from_remote) => format!("branch-remote-{from_remote}"),
+        None => format!("branch-local-{}", branch.name),
+    }
+}
+
+/// The remote name shown in a remote-only row's pill: the part of
+/// `from_remote` before the first `/` (`origin/foo` -> `origin`).
+fn remote_pill_name(from_remote: &str) -> &str {
+    from_remote
+        .split_once('/')
+        .map_or(from_remote, |(remote, _)| remote)
+}
+
 /// One row in the branch picker: name, plus a "checked out" hint (disabled,
-/// per `wtm add`'s `BranchInUse` refusal), a "remote" pill for a tracking
-/// ref with no local branch, or a "gone" pill for a local branch whose
-/// upstream disappeared. Purely presentational — the caller decides whether
-/// to attach a click handler based on `branch.is_checked_out`.
+/// per `wtm add`'s `BranchInUse` refusal), a pill naming the remote for a
+/// tracking ref with no local branch (`origin`, `upstream`, ... — two
+/// remotes tracking the same branch name otherwise render as identical
+/// rows), or a "gone" pill for a local branch whose upstream disappeared.
+/// Purely presentational — the caller decides whether to attach a click
+/// handler based on `branch.is_checked_out`.
 pub fn render_branch_row(branch: &BranchInfo, theme: &Theme) -> Stateful<Div> {
     let disabled = branch.is_checked_out;
-    let row_id = branch
-        .from_remote
-        .as_deref()
-        .unwrap_or(branch.name.as_str());
+    let remote_name = branch.from_remote.as_deref().map(remote_pill_name);
 
-    ui::row(SharedString::from(format!("branch-{row_id}")), false, theme)
+    ui::row(SharedString::from(branch_row_id(branch)), false, theme)
         .flex()
         .items_center()
         .justify_between()
@@ -377,8 +395,8 @@ pub fn render_branch_row(branch: &BranchInfo, theme: &Theme) -> Stateful<Div> {
                     .child("checked out"),
             )
         })
-        .when(!disabled && branch.from_remote.is_some(), |this| {
-            this.child(ui::pill("remote", theme.info))
+        .when_some(remote_name.filter(|_| !disabled), |this, remote_name| {
+            this.child(ui::pill(remote_name.to_string(), theme.info))
         })
         .when(!disabled && branch.upstream_gone, |this| {
             this.child(ui::pill("gone", theme.danger))
@@ -936,6 +954,28 @@ mod tests {
         let filtered = filter_branches(&branches, "login");
         let names: Vec<&str> = filtered.iter().map(|b| b.name.as_str()).collect();
         assert_eq!(names, vec!["feature-Login", "bugfix/LOGIN-crash"]);
+    }
+
+    #[test]
+    fn branch_row_id_disambiguates_remotes_tracking_the_same_short_name() {
+        let mut origin_foo = branch("foo", false);
+        origin_foo.from_remote = Some("origin/foo".to_string());
+        let mut upstream_foo = branch("foo", false);
+        upstream_foo.from_remote = Some("upstream/foo".to_string());
+
+        assert_eq!(branch_row_id(&origin_foo), "branch-remote-origin/foo");
+        assert_eq!(branch_row_id(&upstream_foo), "branch-remote-upstream/foo");
+        assert_ne!(branch_row_id(&origin_foo), branch_row_id(&upstream_foo));
+        assert_eq!(branch_row_id(&branch("foo", false)), "branch-local-foo");
+    }
+
+    #[test]
+    fn remote_pill_name_is_the_part_before_the_first_slash() {
+        assert_eq!(remote_pill_name("origin/foo"), "origin");
+        assert_eq!(remote_pill_name("upstream/feature/x"), "upstream");
+        // No slash at all shouldn't happen in practice, but degrade to the
+        // whole string rather than panicking.
+        assert_eq!(remote_pill_name("origin"), "origin");
     }
 
     #[test]
