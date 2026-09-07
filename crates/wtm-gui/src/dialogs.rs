@@ -704,6 +704,7 @@ impl RemoveState {
 pub struct PruneState {
     pub merged: bool,
     pub gone: bool,
+    pub detached: bool,
     pub force: bool,
     pub candidates: Vec<PruneCandidate>,
     pub busy: bool,
@@ -716,6 +717,7 @@ impl PruneState {
         Self {
             merged: false,
             gone: false,
+            detached: false,
             force: false,
             candidates: Vec::new(),
             busy: false,
@@ -728,7 +730,8 @@ impl PruneState {
     /// runs directly on every toggle change instead of round-tripping
     /// through the background executor.
     pub fn recompute(&mut self, repo: &OpenRepo, rows: &[WorktreeInfo]) {
-        self.candidates = crate::data::prune_candidates(repo, rows, self.merged, self.gone);
+        self.candidates =
+            crate::data::prune_candidates(repo, rows, self.merged, self.gone, self.detached);
     }
 }
 
@@ -745,6 +748,7 @@ fn reason_color(reason: &str, theme: &Theme) -> Hsla {
     match reason {
         "missing" | "gone" => theme.danger,
         "merged" => theme.success,
+        "detached" => theme.warning,
         _ => theme.text_faint,
     }
 }
@@ -1111,5 +1115,23 @@ mod tests {
         state.gone = true;
         state.recompute(&repo, &rows);
         assert!(state.candidates.is_empty());
+    }
+
+    #[test]
+    fn prune_recompute_reacts_to_detached_toggle() {
+        let repo = fake_repo(vec![]);
+        let mut detached = worktree("leftover", false, false);
+        detached.branch = None;
+        let rows = vec![detached];
+
+        let mut state = PruneState::new();
+        state.recompute(&repo, &rows);
+        assert!(state.candidates.is_empty());
+
+        state.detached = true;
+        state.recompute(&repo, &rows);
+        assert_eq!(state.candidates.len(), 1);
+        assert!(state.candidates[0].reasons.contains(&"detached"));
+        assert!(!state.candidates[0].delete_branch);
     }
 }

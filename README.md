@@ -393,7 +393,7 @@ automation (`setup.commands`/`setup.copy`) runs in the fresh worktree:
 
 | Flag | Description |
 | --- | --- |
-| `--from <base>` | Base ref for a new branch. Must resolve to a commit. If omitted, uses `default_base`, then `HEAD`. |
+| `--from <base>` | Base ref for a new branch. Must resolve to a commit. If omitted, uses `default_base`, then `origin/HEAD` / `origin/main` / `origin/master`, then `HEAD`. |
 | `--unique [stem]` | Create `stem/<8 hex>` (default stem: `wtm`) and retry if that name already exists. Does not auto-suffix a normal `wtm add` that hits `BranchInUse`. |
 | `--detach [name]` | Detached HEAD, no branch. `name` is only used in the path template. |
 | `--path <path>` | Explicit destination path, overriding the path template. |
@@ -461,6 +461,7 @@ whose directory is missing or that git considers prunable (always), plus
 | --- | --- |
 | `--merged` | Also include worktrees whose branch is merged into the resolved base. |
 | `--gone` | Also include worktrees whose upstream branch was deleted remotely. |
+| `--detached` | Also include linked worktrees whose HEAD is detached (no branch to delete). |
 | `--dry-run` | Print the plan and exit without changing anything. |
 | `--force` | Proceed even if a candidate worktree is dirty. |
 | `--json` | Print one JSON object (`ok`, `action`, `removed`, `skipped`, `failures`, `candidates`). Dry-run sets `removed` to 0. |
@@ -574,7 +575,8 @@ path_template = "../{repo}-worktrees/{branch}"
 # Base ref used to decide whether a branch counts as "merged" (for `wtm list`
 # and `wtm prune --merged`), and as the default base for `wtm add` when the
 # branch doesn't exist yet (overridable per-call with `wtm add --from`).
-# Unset (the built-in default) falls back to the main worktree's HEAD.
+# Unset tries origin/HEAD, origin/main, origin/master, then the main
+# worktree's HEAD. wtm never fetches on a read; run `wtm fetch` first.
 default_base = "origin/main"
 
 # Files/directories copied or symlinked from the main worktree into every

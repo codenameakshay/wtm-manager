@@ -216,6 +216,10 @@ pub struct PruneArgs {
     #[arg(long)]
     pub force: bool,
 
+    /// Also prune linked worktrees whose HEAD is detached.
+    #[arg(long)]
+    pub detached: bool,
+
     /// Print one JSON object on stdout.
     #[arg(long)]
     pub json: bool,

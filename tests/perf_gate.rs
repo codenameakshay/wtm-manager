@@ -88,7 +88,7 @@ fn prune_of_64_worktrees_stays_under_budget() {
 
     // Every fixture worktree is branched straight from main's tip with no
     // commit of its own, so all of them are merged candidates.
-    let candidates = wtm::commands::prune::candidates(&items, &[], true, false, false);
+    let candidates = wtm::commands::prune::candidates(&items, &[], true, false, false, false);
     assert_eq!(candidates.len(), WORKTREE_COUNT);
 
     let start = Instant::now();

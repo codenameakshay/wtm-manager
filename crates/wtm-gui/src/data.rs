@@ -65,7 +65,8 @@ pub fn open_repo_from_cwd() -> Option<OpenRepo> {
 /// again with status — the same two-pass strategy the TUI uses.
 pub fn list_worktrees(repo: &OpenRepo, with_status: bool) -> Result<Vec<WorktreeInfo>, String> {
     let base = if with_status {
-        repo.config.default_base.clone()
+        worktree::listing_base(&repo.ctx, repo.config.default_base.as_deref())
+            .map_err(|e| e.to_string())?
     } else {
         None
     };
@@ -116,12 +117,14 @@ pub fn prune_candidates(
     rows: &[WorktreeInfo],
     merged: bool,
     gone: bool,
+    detached: bool,
 ) -> Vec<prune::PruneCandidate> {
     prune::candidates(
         rows,
         &repo.config.prune.protected_branches,
         merged,
         gone,
+        detached,
         false,
     )
 }

@@ -18,6 +18,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Normal `wtm add <branch>` still refuses when the branch is in use.
 - **`--json` on `add`, `remove`, and `prune`.** One pretty object on
   stdout. Failures still print `error:` on stderr (no error envelope).
+- **`wtm prune --detached`.** Linked worktrees with no branch (the leftovers
+  agent tools often leave) can be swept. When `default_base` is unset,
+  merged detection prefers `origin/HEAD`, then `origin/main` /
+  `origin/master`, then local HEAD. `wtm fetch` is still required to
+  refresh those remote-tracking refs.
 
 ### Fixed
 

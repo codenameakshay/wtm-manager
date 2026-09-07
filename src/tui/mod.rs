@@ -171,9 +171,20 @@ fn run_effect(
             with_status,
         } => {
             let ctx = ctx.clone();
-            let base = config.default_base.clone();
+            let configured = config.default_base.clone();
             let tx = tx.clone();
             std::thread::spawn(move || {
+                let base = match worktree::listing_base(&ctx, configured.as_deref()) {
+                    Ok(base) => base,
+                    Err(e) => {
+                        let _ = tx.send(Msg::RowsFailed {
+                            generation,
+                            with_status,
+                            text: format!("list failed: {e}"),
+                        });
+                        return;
+                    }
+                };
                 let msg = match worktree::list(&ctx, &ListOptions { with_status, base }) {
                     Ok(rows) => Msg::RowsLoaded {
                         generation,

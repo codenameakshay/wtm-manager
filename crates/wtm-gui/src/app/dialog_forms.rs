@@ -526,6 +526,16 @@ impl WtmApp {
             )
             .child(
                 dialogs::render_toggle(
+                    "prune-detached",
+                    "Detached HEAD",
+                    state.detached,
+                    false,
+                    theme,
+                )
+                .on_click(cx.listener(|this, _, _window, cx| this.toggle_prune_detached(cx))),
+            )
+            .child(
+                dialogs::render_toggle(
                     "prune-force",
                     "Force (include worktrees with uncommitted changes)",
                     state.force,
@@ -773,11 +783,11 @@ fn dialog_hint(text: &str, theme: &Theme) -> impl IntoElement {
 }
 
 fn prune_empty_hint(state: &PruneState, theme: &Theme) -> impl IntoElement {
-    let text = if state.merged || state.gone {
+    let text = if state.merged || state.gone || state.detached {
         "Nothing matches the current filters."
     } else {
         "Only missing or already-prunable worktrees are swept by default — turn on \
-         Merged or Upstream gone to include more."
+         Merged, Upstream gone, or Detached HEAD to include more."
     };
     div()
         .py(px(SPACE_8))

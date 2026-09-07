@@ -313,20 +313,23 @@ fn destination(
     }
 }
 
-/// Base ref for a new branch: override > configured `default_base`
-/// (revparsed strictly in the main repo) > HEAD. An explicit base that does
-/// not resolve is an error.
+/// Base ref for a new branch: override > configured `default_base` >
+/// `origin/HEAD` / `origin/main` / `origin/master` when those peel > HEAD.
+/// An explicit base that does not resolve is an error.
 fn resolve_base(ctx: &RepoContext, config: &Config, base_override: Option<&str>) -> Result<String> {
     let requested = match base_override {
-        Some(base) => Some(base),
-        None => config.default_base.as_deref(),
+        Some(base) => Some(base.to_string()),
+        None => {
+            let repo = ctx.open_main()?;
+            worktree::effective_default_base(&repo, config.default_base.as_deref())
+        }
     };
     match requested {
         None => Ok("HEAD".to_string()),
         Some(base) => {
             let repo = ctx.open_main()?;
-            worktree::resolve_base_commit(&repo, base)?;
-            Ok(base.to_string())
+            worktree::resolve_base_commit(&repo, &base)?;
+            Ok(base)
         }
     }
 }

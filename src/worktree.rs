@@ -229,6 +229,27 @@ struct ResolvedBase {
     names: Vec<String>,
 }
 
+/// When `default_base` is unset, prefer a remote default that actually
+/// exists: the first of `origin/HEAD`, `origin/main`, `origin/master` that
+/// peels to a commit. `None` leaves [`list`] on the main worktree HEAD.
+pub fn effective_default_base(repo: &git2::Repository, configured: Option<&str>) -> Option<String> {
+    if let Some(spec) = configured {
+        return Some(spec.to_string());
+    }
+    for spec in ["origin/HEAD", "origin/main", "origin/master"] {
+        if resolve_base_commit(repo, spec).is_ok() {
+            return Some(spec.to_string());
+        }
+    }
+    None
+}
+
+/// [`effective_default_base`] after opening the main repository.
+pub fn listing_base(ctx: &RepoContext, configured: Option<&str>) -> Result<Option<String>> {
+    let repo = ctx.open_main()?;
+    Ok(effective_default_base(&repo, configured))
+}
+
 /// Resolve `spec` to a commit oid in `repo`, along with the reference it
 /// went through (when any), for callers that also need its shorthand name.
 /// The error message is shared with [`crate::commands::add`]'s base
@@ -714,6 +735,47 @@ mod tests {
         assert!(!entry(&infos, "wip").status.as_ref().unwrap().merged);
         // The base's own worktree (branch == base shorthand) is never merged.
         assert!(!entry(&infos, "main").status.as_ref().unwrap().merged);
+    }
+
+    #[test]
+    fn effective_default_base_prefers_origin_then_configured() {
+        let (_tmp, ctx) = fixture();
+        let repo = ctx.open_main().unwrap();
+        assert_eq!(
+            effective_default_base(&repo, None),
+            None,
+            "no origin refs: leave list on HEAD"
+        );
+
+        let oid = repo.head().unwrap().peel_to_commit().unwrap().id();
+        git(
+            &ctx.main_root,
+            &["update-ref", "refs/remotes/origin/main", &oid.to_string()],
+        );
+        let repo = ctx.open_main().unwrap();
+        assert_eq!(
+            effective_default_base(&repo, None).as_deref(),
+            Some("origin/main")
+        );
+
+        git(
+            &ctx.main_root,
+            &[
+                "symbolic-ref",
+                "refs/remotes/origin/HEAD",
+                "refs/remotes/origin/main",
+            ],
+        );
+        let repo = ctx.open_main().unwrap();
+        assert_eq!(
+            effective_default_base(&repo, None).as_deref(),
+            Some("origin/HEAD")
+        );
+        assert_eq!(
+            effective_default_base(&repo, Some("main")).as_deref(),
+            Some("main"),
+            "an explicit config wins"
+        );
     }
 
     #[test]

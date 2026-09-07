@@ -42,19 +42,18 @@ pub fn run(args: &PruneArgs, global: &GlobalArgs) -> Result<()> {
     // Status (dirty/merged/gone) is only needed when a status-derived
     // selection or safety check can trigger.
     let with_status = args.merged || args.gone || !args.force;
-    let items = worktree::list(
-        &ctx,
-        &ListOptions {
-            with_status,
-            base: config.default_base.clone(),
-        },
-    )?;
+    let base = worktree::listing_base(&ctx, config.default_base.as_deref())?;
+    if global.verbose {
+        eprintln!("merged base: {}", base.as_deref().unwrap_or("HEAD"));
+    }
+    let items = worktree::list(&ctx, &ListOptions { with_status, base })?;
 
     let candidates = candidates(
         &items,
         &config.prune.protected_branches,
         args.merged,
         args.gone,
+        args.detached,
         global.verbose,
     );
     let (candidates, cwd_skipped) = exclude_cwd(candidates);
@@ -180,6 +179,7 @@ pub fn candidates(
     protected: &[String],
     merged: bool,
     gone: bool,
+    detached: bool,
     verbose: bool,
 ) -> Vec<PruneCandidate> {
     let mut selected: Vec<PruneCandidate> = Vec::new();
@@ -212,6 +212,9 @@ pub fn candidates(
         let is_gone = gone && status.is_some_and(|s| s.upstream_gone);
         if is_gone {
             reasons.push("gone");
+        }
+        if detached && info.branch.is_none() && !info.is_locked {
+            reasons.push("detached");
         }
         if reasons.is_empty() {
             continue;
@@ -543,7 +546,7 @@ mod tests {
         .unwrap();
         // Every branch shares main's tip (no commit of its own), so all N
         // are merged candidates.
-        let cands = candidates(&items, &[], true, false, false);
+        let cands = candidates(&items, &[], true, false, false, false);
         assert_eq!(cands.len(), N);
 
         let progress_log: std::sync::Mutex<Vec<usize>> = std::sync::Mutex::new(Vec::new());

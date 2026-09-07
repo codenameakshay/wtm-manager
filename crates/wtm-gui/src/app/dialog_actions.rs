@@ -802,6 +802,17 @@ impl WtmApp {
         cx.notify();
     }
 
+    pub(super) fn toggle_prune_detached(&mut self, cx: &mut Context<Self>) {
+        let Some(repo) = self.active.clone() else {
+            return;
+        };
+        if let Some(Dialog::Prune(state)) = &mut self.dialog {
+            state.detached = !state.detached;
+            state.recompute(&repo, &self.rows);
+        }
+        cx.notify();
+    }
+
     pub(super) fn toggle_prune_force(&mut self, cx: &mut Context<Self>) {
         if let Some(Dialog::Prune(state)) = &mut self.dialog {
             state.force = !state.force;

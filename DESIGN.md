@@ -204,7 +204,7 @@ pub struct ConfigFile { /* every field Option<...>, including nested */ }
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
     pub path_template: String,        // default "../{repo}-worktrees/{branch}"
-    pub default_base: Option<String>, // default Some("origin/main")? NO — default None means "use HEAD"; built-in default is None. Config may set e.g. "origin/main".
+    pub default_base: Option<String>, // default None. CLI/TUI/GUI listing and add/prune then try origin/HEAD, origin/main, origin/master before HEAD. Library `list(..., base: None)` still means HEAD.
     pub editor: Option<String>,       // resolution order at use site: config > $VISUAL > $EDITOR
     pub setup: SetupConfig,
     pub prune: PruneConfig,
@@ -375,7 +375,7 @@ pub enum Command {
     List(ListArgs),      // alias: ls; --json; --no-status alias --fast
     Remove(RemoveArgs),  // alias: rm; --force, --with-branch
     Switch(SwitchArgs),  // aliases: cd, sw; hidden --print-path
-    Prune(PruneArgs),    // alias: clean; --merged --gone --dry-run --force
+    Prune(PruneArgs),    // alias: clean; --merged --gone --detached --dry-run --force --json
     Fetch(FetchArgs),    // --remote
     Open(OpenArgs),      // --with <cmd>
     Path(PathArgs),
@@ -421,7 +421,9 @@ Key behaviors:
   requested post-create actions succeed. `--json` prints one object
   `{ok,action,name,branch,path,detached}` on stdout and silences git/setup
   chatter so stdout stays parseable.
-- list: with_status = !no_status; --json ⇒ render_json to stdout.
+- list: with_status = !no_status; merged base = `listing_base` (configured
+  `default_base`, else origin/HEAD, origin/main, origin/master, else HEAD).
+  `--json` ⇒ render_json to stdout. `-v` prints the resolved merged base.
 - remove: name optional ⇒ interactive picker (TTY-gated, see picker rules).
   Refuse main worktree (MainWorktree). CLI `run` and the TUI refuse when
   the target contains cwd; `remove_worktree` itself does not (the GUI
@@ -435,7 +437,8 @@ Key behaviors:
   path to stdout (ALL other UI, including the picker, must go to stderr);
   without it print the path plus a hint (stderr) about `wtm init zsh`.
 - prune: candidates = missing/prunable entries (always) + merged (only with
-  --merged) + upstream_gone (only with --gone). Skip main worktree and any
+  --merged) + upstream_gone (only with --gone) + detached HEAD (only with
+  --detached; no branch delete; locked detached trees are skipped). Skip main worktree and any
   candidate whose branch ∈ protected_branches. `prune::exclude_cwd` then
   drops any candidate whose path contains the process cwd, applied by each
   caller (CLI `run`, TUI) right after selecting candidates — a worktree

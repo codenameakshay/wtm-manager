@@ -250,7 +250,8 @@ const SAMPLE_CONFIG: &str = r#"# wtm repository configuration.
 # path_template = "../{repo}-worktrees/{branch}"
 
 # Base ref used when creating new branches and when computing "merged"
-# status, e.g. "origin/main". Falls back to HEAD when unset.
+# status, e.g. "origin/main". When unset, wtm tries origin/HEAD,
+# origin/main, origin/master, then HEAD. It does not fetch.
 # default_base = "origin/main"
 
 # Executable values are intentionally excluded from shared repository config.
