@@ -571,6 +571,49 @@ fn create_rejects_branch_checked_out_elsewhere(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn stale_create_branch_list_does_not_fill_a_newer_dialog(cx: &mut TestAppContext) {
+    let fx = Fixture::new();
+    let repo = fx.open();
+    let (view, cx) = open_app(cx, Some(repo));
+    cx.run_until_parked();
+
+    cx.simulate_keystrokes("cmd-n");
+    let first_id = view.read_with(cx, |app, _| {
+        let Some(Dialog::Create(state)) = &app.dialog else {
+            panic!("create dialog must be open");
+        };
+        state.load_id
+    });
+    view.update_in(cx, |app, window, cx| app.close_dialog(window, cx));
+    cx.simulate_keystrokes("cmd-n");
+    view.update_in(cx, |app, _window, cx| {
+        app.apply_create_branches(
+            first_id,
+            Ok(vec![data::BranchInfo {
+                name: "stale-from-other-repo".into(),
+                from_remote: None,
+                is_checked_out: false,
+                upstream_gone: false,
+            }]),
+            cx,
+        );
+    });
+    view.read_with(cx, |app, _| {
+        let Some(Dialog::Create(state)) = &app.dialog else {
+            panic!("create dialog must be open");
+        };
+        assert_ne!(state.load_id, first_id);
+        assert!(
+            !state
+                .branches
+                .iter()
+                .any(|b| b.name == "stale-from-other-repo"),
+            "a list_branches result from the previous dialog must not fill this one"
+        );
+    });
+}
+
+#[gpui::test]
 fn picking_a_remote_only_branch_creates_from_that_tracking_ref(cx: &mut TestAppContext) {
     let fx = Fixture::new();
     let remote_sha = git(fx.root(), &["rev-parse", "develop"]);

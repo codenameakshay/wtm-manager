@@ -102,6 +102,10 @@ pub struct CreateState {
     /// where the option went.
     pub setup_available: bool,
     pub phase: CreatePhase,
+    /// Identifies this dialog instance so a background `list_branches` /
+    /// `list_refs` result from a previous create dialog cannot fill this
+    /// one after a fast repo switch and reopen.
+    pub load_id: u64,
 }
 
 /// The create dialog has exactly two phases: filling out the form, and
@@ -193,7 +197,12 @@ impl CreateState {
     /// place in this module that needs `Context<WtmApp>` rather than plain
     /// data, because a `Subscription` is only meaningful in terms of the
     /// entity that outlives it.
-    pub fn new(repo: &OpenRepo, window: &mut gpui::Window, cx: &mut Context<WtmApp>) -> Self {
+    pub fn new(
+        repo: &OpenRepo,
+        load_id: u64,
+        window: &mut gpui::Window,
+        cx: &mut Context<WtmApp>,
+    ) -> Self {
         let base_placeholder = repo
             .config
             .default_base
@@ -283,6 +292,7 @@ impl CreateState {
             run_setup: setup_available,
             setup_available,
             phase: CreatePhase::Form,
+            load_id,
         }
     }
 

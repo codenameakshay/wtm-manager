@@ -327,6 +327,10 @@ pub struct WtmApp {
     /// build/test command typed in one repo doesn't clutter another's
     /// suggestions. Session-only: nothing persists this across a restart yet.
     recent_commands: HashMap<PathBuf, Vec<String>>,
+    /// Incremented each time the create dialog opens. Background branch/ref
+    /// loads capture the value and ignore their result if it no longer
+    /// matches the dialog currently on screen.
+    create_load_id: u64,
     /// The worktree list's own scroll position — `ui::scrollbar`/
     /// `ui::scroll_fade_*` both need a live handle to read geometry off of,
     /// which `uniform_list` only exposes once tracked (`UniformListScrollHandle`
@@ -430,6 +434,7 @@ impl WtmApp {
             palette: None,
             bulk_remove: None,
             run_command: None,
+            create_load_id: 0,
             recent_commands: HashMap::new(),
             list_scroll: UniformListScrollHandle::new(),
             changes_scroll: ScrollHandle::new(),

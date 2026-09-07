@@ -31,6 +31,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **App: untracked directories show an Untracked badge in the Files tab.**
   git2 reports a new directory as `src/`; the tree looked up `src` and
   left the row unbadged.
+- **App: a late branch/ref listing cannot fill a newer New Worktree
+  dialog.** Switching repository and reopening Create could apply the
+  previous repo's branches to the new form. Each dialog now has a load
+  id, and stale results are ignored.
 
 ## [0.8.0] - 2026-09-07
 

@@ -59,7 +59,8 @@ impl WtmApp {
             return;
         };
 
-        let state = CreateState::new(&repo, window, cx);
+        self.create_load_id = self.create_load_id.wrapping_add(1);
+        let state = CreateState::new(&repo, self.create_load_id, window, cx);
         let branch_focus = state.branch_input.focus_handle(cx);
         self.dialog = Some(Dialog::Create(state));
         window.focus(&branch_focus);
@@ -216,26 +217,38 @@ impl WtmApp {
         let Some(repo) = self.active.clone() else {
             return;
         };
+        let load_id = self.create_load_id;
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_spawn(async move { data::list_branches(&repo) })
                 .await;
             this.update(cx, |this, cx| {
-                let error = result.as_ref().err().cloned();
-                if let Some(Dialog::Create(state)) = &mut this.dialog {
-                    state.branches_loading = false;
-                    if let Ok(branches) = result {
-                        state.branches = branches;
-                    }
-                }
-                if let Some(e) = error {
-                    this.set_error(format!("could not list branches: {e}"), cx);
-                }
-                cx.notify();
+                this.apply_create_branches(load_id, result, cx);
             })
             .ok();
         })
         .detach();
+    }
+
+    /// Apply a `list_branches` result only if it belongs to the create
+    /// dialog currently on screen.
+    pub(super) fn apply_create_branches(
+        &mut self,
+        load_id: u64,
+        result: Result<Vec<data::BranchInfo>, String>,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(Dialog::Create(state)) = &mut self.dialog {
+            if state.load_id != load_id {
+                return;
+            }
+            state.branches_loading = false;
+            match result {
+                Ok(branches) => state.branches = branches,
+                Err(e) => self.set_error(format!("could not list branches: {e}"), cx),
+            }
+        }
+        cx.notify();
     }
 
     /// Fill the branch field from a picker click. Ignores the click if the
@@ -272,6 +285,7 @@ impl WtmApp {
             return;
         };
         let current_worktree = self.selected_worktree_path();
+        let load_id = self.create_load_id;
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_spawn(
@@ -279,21 +293,30 @@ impl WtmApp {
                 )
                 .await;
             this.update(cx, |this, cx| {
-                let error = result.as_ref().err().cloned();
-                if let Some(Dialog::Create(state)) = &mut this.dialog {
-                    state.base_refs_loading = false;
-                    if let Ok(refs) = result {
-                        state.base_refs = refs;
-                    }
-                }
-                if let Some(e) = error {
-                    this.set_error(format!("could not list refs: {e}"), cx);
-                }
-                cx.notify();
+                this.apply_create_refs(load_id, result, cx);
             })
             .ok();
         })
         .detach();
+    }
+
+    pub(super) fn apply_create_refs(
+        &mut self,
+        load_id: u64,
+        result: Result<Vec<data::RefInfo>, String>,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(Dialog::Create(state)) = &mut self.dialog {
+            if state.load_id != load_id {
+                return;
+            }
+            state.base_refs_loading = false;
+            match result {
+                Ok(refs) => state.base_refs = refs,
+                Err(e) => self.set_error(format!("could not list refs: {e}"), cx),
+            }
+        }
+        cx.notify();
     }
 
     /// Fill the Base field from a picker click or an Enter on the
