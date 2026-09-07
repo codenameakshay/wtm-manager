@@ -24,6 +24,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   detail pane and Changes tab used to print `changes (0)` when libgit2
   could not scan the worktree. They now say `unavailable`, matching
   `wtm list`.
+- **App: the Prune dialog updates when status finishes loading.** Opening
+  Prune during the fast listing, then turning on Merged/Gone, used to keep
+  an empty candidate list even after status landed. The open dialog now
+  recomputes from the new rows.
 
 ## [0.8.0] - 2026-09-07
 

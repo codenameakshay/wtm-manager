@@ -979,6 +979,57 @@ fn prune_computes_candidates_and_reports_removed_and_skipped_honestly(cx: &mut T
     );
 }
 
+#[gpui::test]
+fn prune_dialog_recomputes_merged_candidates_when_status_lands(cx: &mut TestAppContext) {
+    let fx = Fixture::new();
+    let _merged = fx.add_worktree("merged-clean");
+    let repo = fx.open();
+    let (view, cx) = open_app(cx, Some(repo));
+    cx.run_until_parked();
+
+    view.update_in(cx, |app, window, cx| {
+        for row in &mut app.rows {
+            row.status = None;
+        }
+        app.awaiting_status = true;
+        app.on_prune_repo(&PruneRepo, window, cx);
+        app.toggle_prune_merged(cx);
+    });
+    view.read_with(cx, |app, _| {
+        let Some(Dialog::Prune(state)) = &app.dialog else {
+            panic!("prune dialog must be open");
+        };
+        assert!(state.merged);
+        let names: Vec<&str> = state
+            .candidates
+            .iter()
+            .map(|c| c.info.display_name())
+            .collect();
+        assert!(
+            !names.contains(&"merged-clean"),
+            "merged detection needs status: {names:?}"
+        );
+    });
+
+    view.update_in(cx, |app, _window, cx| app.reload(cx));
+    cx.run_until_parked();
+
+    view.read_with(cx, |app, _| {
+        let Some(Dialog::Prune(state)) = &app.dialog else {
+            panic!("prune dialog must still be open");
+        };
+        let names: Vec<&str> = state
+            .candidates
+            .iter()
+            .map(|c| c.info.display_name())
+            .collect();
+        assert!(
+            names.contains(&"merged-clean"),
+            "a status reload must recompute the open prune dialog: {names:?}"
+        );
+    });
+}
+
 /// A watcher notification that lands while a prune is running in the
 /// background must only mark the repository stale, not start a reload
 /// itself — `on_watcher_change` guards on `prune_in_flight` exactly like it

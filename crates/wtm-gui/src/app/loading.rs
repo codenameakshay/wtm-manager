@@ -227,6 +227,16 @@ impl WtmApp {
                 // can itself have picked a now-hidden row; both are why
                 // this runs *after* it rather than folding into it.
                 self.clamp_selection_to_filter(cx);
+                // Merged/gone detection needs status. An open prune dialog
+                // that was filled from the fast pass would otherwise keep
+                // an empty candidate list after the status pass lands.
+                if let Some(repo) = self.active.clone() {
+                    if let Some(Dialog::Prune(state)) = &mut self.dialog {
+                        if !state.busy {
+                            state.recompute(&repo, &self.rows);
+                        }
+                    }
+                }
                 self.sync_watcher(cx);
                 self.load_details_for_selection(cx);
                 self.spawn_activity_load(generation, cx);
