@@ -37,7 +37,9 @@ pub fn run(args: &FetchArgs, global: &GlobalArgs) -> Result<()> {
 }
 
 /// Run `git fetch --prune` against `remote`, or the default remote when
-/// `None`.
+/// `None`. `--prune` matters here: without it, a remote-tracking ref for a
+/// branch deleted upstream (e.g. after a merged PR) lingers, and
+/// upstream-gone status would keep reporting it as present.
 pub fn fetch(ctx: &RepoContext, remote: Option<&str>) -> Result<FetchOutcome> {
     let remote_name = match remote {
         Some(r) => r.to_string(),
@@ -55,7 +57,7 @@ pub fn fetch(ctx: &RepoContext, remote: Option<&str>) -> Result<FetchOutcome> {
             args: format!("fetch --prune {remote_name}"),
             status: output.status.to_string(),
             stderr: if trimmed.is_empty() {
-                format!("git fetch exited with {}", output.status)
+                "(no output)".to_string()
             } else {
                 trimmed.to_string()
             },
@@ -69,7 +71,7 @@ pub fn fetch(ctx: &RepoContext, remote: Option<&str>) -> Result<FetchOutcome> {
 }
 
 /// `origin` if configured, else the first remote name alphabetically.
-pub fn default_remote_name(ctx: &RepoContext) -> Result<String> {
+fn default_remote_name(ctx: &RepoContext) -> Result<String> {
     let git_repo = ctx.open_main()?;
     let mut names: Vec<String> = git_repo
         .remotes()?
@@ -87,6 +89,9 @@ pub fn default_remote_name(ctx: &RepoContext) -> Result<String> {
         .ok_or_else(|| Error::Other("this repository has no configured remotes".to_string()))
 }
 
+/// Count of ` -> ` lines in `git fetch` output: git prints one such line per
+/// ref it creates, updates, or deletes, so this is a heuristic, not an exact
+/// per-ref diff.
 fn count_updated_refs(output: &str) -> usize {
     output.lines().filter(|line| line.contains(" -> ")).count()
 }

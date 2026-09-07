@@ -599,6 +599,9 @@ impl App {
                         .collect();
                     prune::selection_candidates(selection, &self.protected)
                 };
+                // Never list the worktree containing cwd in the confirm
+                // overlay — it would only be skipped by `execute` anyway.
+                let (candidates, _cwd_skipped) = prune::exclude_cwd(candidates);
                 if candidates.is_empty() {
                     self.message = Some(Message {
                         text: "nothing to prune".to_string(),
@@ -645,7 +648,13 @@ impl App {
             KeyCode::Char('r') => {
                 vec![self.request_rows(true)]
             }
-            KeyCode::Char('f') => vec![Effect::Fetch],
+            KeyCode::Char('f') => {
+                self.message = Some(Message {
+                    text: "fetching…".to_string(),
+                    error: false,
+                });
+                vec![Effect::Fetch]
+            }
             KeyCode::Char('?') => {
                 self.overlay = Overlay::Help;
                 Vec::new()

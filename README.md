@@ -279,7 +279,8 @@ bound.
 `~/.config/wtm/config.toml` (honoring the same `$WTM_CONFIG_DIR`/
 `$XDG_CONFIG_HOME` overrides): `~/.config/wtm/repos.json` (the sidebar's
 repository list) and `~/.config/wtm/gui.json` (appearance, panel visibility,
-window frame, last-opened repo). Neither is read by the CLI. The app never
+window frame, last-opened repo, terminal app, sort mode, and recent Run
+Command suggestions). Neither is read by the CLI. The app never
 writes to `.worktree.toml` or `config.toml` — those stay exactly what the
 [Configuration](#configuration) section below describes, shared read-only
 with the CLI (the settings sheet shows the effective values with a link to

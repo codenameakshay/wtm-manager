@@ -172,6 +172,7 @@ fn prune_refuses_the_worktree_that_contains_cwd() {
     repo.wtm_in(&wt)
         .args(["prune", "--merged"])
         .assert()
+        .success()
         .stderr(predicate::str::contains("current directory"));
     assert!(
         wt.is_dir(),
@@ -181,6 +182,15 @@ fn prune_refuses_the_worktree_that_contains_cwd() {
         repo.branch_exists("standing-in"),
         "the branch must survive when the worktree is skipped"
     );
+
+    // --dry-run must apply the same exclusion: the worktree containing cwd
+    // never even appears in the would-prune list.
+    repo.wtm_in(&wt)
+        .args(["prune", "--merged", "--dry-run"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("standing-in").not())
+        .stderr(predicate::str::contains("current directory"));
 }
 
 #[test]

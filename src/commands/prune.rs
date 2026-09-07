@@ -57,6 +57,13 @@ pub fn run(args: &PruneArgs, global: &GlobalArgs) -> Result<()> {
         args.gone,
         global.verbose,
     );
+    let (candidates, cwd_skipped) = exclude_cwd(candidates);
+    for c in &cwd_skipped {
+        eprintln!(
+            "warning: skipping '{}': it contains the current directory (cd elsewhere first)",
+            c.info.display_name()
+        );
+    }
 
     if candidates.is_empty() {
         if !global.quiet {
@@ -186,6 +193,17 @@ pub fn selection_candidates(items: Vec<WorktreeInfo>, protected: &[String]) -> V
         .collect()
 }
 
+/// Split `candidates` into (kept, skipped), pulling out any candidate whose
+/// path contains the current working directory. Selection (dry-run,
+/// confirm overlays) must apply this before showing counts or a list, so a
+/// worktree the caller is standing in never appears as a would-prune item
+/// only to be silently skipped by `execute` later.
+pub fn exclude_cwd(candidates: Vec<PruneCandidate>) -> (Vec<PruneCandidate>, Vec<PruneCandidate>) {
+    candidates
+        .into_iter()
+        .partition(|c| !super::remove::contains_cwd(&c.info.path))
+}
+
 /// How many worktrees are removed concurrently. Removal is I/O bound (git's
 /// own dirty scan plus deleting the tree); four workers cut a 150-worktree
 /// prune from 20s to 8s on an SSD, and eight bought nothing more.
@@ -295,16 +313,6 @@ enum Outcome {
 /// the user may be stale by the time they confirm; an unavailable scan fails
 /// closed rather than counting as clean), then `git worktree remove`.
 fn remove_one(ctx: &RepoContext, c: &PruneCandidate, force: bool, announce: bool) -> Outcome {
-    if super::remove::contains_cwd(&c.info.path) {
-        if announce {
-            eprintln!(
-                "warning: skipping '{}': it contains the current directory (cd elsewhere first)",
-                c.info.display_name()
-            );
-        }
-        return Outcome::Skipped;
-    }
-
     if !force && !c.info.is_missing {
         match super::remove::is_dirty(&c.info.path) {
             Ok(true) => {
@@ -372,6 +380,23 @@ mod tests {
             reasons: vec!["prunable"],
             delete_branch: false,
         }
+    }
+
+    #[test]
+    fn exclude_cwd_skips_the_candidate_at_current_dir_and_keeps_others() {
+        let cwd = std::env::current_dir().unwrap();
+        let elsewhere = std::env::temp_dir().join("wtm-exclude-cwd-test-does-not-exist");
+        let cands = vec![
+            candidate(cwd.clone(), "here"),
+            candidate(elsewhere.clone(), "elsewhere"),
+        ];
+
+        let (kept, skipped) = exclude_cwd(cands);
+
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].info.path, elsewhere);
+        assert_eq!(skipped.len(), 1);
+        assert_eq!(skipped[0].info.path, cwd);
     }
 
     #[test]

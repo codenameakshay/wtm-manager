@@ -98,9 +98,9 @@ pub fn run(global: &GlobalArgs) -> Result<()> {
 /// The runtime loop: drain effects and background messages, draw only when
 /// the model changed, then poll input. Returns the switch target, if any.
 ///
-/// Idle frames used to `draw` on every 100ms poll (~10 Hz) even when
-/// nothing changed. Polling still wakes to drain status/detail channels;
-/// painting does not.
+/// Idle frames draw only when a key or a terminal resize changed something;
+/// polling still wakes every 100ms to drain status/detail channels, but a
+/// quiet poll with no queued input paints nothing.
 fn event_loop(
     app: &mut App,
     terminal: &mut Tui,
@@ -143,9 +143,12 @@ fn event_loop(
         }
 
         if event::poll(Duration::from_millis(100))? {
-            if let Event::Key(key) = event::read()? {
-                effects.extend(app.update(Msg::Key(key)));
-                needs_draw = true;
+            match event::read()? {
+                Event::Key(key) => {
+                    effects.extend(app.update(Msg::Key(key)));
+                    needs_draw = true;
+                }
+                _ => needs_draw = true,
             }
         }
     }
@@ -318,28 +321,37 @@ fn run_effect(
             Ok(Some(msg))
         }
         Effect::Fetch => {
-            let msg = match fetch::fetch(ctx, None) {
-                Ok(outcome) => Msg::ActionOutcome {
-                    text: if outcome.updated_refs == 0 {
-                        format!("fetched {} (no refs updated)", outcome.remote)
-                    } else {
-                        format!(
-                            "fetched {} ({} ref{})",
-                            outcome.remote,
-                            outcome.updated_refs,
-                            if outcome.updated_refs == 1 { "" } else { "s" }
-                        )
+            // Network round trip: run off the event loop thread exactly like
+            // `Effect::LoadRows`, so the UI keeps redrawing (the footer
+            // already shows "fetching…", set by `App::on_key`) instead of
+            // freezing until git returns.
+            let ctx = ctx.clone();
+            let tx = tx.clone();
+            std::thread::spawn(move || {
+                let msg = match fetch::fetch(&ctx, None) {
+                    Ok(outcome) => Msg::ActionOutcome {
+                        text: if outcome.updated_refs == 0 {
+                            format!("fetched {} (no refs updated)", outcome.remote)
+                        } else {
+                            format!(
+                                "fetched {} ({} ref{})",
+                                outcome.remote,
+                                outcome.updated_refs,
+                                if outcome.updated_refs == 1 { "" } else { "s" }
+                            )
+                        },
+                        error: false,
+                        refresh: true,
                     },
-                    error: false,
-                    refresh: true,
-                },
-                Err(e) => Msg::ActionOutcome {
-                    text: format!("fetch failed: {e}"),
-                    error: true,
-                    refresh: false,
-                },
-            };
-            Ok(Some(msg))
+                    Err(e) => Msg::ActionOutcome {
+                        text: format!("fetch failed: {e}"),
+                        error: true,
+                        refresh: false,
+                    },
+                };
+                let _ = tx.send(msg);
+            });
+            Ok(None)
         }
     }
 }

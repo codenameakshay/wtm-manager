@@ -70,7 +70,8 @@ pub enum Command {
     Prune(PruneArgs),
 
     /// Fetch from the default remote (or `--remote`) so ahead/behind and
-    /// upstream-gone status are current.
+    /// upstream-gone status are current. Runs `git fetch --prune`, which
+    /// deletes local remote-tracking refs for branches gone on the remote.
     Fetch(FetchArgs),
 
     /// Open a worktree in your editor (or run an arbitrary command in it).
