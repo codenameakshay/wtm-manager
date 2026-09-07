@@ -411,8 +411,9 @@ Key behaviors:
 - prune: candidates = missing/prunable entries (always) + merged (only with
   --merged) + upstream_gone (only with --gone). Skip main worktree and any
   candidate whose branch ∈ protected_branches. --dry-run prints the plan and
-  exits 0. Respect dirty-safety like remove unless --force. Always finish
-  with `git worktree prune`. Process candidates independently, continue after
+  exits 0. Respect dirty-safety like remove unless --force. Skip a candidate
+  whose path contains the process cwd (same `contains_cwd` guard as remove).
+  Always finish with `git worktree prune`. Process candidates independently, continue after
   removal or branch-deletion failures, and report failures together after the
   registry refresh. Branch deletion: merged/gone candidates get
   their branch deleted (that is the point of pruning); protected branches

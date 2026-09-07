@@ -13,6 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that tracking ref.** The picker used to strip `origin/` and create a
   new local branch from `default_base`/`HEAD`, so clicking `origin/foo`
   could land you on an unrelated commit.
+- **`wtm prune` refuses the worktree that contains the current directory**,
+  the same way `wtm remove` already does. Pruning from inside a merged
+  worktree used to delete the directory the shell was standing in.
 
 ## [0.8.0] - 2026-09-07
 

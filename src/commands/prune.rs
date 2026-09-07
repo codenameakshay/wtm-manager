@@ -295,6 +295,16 @@ enum Outcome {
 /// the user may be stale by the time they confirm; an unavailable scan fails
 /// closed rather than counting as clean), then `git worktree remove`.
 fn remove_one(ctx: &RepoContext, c: &PruneCandidate, force: bool, announce: bool) -> Outcome {
+    if super::remove::contains_cwd(&c.info.path) {
+        if announce {
+            eprintln!(
+                "warning: skipping '{}': it contains the current directory (cd elsewhere first)",
+                c.info.display_name()
+            );
+        }
+        return Outcome::Skipped;
+    }
+
     if !force && !c.info.is_missing {
         match super::remove::is_dirty(&c.info.path) {
             Ok(true) => {

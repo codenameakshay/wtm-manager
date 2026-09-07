@@ -105,7 +105,7 @@ pub fn remove_worktree(
 }
 
 /// Is `path` (or a subdirectory of it) the current working directory?
-fn contains_cwd(path: &Path) -> bool {
+pub(crate) fn contains_cwd(path: &Path) -> bool {
     let Ok(cwd) = std::env::current_dir() else {
         return false;
     };

@@ -159,6 +159,31 @@ fn prune_merged_removes_worktree_and_branch() {
 }
 
 #[test]
+fn prune_refuses_the_worktree_that_contains_cwd() {
+    let repo = TestRepo::new();
+    repo.wtm().args(["add", "standing-in"]).assert().success();
+    let wt = canon(&repo.default_worktree_path("standing-in"));
+
+    repo.git(
+        repo.root(),
+        &["merge", "--no-ff", "-m", "merge standing-in", "standing-in"],
+    );
+
+    repo.wtm_in(&wt)
+        .args(["prune", "--merged"])
+        .assert()
+        .stderr(predicate::str::contains("current directory"));
+    assert!(
+        wt.is_dir(),
+        "prune must not delete the worktree that contains cwd"
+    );
+    assert!(
+        repo.branch_exists("standing-in"),
+        "the branch must survive when the worktree is skipped"
+    );
+}
+
+#[test]
 fn prune_merged_never_touches_protected_branches() {
     let repo = TestRepo::new();
     // "develop" is in the default protected_branches list.
