@@ -619,11 +619,7 @@ fn picking_a_remote_only_branch_creates_from_that_tracking_ref(cx: &mut TestAppC
     let remote_sha = git(fx.root(), &["rev-parse", "develop"]);
     git(
         fx.root(),
-        &[
-            "update-ref",
-            "refs/remotes/origin/only-remote",
-            &remote_sha,
-        ],
+        &["update-ref", "refs/remotes/origin/only-remote", &remote_sha],
     );
     let repo = fx.open();
     let (view, cx) = open_app(cx, Some(repo));
@@ -642,10 +638,7 @@ fn picking_a_remote_only_branch_creates_from_that_tracking_ref(cx: &mut TestAppC
             .find(|b| b.name == "only-remote")
             .cloned()
             .expect("remote-only branch must be in the picker");
-        assert_eq!(
-            remote.from_remote.as_deref(),
-            Some("origin/only-remote")
-        );
+        assert_eq!(remote.from_remote.as_deref(), Some("origin/only-remote"));
         app.select_branch_in_create(remote.name, remote.from_remote, window, cx);
     });
 

@@ -351,42 +351,38 @@ pub fn render_branch_row(branch: &BranchInfo, theme: &Theme) -> Stateful<Div> {
         .as_deref()
         .unwrap_or(branch.name.as_str());
 
-    ui::row(
-        SharedString::from(format!("branch-{row_id}")),
-        false,
-        theme,
-    )
-    .flex()
-    .items_center()
-    .justify_between()
-    .gap(px(SPACE_8))
-    .child(
-        div()
-            .min_w_0()
-            .truncate()
-            .text_size(px(TEXT_BASE))
-            .text_color(if disabled {
-                theme.text_ghost
-            } else {
-                theme.text
-            })
-            .child(branch.name.clone()),
-    )
-    .when(disabled, |this| {
-        this.child(
+    ui::row(SharedString::from(format!("branch-{row_id}")), false, theme)
+        .flex()
+        .items_center()
+        .justify_between()
+        .gap(px(SPACE_8))
+        .child(
             div()
-                .flex_none()
-                .text_size(px(TEXT_XS))
-                .text_color(theme.text_ghost)
-                .child("checked out"),
+                .min_w_0()
+                .truncate()
+                .text_size(px(TEXT_BASE))
+                .text_color(if disabled {
+                    theme.text_ghost
+                } else {
+                    theme.text
+                })
+                .child(branch.name.clone()),
         )
-    })
-    .when(!disabled && branch.from_remote.is_some(), |this| {
-        this.child(ui::pill("remote", theme.info))
-    })
-    .when(!disabled && branch.upstream_gone, |this| {
-        this.child(ui::pill("gone", theme.danger))
-    })
+        .when(disabled, |this| {
+            this.child(
+                div()
+                    .flex_none()
+                    .text_size(px(TEXT_XS))
+                    .text_color(theme.text_ghost)
+                    .child("checked out"),
+            )
+        })
+        .when(!disabled && branch.from_remote.is_some(), |this| {
+            this.child(ui::pill("remote", theme.info))
+        })
+        .when(!disabled && branch.upstream_gone, |this| {
+            this.child(ui::pill("gone", theme.danger))
+        })
 }
 
 /// A log line, tinted by what kind of setup step it reports: quiet info for

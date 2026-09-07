@@ -176,10 +176,7 @@ fn render_appearance_section(
 // Terminal
 // ---------------------------------------------------------------------
 
-fn render_terminal_section(
-    terminal_input: Entity<TextInput>,
-    theme: &Theme,
-) -> impl IntoElement {
+fn render_terminal_section(terminal_input: Entity<TextInput>, theme: &Theme) -> impl IntoElement {
     div()
         .flex()
         .flex_col()

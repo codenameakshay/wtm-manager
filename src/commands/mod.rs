@@ -4,8 +4,8 @@
 pub mod add;
 pub mod app;
 pub mod completions;
-pub mod fetch;
 pub mod config_cmd;
+pub mod fetch;
 pub mod init;
 pub mod list;
 pub mod open;

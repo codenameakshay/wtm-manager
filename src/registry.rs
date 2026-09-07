@@ -227,7 +227,10 @@ mod tests {
         std::fs::create_dir(&present).unwrap();
         let mut registry = Registry::default();
         registry.remember(&present, "present");
-        registry.remember(Path::new("/tmp/wtm-does-not-exist-for-forget-missing"), "gone");
+        registry.remember(
+            Path::new("/tmp/wtm-does-not-exist-for-forget-missing"),
+            "gone",
+        );
 
         assert_eq!(registry.forget_missing(), 1);
         let names: Vec<String> = registry.entries().into_iter().map(|e| e.name).collect();

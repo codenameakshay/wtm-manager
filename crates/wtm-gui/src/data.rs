@@ -491,11 +491,7 @@ pub fn list_branches(repo: &OpenRepo) -> Result<Vec<BranchInfo>, String> {
             upstream_gone: false,
         });
     }
-    remotes.sort_by(|a, b| {
-        a.name
-            .cmp(&b.name)
-            .then(a.from_remote.cmp(&b.from_remote))
-    });
+    remotes.sort_by(|a, b| a.name.cmp(&b.name).then(a.from_remote.cmp(&b.from_remote)));
     // Identical (short name, tracking ref) pairs only — origin/foo and
     // upstream/foo stay two rows so each can set a different base.
     remotes.dedup_by(|a, b| a.name == b.name && a.from_remote == b.from_remote);

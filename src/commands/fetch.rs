@@ -173,11 +173,7 @@ Fetching origin
         init_repo(&origin);
         git(
             tmp.path(),
-            &[
-                "clone",
-                origin.to_str().unwrap(),
-                clone.to_str().unwrap(),
-            ],
+            &["clone", origin.to_str().unwrap(), clone.to_str().unwrap()],
         );
         crate::testgit::commit_file(&origin, "from-origin.txt");
 
