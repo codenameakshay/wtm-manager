@@ -15,6 +15,7 @@ const EXPECTED_FIELDS: &[&str] = &[
     "is_missing",
     "is_locked",
     "lock_reason",
+    "head_time",
     "is_prunable",
     "status",
 ];
@@ -105,4 +106,22 @@ fn json_exposes_lock_reason_when_git_locks_a_worktree() {
     let main = find_entry(&items, "main").expect("main");
     assert_eq!(main["is_locked"], false);
     assert!(main["lock_reason"].is_null());
+}
+
+#[test]
+fn json_fast_still_exposes_head_time() {
+    let repo = TestRepo::new();
+    repo.wtm().args(["add", "feature-x"]).assert().success();
+
+    let items = repo.list_json(&["--fast"]);
+    for entry in items.as_array().expect("array") {
+        assert!(
+            entry["status"].is_null(),
+            "--fast: status must be null, got {entry}"
+        );
+        assert!(
+            entry["head_time"].is_number(),
+            "--fast: head_time must be a unix timestamp, got {entry}"
+        );
+    }
 }

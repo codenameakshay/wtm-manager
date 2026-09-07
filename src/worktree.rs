@@ -375,10 +375,9 @@ fn main_info(ctx: &RepoContext, repo: &git2::Repository) -> WorktreeInfo {
         .filter(|h| h.is_branch())
         .and_then(|h| h.shorthand().ok())
         .map(str::to_owned);
-    let head_short = head
-        .as_ref()
-        .and_then(|h| h.peel_to_commit().ok())
-        .and_then(|c| short_id(repo, c.id()));
+    let head_commit = head.as_ref().and_then(|h| h.peel_to_commit().ok());
+    let head_short = head_commit.as_ref().and_then(|c| short_id(repo, c.id()));
+    let head_time = head_commit.as_ref().map(|c| c.time().seconds());
 
     WorktreeInfo {
         name: "main".to_string(),
@@ -389,6 +388,7 @@ fn main_info(ctx: &RepoContext, repo: &git2::Repository) -> WorktreeInfo {
         is_missing: !ctx.main_root.exists(),
         is_locked: false,
         lock_reason: None,
+        head_time,
         is_prunable: false,
         status: None,
     }
@@ -419,7 +419,7 @@ fn linked_info(ctx: &RepoContext, main_repo: &git2::Repository, name: &str) -> W
         None => (ctx.git_dir.join("worktrees").join(name), true),
     };
 
-    let (branch, head) = head_info(ctx, main_repo, name);
+    let (branch, head, head_time) = head_info(ctx, main_repo, name);
 
     WorktreeInfo {
         name: name.to_string(),
@@ -430,6 +430,7 @@ fn linked_info(ctx: &RepoContext, main_repo: &git2::Repository, name: &str) -> W
         is_missing,
         is_locked,
         lock_reason,
+        head_time,
         is_prunable,
         status: None,
     }
@@ -451,10 +452,10 @@ fn head_info(
     ctx: &RepoContext,
     main_repo: &git2::Repository,
     name: &str,
-) -> (Option<String>, Option<String>) {
+) -> (Option<String>, Option<String>, Option<i64>) {
     let head_file = ctx.git_dir.join("worktrees").join(name).join("HEAD");
     let Ok(content) = fs::read_to_string(&head_file) else {
-        return (None, None);
+        return (None, None, None);
     };
     let line = content.lines().next().unwrap_or("").trim();
 
@@ -465,12 +466,20 @@ fn head_info(
             .ok()
             .and_then(|r| r.resolve().ok())
             .and_then(|r| r.target());
-        (branch, oid.and_then(|o| short_id(main_repo, o)))
+        let (head, head_time) = oid.map_or((None, None), |o| commit_meta(main_repo, o));
+        (branch, head, head_time)
     } else {
         // Detached HEAD: the file holds the raw commit id.
         let oid = git2::Oid::from_str(line).ok();
-        (None, oid.and_then(|o| short_id(main_repo, o)))
+        let (head, head_time) = oid.map_or((None, None), |o| commit_meta(main_repo, o));
+        (None, head, head_time)
     }
+}
+
+/// Short id and commit time from the main repository's object database.
+fn commit_meta(repo: &git2::Repository, oid: git2::Oid) -> (Option<String>, Option<i64>) {
+    let time = repo.find_commit(oid).ok().map(|c| c.time().seconds());
+    (short_id(repo, oid), time)
 }
 
 /// Abbreviated (7+ chars, uniqueness-extended) object id via `short_id`.
@@ -527,6 +536,16 @@ mod tests {
         assert_eq!(main.branch.as_deref(), Some("main"));
         assert!(main.head.as_ref().is_some_and(|h| h.len() >= 7));
         assert!(main.status.is_none());
+        let expected = ctx
+            .open_main()
+            .unwrap()
+            .head()
+            .unwrap()
+            .peel_to_commit()
+            .unwrap()
+            .time()
+            .seconds();
+        assert_eq!(main.head_time, Some(expected));
     }
 
     #[test]
@@ -556,6 +575,8 @@ mod tests {
         let det = entry(&infos, "det");
         assert_eq!(det.branch, None, "detached HEAD has no branch");
         assert!(det.head.is_some());
+        assert!(det.head_time.is_some());
+        assert_eq!(det.head_time, feat.head_time);
         assert!(!det.is_locked);
         assert_eq!(det.lock_reason, None);
     }

@@ -734,6 +734,7 @@ mod tests {
             is_missing: false,
             is_locked: false,
             lock_reason: None,
+            head_time: None,
             is_prunable: false,
             status: None,
         }

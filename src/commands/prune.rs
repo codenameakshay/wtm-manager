@@ -367,6 +367,7 @@ mod tests {
                 is_missing: false,
                 is_locked: false,
                 lock_reason: None,
+                head_time: None,
                 is_prunable: true,
                 // Deliberately stale "clean" status: execute must re-check.
                 status: Some(WorktreeStatus {
