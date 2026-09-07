@@ -296,6 +296,9 @@ pub struct WtmApp {
     /// Live GUI preferences, initialized from `prefs::load()` in `main.rs`
     /// and persisted by `save_prefs` on every meaningful change.
     prefs: Prefs,
+    /// Terminal-app field in Settings. Empty means `$WTM_TERMINAL` / default.
+    terminal_input: Entity<TextInput>,
+    _terminal_sub: Subscription,
     /// Type-to-filter field shown in the list header (⌘F focuses it,
     /// Escape while it has focus clears it — see its `Changed`/`Cancel`
     /// subscription wired in `new`). Always present rather than
@@ -386,6 +389,21 @@ impl WtmApp {
             }
         });
 
+        let terminal_input = cx.new(|cx| TextInput::new("Terminal", cx));
+        if let Some(name) = prefs.terminal.as_deref() {
+            terminal_input.update(cx, |input, cx| {
+                input.set_value(name.to_string(), window, cx);
+            });
+        }
+        let terminal_sub = cx.subscribe_in(&terminal_input, window, {
+            move |app: &mut WtmApp, input, event, _window, cx| {
+                if matches!(event, InputEvent::Changed) {
+                    let value = input.read(cx).value().to_string();
+                    app.set_terminal(value, cx);
+                }
+            }
+        });
+
         let mut this = Self {
             repos: sidebar_sorted(registry::load().entries()),
             active: None,
@@ -427,6 +445,8 @@ impl WtmApp {
             settings_open: false,
             recent_commands: prefs.recent_commands.clone(),
             prefs,
+            terminal_input,
+            _terminal_sub: terminal_sub,
             filter_input,
             _filter_sub: filter_sub,
             multi_selected: BTreeSet::new(),
@@ -626,6 +646,7 @@ impl Render for WtmApp {
             Some(settings::render(
                 &self.prefs,
                 self.active.as_ref(),
+                self.terminal_input.clone(),
                 &self.settings_scroll,
                 &theme,
                 cx,

@@ -342,11 +342,10 @@ registry entry, the same guarantee as the sidebar's own row menu above.
   immediately and again at the next launch), that turns off the app's
   animation catalog for anyone who finds motion distracting or has a system
   preference for it.
-- **Terminal app** — shows the value `Open in Terminal` will use, in
-  order: `gui.json`'s `terminal` field, then `$WTM_TERMINAL`, then the
-  platform default (`Terminal` on macOS; the fallback list under
-  [Platform support](#platform-support) on Linux). The sheet does not
-  edit this yet; set `terminal` in `gui.json` or `$WTM_TERMINAL`.
+- **Terminal app** — a text field stored in `gui.json`. Empty means
+  `$WTM_TERMINAL`, then the platform default (`Terminal` on macOS; the
+  fallback list under [Platform support](#platform-support) on Linux).
+  On macOS type an app name (`iTerm`). On Linux type a binary on `PATH`.
 - **Effective repository configuration** — a read-only view of `wtm`'s own
   layered TOML config as it applies to the open repository (path template,
   default base, editor, protected branches, setup commands/copy entries).

@@ -11,6 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **App: sort mode and recent commands survive a restart.** Name / Recent /
   Status and per-repository Run Command suggestions are stored in `gui.json`.
+- **App: Settings can set the terminal app.** The Terminal field writes
+  `gui.json` and takes precedence over `$WTM_TERMINAL`. Leave it empty
+  for the environment variable or the platform default.
 
 ### Fixed
 

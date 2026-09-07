@@ -102,6 +102,19 @@ impl WtmApp {
         cx.notify();
     }
 
+    /// Persist the Terminal setting. An empty or whitespace value clears
+    /// `prefs.terminal` so `$WTM_TERMINAL` and the platform default apply.
+    pub(crate) fn set_terminal(&mut self, value: String, cx: &mut Context<Self>) {
+        let trimmed = value.trim();
+        self.prefs.terminal = if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        };
+        self.save_prefs();
+        cx.notify();
+    }
+
     // -------------------------------------------------------------
     // Settings sheet
     // -------------------------------------------------------------

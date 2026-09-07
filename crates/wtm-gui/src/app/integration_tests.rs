@@ -2228,5 +2228,34 @@ fn recent_command_survives_closing_the_run_dialog(cx: &mut TestAppContext) {
             .get(&repo_path)
             .expect("the repository must have a recent-commands entry after one run");
         assert_eq!(recent, &vec!["echo one".to_string()]);
+        assert_eq!(
+            app.prefs.recent_commands.get(&repo_path),
+            Some(&vec!["echo one".to_string()]),
+            "recent commands must be copied into prefs for persistence"
+        );
     });
+}
+
+#[gpui::test]
+fn set_terminal_persists_and_empty_clears(cx: &mut TestAppContext) {
+    let fx = Fixture::new();
+    let repo = fx.open();
+    let (view, cx) = open_app(cx, Some(repo));
+    cx.run_until_parked();
+
+    view.update_in(cx, |app, _window, cx| {
+        app.set_terminal("iTerm".into(), cx);
+    });
+    view.read_with(cx, |app, _| {
+        assert_eq!(app.prefs.terminal.as_deref(), Some("iTerm"));
+    });
+    assert_eq!(crate::prefs::load().terminal.as_deref(), Some("iTerm"));
+
+    view.update_in(cx, |app, _window, cx| {
+        app.set_terminal("   ".into(), cx);
+    });
+    view.read_with(cx, |app, _| {
+        assert_eq!(app.prefs.terminal, None);
+    });
+    assert_eq!(crate::prefs::load().terminal, None);
 }
