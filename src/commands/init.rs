@@ -3,7 +3,7 @@
 //! cd file) plus completion loading for the chosen shell.
 
 use crate::cli::{GlobalArgs, InitArgs, ShellKind};
-use crate::error::Result;
+use crate::error::{Error, Result};
 
 /// The wrapper function. Valid in both zsh and bash.
 ///
@@ -60,6 +60,13 @@ pub fn run(args: &InitArgs, _global: &GlobalArgs) -> Result<()> {
             println!("{WRAPPER}");
             println!();
             println!("{BASH_COMPLETIONS}");
+        }
+        ShellKind::Fish => {
+            return Err(Error::Other(
+                "wtm init has no Fish wrapper yet; save `wtm completions fish` \
+                 to ~/.config/fish/completions/wtm.fish"
+                    .into(),
+            ));
         }
     }
     Ok(())

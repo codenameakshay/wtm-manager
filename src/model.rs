@@ -18,6 +18,13 @@ pub struct WorktreeInfo {
     /// The registry entry exists but its directory is gone from disk.
     pub is_missing: bool,
     pub is_locked: bool,
+    /// Why git locked this worktree, when [`Self::is_locked`] is true.
+    /// `None` when unlocked. An empty string means locked with no message.
+    pub lock_reason: Option<String>,
+    /// Unix seconds of the HEAD commit, when the oid peels in the main
+    /// repository. Present even with `--fast`: this is a cheap main-odb
+    /// read, not a per-worktree open.
+    pub head_time: Option<i64>,
     /// git considers this entry prunable (`git worktree prune` would drop it).
     pub is_prunable: bool,
     /// Expensive per-worktree status; `None` when skipped via `--no-status`

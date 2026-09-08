@@ -72,6 +72,12 @@ case "$shell_name" in
     rc_file="$HOME/.bashrc"
     init_shell="bash"
     ;;
+  fish)
+    echo "Fish has no wtm init wrapper yet. Completions only:"
+    echo '  mkdir -p ~/.config/fish/completions'
+    echo '  wtm completions fish > ~/.config/fish/completions/wtm.fish'
+    exit 0
+    ;;
   *)
     echo "Unrecognized \$SHELL ('${SHELL:-unset}'); skipping shell integration."
     echo "To set it up manually, add one of these to your shell rc file:"
@@ -79,6 +85,9 @@ case "$shell_name" in
     echo '  eval "$(command wtm init zsh)"   # zsh'
     # shellcheck disable=SC2016 # literal text shown to the user, not expanded here
     echo '  eval "$(command wtm init bash)"  # bash'
+    echo "Fish has no cd wrapper yet; save completions with:"
+    echo '  mkdir -p ~/.config/fish/completions'
+    echo '  wtm completions fish > ~/.config/fish/completions/wtm.fish'
     exit 0
     ;;
 esac

@@ -589,7 +589,7 @@ impl App {
                     return Vec::new();
                 }
                 let candidates = if self.marked.is_empty() {
-                    prune::candidates(&self.rows, &self.protected, true, true, false)
+                    prune::candidates(&self.rows, &self.protected, true, true, true, false)
                 } else {
                     let selection: Vec<WorktreeInfo> = self
                         .rows
@@ -733,6 +733,8 @@ mod tests {
             is_main,
             is_missing: false,
             is_locked: false,
+            lock_reason: None,
+            head_time: None,
             is_prunable: false,
             status: None,
         }

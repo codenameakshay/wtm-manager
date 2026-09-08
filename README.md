@@ -92,8 +92,9 @@ cargo install --git https://github.com/codenameakshay/wtm-manager --locked
 
 > **Note:** install from git as shown above — the crate name `wtm` on
 > crates.io belongs to a different, unrelated project, so `cargo install wtm`
-> will **not** install this tool. Homebrew support is planned but not wired
-> up yet.
+> will **not** install this tool. A Homebrew tap is not published yet; the
+> formula name will be `wtm-manager` (not `wtm`) so it does not collide with
+> the crates.io crate. Until then, install from git or the shell installer.
 
 After installing, wire up the shell integration so `wtm switch` and the TUI's
 `Enter` can actually `cd` you into a worktree — see [Shell setup](#shell-setup).
@@ -104,6 +105,9 @@ After installing, wire up the shell integration so `wtm switch` and the TUI's
 cd my-project                      # inside a git repo
 
 wtm add feature/login              # create a new branch + worktree
+wtm add --unique                   # throwaway branch wtm/<8 hex>
+wtm add --unique agent             # throwaway branch agent/<8 hex>
+wtm add --detach                   # detached HEAD, no branch to clean up
 wtm add --from origin/main hotfix  # branch a new worktree off a specific base
 
 wtm list                           # see every worktree, with status
@@ -361,6 +365,13 @@ eval "$(command wtm init zsh)"
 eval "$(command wtm init bash)"
 ```
 
+**fish** (completions only — there is no `wtm init fish` cd wrapper yet):
+
+```sh
+mkdir -p ~/.config/fish/completions
+wtm completions fish > ~/.config/fish/completions/wtm.fish
+```
+
 Open a new shell (or `source` your rc file) afterwards. Without this, `wtm
 switch`/`wtm add --cd`/the TUI's `Enter` still work, but only print the
 target path — they can't move you there themselves; `wtm switch`'s stderr
@@ -390,11 +401,14 @@ automation (`setup.commands`/`setup.copy`) runs in the fresh worktree:
 
 | Flag | Description |
 | --- | --- |
-| `--from <base>` | Base ref for a new branch. Must resolve to a commit. If omitted, uses `default_base`, then `HEAD`. |
+| `--from <base>` | Base ref for a new branch. Must resolve to a commit. If omitted, uses `default_base`, then `origin/HEAD` / `origin/main` / `origin/master`, then `HEAD`. |
+| `--unique [stem]` | Create `stem/<8 hex>` (default stem: `wtm`) and retry if that name already exists. Does not auto-suffix a normal `wtm add` that hits `BranchInUse`. |
+| `--detach [name]` | Detached HEAD, no branch. `name` is only used in the path template. |
 | `--path <path>` | Explicit destination path, overriding the path template. |
 | `--cd` | After creating, `cd` into the new worktree (shell wrapper required — see above). |
 | `--open` | Open the new worktree in your editor after creation. |
 | `--no-setup` | Skip running `setup.commands`/`setup.copy` for this worktree. |
+| `--json` | Print one JSON object on stdout (`ok`, `action`, `name`, `branch`, `path`, `detached`). Git/setup chatter is silenced. |
 
 Refuses if the destination path already exists. Setup automation failures
 are reported but the worktree is kept — fix the issue and rerun the setup
@@ -420,13 +434,15 @@ status-derived columns are omitted entirely when status was skipped.
 ### `wtm remove <name>` (alias: `rm`)
 
 Remove a worktree. `<name>` matches a registry entry name, a branch name, or
-an unambiguous substring of either; if omitted, an interactive picker is
+an unambiguous substring of the display name (the branch, or the registry
+name when HEAD is detached); if omitted, an interactive picker is
 shown (requires stdin and stderr to be TTYs).
 
 | Flag | Description |
 | --- | --- |
 | `--force` | Remove even if the worktree has uncommitted changes. |
 | `--with-branch` | Also delete the branch after removal (refused for protected branches). |
+| `--json` | Print one JSON object (`ok`, `action`, `name`, `path`, `branch_deleted`). |
 
 Refuses to remove the main worktree, and refuses to remove a worktree that
 contains your current directory. A worktree whose directory is already gone
@@ -453,8 +469,10 @@ whose directory is missing or that git considers prunable (always), plus
 | --- | --- |
 | `--merged` | Also include worktrees whose branch is merged into the resolved base. |
 | `--gone` | Also include worktrees whose upstream branch was deleted remotely. |
+| `--detached` | Also include linked worktrees whose HEAD is detached (no branch to delete). |
 | `--dry-run` | Print the plan and exit without changing anything. |
 | `--force` | Proceed even if a candidate worktree is dirty. |
+| `--json` | Print one JSON object (`ok`, `action`, `removed`, `skipped`, `failures`, `candidates`). Dry-run sets `removed` to 0. |
 
 The main worktree and any `protected_branches` are never candidates.
 Branches for merged/gone candidates are deleted as part of pruning (that's
@@ -509,11 +527,12 @@ installed; elsewhere it prints help.
 ### `wtm init <shell>`
 
 Print the shell integration snippet for `zsh` or `bash` — see
-[Shell setup](#shell-setup).
+[Shell setup](#shell-setup). Fish has no wrapper yet; `wtm init fish`
+exits with a pointer to `wtm completions fish`.
 
 ### `wtm completions <shell>`
 
-Print a shell completion script for the given shell.
+Print a shell completion script for `zsh`, `bash`, or `fish`.
 
 ### `wtm config path` / `wtm config init`
 
@@ -565,7 +584,8 @@ path_template = "../{repo}-worktrees/{branch}"
 # Base ref used to decide whether a branch counts as "merged" (for `wtm list`
 # and `wtm prune --merged`), and as the default base for `wtm add` when the
 # branch doesn't exist yet (overridable per-call with `wtm add --from`).
-# Unset (the built-in default) falls back to the main worktree's HEAD.
+# Unset tries origin/HEAD, origin/main, origin/master, then the main
+# worktree's HEAD. wtm never fetches on a read; run `wtm fetch` first.
 default_base = "origin/main"
 
 # Files/directories copied or symlinked from the main worktree into every
@@ -671,16 +691,20 @@ at `skills/wtm/` that teaches a coding agent how to install and drive `wtm` —
 installation, the core commands with `--json`/non-interactive usage patterns
 for agents, and a full command/config/TUI reference.
 
-Install it by copying the folder into your Claude Skills directory:
+Install the same folder into Claude or Cursor (do not maintain a second
+copy):
 
 ```sh
 cp -r skills/wtm ~/.claude/skills/wtm
+cp -r skills/wtm ~/.cursor/skills/wtm
 ```
 
-After that, telling a coding agent something like "install and use the wtm
-worktree manager" just works. The skill's `skills/wtm/scripts/install.sh`
-also works standalone as an automated installer (git check, best-available
-install method, optional shell integration).
+Codex and other agents that read a repo-root `AGENTS.md` pick up
+`AGENTS.md` in this repository. After that, telling a coding agent
+something like "install and use the wtm worktree manager" just works. The
+skill's `skills/wtm/scripts/install.sh` also works standalone as an
+automated installer (git check, best-available install method, optional
+zsh/bash shell integration). Fish users can run `wtm completions fish`.
 
 ## License
 

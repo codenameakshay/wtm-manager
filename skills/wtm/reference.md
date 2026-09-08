@@ -23,22 +23,40 @@ explicit subcommand.
 
 ## Commands
 
-### `wtm add <branch>` (aliases: `new`, `create`)
+### `wtm add [branch]` (aliases: `new`, `create`)
 
 Create a worktree for `<branch>`, creating the branch from a base ref if it
 doesn't exist yet (checked out as-is, erroring if already checked out
-elsewhere, if it does exist).
+elsewhere, if it does exist). `--unique` and `--detach` make `branch`
+optional.
 
 | Flag | Description |
 |---|---|
-| `--from <base>` | Base ref for a new branch. Falls back to `default_base` config, then `HEAD`. |
+| `--from <base>` | Base ref for a new branch. Falls back to `default_base`, then `origin/HEAD` / `origin/main` / `origin/master`, then `HEAD`. |
+| `--unique [stem]` | Create `stem/<8 hex>` (default stem: `wtm`) and retry on collision. |
+| `--detach [name]` | Detached HEAD, no branch. `name` is only used in the path template. |
 | `--path <path>` | Explicit destination path, overriding the path template. |
 | `--cd` | cd into the new worktree after creation (requires the shell wrapper; writes to `$WTM_CD_FILE` when active). |
 | `--open` | Open the new worktree in the configured editor after creation. |
 | `--no-setup` | Skip `setup.commands`/`setup.copy` for this worktree. |
+| `--json` | Print one object on stdout (`ok`, `action`, `name`, `branch`, `path`, `detached`). Silences git/setup chatter. |
 
 Refuses if the destination path already exists. Setup failures are reported
-but the worktree is kept.
+but the worktree is kept. `--json` on failure still prints `error:` on
+stderr (no JSON envelope).
+
+Example `--json` object:
+
+```json
+{
+  "ok": true,
+  "action": "add",
+  "name": "wtm/a1b2c3d4",
+  "branch": "wtm/a1b2c3d4",
+  "path": "/abs/path",
+  "detached": false
+}
+```
 
 ### `wtm list` (alias: `ls`)
 
@@ -63,9 +81,12 @@ An array of objects, one per worktree:
   "is_main": false,
   "is_missing": false,
   "is_locked": false,
+  "lock_reason": null,
+  "head_time": 1757260800,
   "is_prunable": false,
   "status": {
     "dirty": false,
+    "dirty_count": 0,
     "ahead": 2,
     "behind": 0,
     "upstream_gone": false,
@@ -74,20 +95,27 @@ An array of objects, one per worktree:
 }
 ```
 
-- `branch` / `head` are `null` for a detached or unresolvable HEAD.
+- `branch` is `null` for a detached HEAD; `head` / `head_time` are `null`
+  when the oid does not peel. `head_time` is unix seconds and is still
+  present with `--fast`.
+- `lock_reason` is `null` when unlocked, and a string (possibly empty) when
+  `is_locked` is true.
 - `status` is `null` entirely when `--no-status`/`--fast` was passed.
 - `ahead`/`behind` are `null` when there is no upstream.
+- `dirty_count` is `0` whenever `dirty` is `false`.
 
 ### `wtm remove <name>` (alias: `rm`)
 
 Remove a worktree. `<name>` matches a registry entry name, a branch name, or
-an unambiguous substring of either; omit for an interactive picker (requires
+an unambiguous substring of the **display name** (the branch, or the
+registry name when HEAD is detached); omit for an interactive picker (requires
 stdin/stderr TTYs — never rely on this from an agent).
 
 | Flag | Description |
 |---|---|
 | `--force` | Remove even with uncommitted changes. |
 | `--with-branch` | Also delete the branch after removal (refused for protected branches). |
+| `--json` | Print one object (`ok`, `action`, `name`, `path`, `branch_deleted`). |
 
 Refuses to remove the main worktree or the worktree containing the current
 directory. A worktree whose directory is already gone is safely dropped
@@ -110,8 +138,10 @@ git-prunable entries (always), plus opt-in merged/upstream-gone branches.
 |---|---|
 | `--merged` | Include worktrees whose branch is merged into the resolved base. |
 | `--gone` | Include worktrees whose upstream branch was deleted remotely. |
+| `--detached` | Include linked worktrees whose HEAD is detached (no branch to delete). |
 | `--dry-run` | Print the plan and exit without changing anything. |
 | `--force` | Proceed even if a candidate worktree is dirty. |
+| `--json` | Print one object (`ok`, `action`, `removed`, `skipped`, `failures`, `candidates`). Dry-run sets `removed` to 0. |
 
 The main worktree and `protected_branches` are never candidates. Branches
 for merged/gone candidates are deleted as part of pruning; missing-directory
@@ -166,11 +196,17 @@ a UI.
 ### `wtm init <zsh|bash>`
 
 Print the shell integration snippet: the `wtm` wrapper function plus
-completion loading. See [Shell wrapper](#shell-wrapper).
+completion loading. See [Shell wrapper](#shell-wrapper). `wtm init fish`
+exits: there is no Fish cd wrapper yet.
 
-### `wtm completions <zsh|bash>`
+### `wtm completions <zsh|bash|fish>`
 
-Print a shell completion script for the given shell.
+Print a shell completion script for the given shell. For Fish:
+
+```sh
+mkdir -p ~/.config/fish/completions
+wtm completions fish > ~/.config/fish/completions/wtm.fish
+```
 
 ### `wtm config path` / `wtm config init`
 
@@ -204,7 +240,8 @@ Keys (all optional):
 path_template = "../{repo}-worktrees/{branch}"
 
 # Base ref for "merged" detection (list/prune --merged) and the default
-# base for `wtm add` when the branch doesn't exist yet.
+# base for `wtm add` when the branch doesn't exist yet. Unset tries
+# origin/HEAD, origin/main, origin/master, then HEAD (no implicit fetch).
 default_base = "origin/main"
 
 # Editor for `wtm open`. Resolution at use time: config > $VISUAL > $EDITOR.
@@ -284,10 +321,16 @@ The function also wires up completions (loaded via `$fpath` for zsh,
 
 ## Common workflows
 
+**Spin up a throwaway worktree (agents):**
+```sh
+wtm add --unique --json
+cd "$(wtm path wtm/<hex-from-json>)"
+```
+
 **Spin up a worktree for a branch:**
 ```sh
-wtm add feature/login                    # from default_base / HEAD
-wtm add --from origin/main hotfix/urgent  # explicit base
+wtm add feature/login --json          # from default_base / origin / HEAD
+wtm add --from origin/main hotfix/urgent --json
 ```
 
 **Jump between worktrees (shell wrapper installed):**
@@ -300,10 +343,10 @@ wtm switch feature/login   # or: wtm cd feature/login / wtm sw feature/login
 cd "$(wtm path feature/login)"
 ```
 
-**Clean up merged/gone worktrees:**
+**Clean up merged/gone/detached worktrees:**
 ```sh
-wtm prune --merged --gone --dry-run   # preview
-wtm prune --merged --gone             # apply
+wtm prune --merged --gone --detached --json --dry-run
+wtm prune --merged --gone --detached --json
 ```
 
 **Bring `.env` into every new worktree automatically:**

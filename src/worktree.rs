@@ -76,9 +76,13 @@ pub fn list(ctx: &RepoContext, opts: &ListOptions) -> Result<Vec<WorktreeInfo>> 
 }
 
 /// Resolve `<name>` to a worktree: exact match on registry name, then branch
-/// name, then unique substring of branch/name (error WorktreeNotFound
-/// otherwise; if substring matching is ambiguous, also WorktreeNotFound with
-/// the candidates listed in the message). Never computes status.
+/// name, then unique substring of the **display name** (the branch, or the
+/// registry name when HEAD is detached). Substring matching deliberately
+/// ignores a hidden registry id that the user never typed — agent worktrees
+/// share prefixes like `t3code-` while checking out unrelated branches.
+/// Unknown names are [`Error::WorktreeNotFound`]. Ambiguous substring
+/// matches are [`Error::WorktreeAmbiguous`], with the query kept separate
+/// from the candidate list. Never computes status.
 pub fn find(ctx: &RepoContext, name: &str) -> Result<WorktreeInfo> {
     let infos = list(ctx, &ListOptions::default())?;
 
@@ -91,7 +95,7 @@ pub fn find(ctx: &RepoContext, name: &str) -> Result<WorktreeInfo> {
 
     let matches: Vec<&WorktreeInfo> = infos
         .iter()
-        .filter(|i| i.name.contains(name) || i.display_name().contains(name))
+        .filter(|i| i.display_name().contains(name))
         .collect();
     match matches.as_slice() {
         [single] => Ok((*single).clone()),
@@ -102,9 +106,10 @@ pub fn find(ctx: &RepoContext, name: &str) -> Result<WorktreeInfo> {
                 .map(|i| i.display_name())
                 .collect::<Vec<_>>()
                 .join(", ");
-            Err(Error::WorktreeNotFound(format!(
-                "{name} (ambiguous: matches {candidates})"
-            )))
+            Err(Error::WorktreeAmbiguous {
+                name: name.to_string(),
+                candidates,
+            })
         }
     }
 }
@@ -222,6 +227,27 @@ struct ResolvedBase {
     /// reference shorthand): a worktree whose branch matches one of these is
     /// never flagged merged.
     names: Vec<String>,
+}
+
+/// When `default_base` is unset, prefer a remote default that actually
+/// exists: the first of `origin/HEAD`, `origin/main`, `origin/master` that
+/// peels to a commit. `None` leaves [`list`] on the main worktree HEAD.
+pub fn effective_default_base(repo: &git2::Repository, configured: Option<&str>) -> Option<String> {
+    if let Some(spec) = configured {
+        return Some(spec.to_string());
+    }
+    for spec in ["origin/HEAD", "origin/main", "origin/master"] {
+        if resolve_base_commit(repo, spec).is_ok() {
+            return Some(spec.to_string());
+        }
+    }
+    None
+}
+
+/// [`effective_default_base`] after opening the main repository.
+pub fn listing_base(ctx: &RepoContext, configured: Option<&str>) -> Result<Option<String>> {
+    let repo = ctx.open_main()?;
+    Ok(effective_default_base(&repo, configured))
 }
 
 /// Resolve `spec` to a commit oid in `repo`, along with the reference it
@@ -370,10 +396,9 @@ fn main_info(ctx: &RepoContext, repo: &git2::Repository) -> WorktreeInfo {
         .filter(|h| h.is_branch())
         .and_then(|h| h.shorthand().ok())
         .map(str::to_owned);
-    let head_short = head
-        .as_ref()
-        .and_then(|h| h.peel_to_commit().ok())
-        .and_then(|c| short_id(repo, c.id()));
+    let head_commit = head.as_ref().and_then(|h| h.peel_to_commit().ok());
+    let head_short = head_commit.as_ref().and_then(|c| short_id(repo, c.id()));
+    let head_time = head_commit.as_ref().map(|c| c.time().seconds());
 
     WorktreeInfo {
         name: "main".to_string(),
@@ -383,6 +408,8 @@ fn main_info(ctx: &RepoContext, repo: &git2::Repository) -> WorktreeInfo {
         is_main: true,
         is_missing: !ctx.main_root.exists(),
         is_locked: false,
+        lock_reason: None,
+        head_time,
         is_prunable: false,
         status: None,
     }
@@ -392,13 +419,19 @@ fn main_info(ctx: &RepoContext, repo: &git2::Repository) -> WorktreeInfo {
 /// entries degrade to `is_missing: true` with whatever metadata can still be
 /// recovered textually from the registry.
 fn linked_info(ctx: &RepoContext, main_repo: &git2::Repository, name: &str) -> WorktreeInfo {
-    let (path, is_locked, is_prunable) = match main_repo.find_worktree(name) {
+    let (path, is_locked, lock_reason, is_prunable) = match main_repo.find_worktree(name) {
         Ok(wt) => {
-            let locked = matches!(wt.is_locked(), Ok(git2::WorktreeLockStatus::Locked(_)));
+            let (locked, reason) = match wt.is_locked() {
+                Ok(git2::WorktreeLockStatus::Locked(reason)) => {
+                    let reason = reason.map(|s| s.trim_end().to_string());
+                    (true, reason)
+                }
+                _ => (false, None),
+            };
             let prunable = wt.is_prunable(None).unwrap_or(false);
-            (Some(wt.path().to_path_buf()), locked, prunable)
+            (Some(wt.path().to_path_buf()), locked, reason, prunable)
         }
-        Err(_) => (registered_path(&ctx.git_dir, name), false, true),
+        Err(_) => (registered_path(&ctx.git_dir, name), false, None, true),
     };
 
     let (path, is_missing) = match path {
@@ -407,7 +440,7 @@ fn linked_info(ctx: &RepoContext, main_repo: &git2::Repository, name: &str) -> W
         None => (ctx.git_dir.join("worktrees").join(name), true),
     };
 
-    let (branch, head) = head_info(ctx, main_repo, name);
+    let (branch, head, head_time) = head_info(ctx, main_repo, name);
 
     WorktreeInfo {
         name: name.to_string(),
@@ -417,6 +450,8 @@ fn linked_info(ctx: &RepoContext, main_repo: &git2::Repository, name: &str) -> W
         is_main: false,
         is_missing,
         is_locked,
+        lock_reason,
+        head_time,
         is_prunable,
         status: None,
     }
@@ -438,10 +473,10 @@ fn head_info(
     ctx: &RepoContext,
     main_repo: &git2::Repository,
     name: &str,
-) -> (Option<String>, Option<String>) {
+) -> (Option<String>, Option<String>, Option<i64>) {
     let head_file = ctx.git_dir.join("worktrees").join(name).join("HEAD");
     let Ok(content) = fs::read_to_string(&head_file) else {
-        return (None, None);
+        return (None, None, None);
     };
     let line = content.lines().next().unwrap_or("").trim();
 
@@ -452,12 +487,20 @@ fn head_info(
             .ok()
             .and_then(|r| r.resolve().ok())
             .and_then(|r| r.target());
-        (branch, oid.and_then(|o| short_id(main_repo, o)))
+        let (head, head_time) = oid.map_or((None, None), |o| commit_meta(main_repo, o));
+        (branch, head, head_time)
     } else {
         // Detached HEAD: the file holds the raw commit id.
         let oid = git2::Oid::from_str(line).ok();
-        (None, oid.and_then(|o| short_id(main_repo, o)))
+        let (head, head_time) = oid.map_or((None, None), |o| commit_meta(main_repo, o));
+        (None, head, head_time)
     }
+}
+
+/// Short id and commit time from the main repository's object database.
+fn commit_meta(repo: &git2::Repository, oid: git2::Oid) -> (Option<String>, Option<i64>) {
+    let time = repo.find_commit(oid).ok().map(|c| c.time().seconds());
+    (short_id(repo, oid), time)
 }
 
 /// Abbreviated (7+ chars, uniqueness-extended) object id via `short_id`.
@@ -514,6 +557,16 @@ mod tests {
         assert_eq!(main.branch.as_deref(), Some("main"));
         assert!(main.head.as_ref().is_some_and(|h| h.len() >= 7));
         assert!(main.status.is_none());
+        let expected = ctx
+            .open_main()
+            .unwrap()
+            .head()
+            .unwrap()
+            .peel_to_commit()
+            .unwrap()
+            .time()
+            .seconds();
+        assert_eq!(main.head_time, Some(expected));
     }
 
     #[test]
@@ -543,6 +596,34 @@ mod tests {
         let det = entry(&infos, "det");
         assert_eq!(det.branch, None, "detached HEAD has no branch");
         assert!(det.head.is_some());
+        assert!(det.head_time.is_some());
+        assert_eq!(det.head_time, feat.head_time);
+        assert!(!det.is_locked);
+        assert_eq!(det.lock_reason, None);
+    }
+
+    #[test]
+    fn locked_worktree_exposes_lock_reason() {
+        let (tmp, ctx) = fixture();
+        let dest = tmp.path().join("wts").join("locked");
+        add_worktree(&ctx, &dest, "locked");
+        git(
+            &ctx.main_root,
+            &[
+                "worktree",
+                "lock",
+                dest.to_str().unwrap(),
+                "--reason",
+                "agent-in-use",
+            ],
+        );
+
+        let infos = list(&ctx, &ListOptions::default()).unwrap();
+        let locked = entry(&infos, "locked");
+        assert!(locked.is_locked);
+        assert_eq!(locked.lock_reason.as_deref(), Some("agent-in-use"));
+        assert!(!entry(&infos, "main").is_locked);
+        assert_eq!(entry(&infos, "main").lock_reason, None);
     }
 
     #[test]
@@ -657,6 +738,47 @@ mod tests {
     }
 
     #[test]
+    fn effective_default_base_prefers_origin_then_configured() {
+        let (_tmp, ctx) = fixture();
+        let repo = ctx.open_main().unwrap();
+        assert_eq!(
+            effective_default_base(&repo, None),
+            None,
+            "no origin refs: leave list on HEAD"
+        );
+
+        let oid = repo.head().unwrap().peel_to_commit().unwrap().id();
+        git(
+            &ctx.main_root,
+            &["update-ref", "refs/remotes/origin/main", &oid.to_string()],
+        );
+        let repo = ctx.open_main().unwrap();
+        assert_eq!(
+            effective_default_base(&repo, None).as_deref(),
+            Some("origin/main")
+        );
+
+        git(
+            &ctx.main_root,
+            &[
+                "symbolic-ref",
+                "refs/remotes/origin/HEAD",
+                "refs/remotes/origin/main",
+            ],
+        );
+        let repo = ctx.open_main().unwrap();
+        assert_eq!(
+            effective_default_base(&repo, None).as_deref(),
+            Some("origin/HEAD")
+        );
+        assert_eq!(
+            effective_default_base(&repo, Some("main")).as_deref(),
+            Some("main"),
+            "an explicit config wins"
+        );
+    }
+
+    #[test]
     fn merged_with_explicit_base_and_rejects_unresolvable_base() {
         let (tmp, ctx) = fixture();
         let done = tmp.path().join("wts").join("done");
@@ -724,17 +846,54 @@ mod tests {
         add_worktree(&ctx, &tmp.path().join("wts").join("feat-b"), "feat-b");
 
         let err = find(&ctx, "feat").unwrap_err();
-        match err {
-            Error::WorktreeNotFound(msg) => {
-                assert!(msg.contains("feat-a") && msg.contains("feat-b"), "{msg}");
+        match &err {
+            Error::WorktreeAmbiguous { name, candidates } => {
+                assert_eq!(name, "feat");
+                assert!(
+                    candidates.contains("feat-a") && candidates.contains("feat-b"),
+                    "{candidates}"
+                );
             }
-            other => panic!("expected WorktreeNotFound, got {other}"),
+            other => panic!("expected WorktreeAmbiguous, got {other}"),
         }
+        let displayed = err.to_string();
+        assert!(
+            displayed.contains("named 'feat'"),
+            "query must stay outside the hint: {displayed}"
+        );
+        assert!(
+            !displayed.contains("named 'feat (ambiguous"),
+            "hint must not nest inside the quoted name: {displayed}"
+        );
 
         assert!(matches!(
             find(&ctx, "zzz").unwrap_err(),
             Error::WorktreeNotFound(_)
         ));
+    }
+
+    #[test]
+    fn find_substring_ignores_hidden_registry_names() {
+        let (tmp, ctx) = fixture();
+        // Registry name is the directory basename (`t3code-aaaa`); the
+        // user-facing branch is unrelated. Substring match on the hidden
+        // id used to pull this in for a query like `t3code`.
+        add_worktree(
+            &ctx,
+            &tmp.path().join("wts").join("t3code-aaaa"),
+            "other/topic",
+        );
+        add_worktree(
+            &ctx,
+            &tmp.path().join("wts").join("t3code-bbbb"),
+            "t3code/bbbb",
+        );
+
+        let found = find(&ctx, "t3code").unwrap();
+        assert_eq!(found.branch.as_deref(), Some("t3code/bbbb"));
+
+        // Exact registry name still resolves.
+        assert_eq!(find(&ctx, "t3code-aaaa").unwrap().name, "t3code-aaaa");
     }
 
     #[test]

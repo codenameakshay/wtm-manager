@@ -171,9 +171,20 @@ fn run_effect(
             with_status,
         } => {
             let ctx = ctx.clone();
-            let base = config.default_base.clone();
+            let configured = config.default_base.clone();
             let tx = tx.clone();
             std::thread::spawn(move || {
+                let base = match worktree::listing_base(&ctx, configured.as_deref()) {
+                    Ok(base) => base,
+                    Err(e) => {
+                        let _ = tx.send(Msg::RowsFailed {
+                            generation,
+                            with_status,
+                            text: format!("list failed: {e}"),
+                        });
+                        return;
+                    }
+                };
                 let msg = match worktree::list(&ctx, &ListOptions { with_status, base }) {
                     Ok(rows) => Msg::RowsLoaded {
                         generation,
@@ -208,6 +219,8 @@ fn run_effect(
             let outcome = suspended(terminal, || {
                 let request = add::CreateRequest {
                     branch: &branch,
+                    unique: false,
+                    detach: false,
                     base_override: Some(&base),
                     path_override: None,
                     cd: false,
@@ -233,17 +246,28 @@ fn run_effect(
             }))
         }
         Effect::Remove { info, force } => {
-            let msg = match remove::remove_worktree(ctx, &info, force, true) {
-                Ok(()) => Msg::ActionOutcome {
-                    text: format!("removed worktree '{}'", info.display_name()),
-                    error: false,
-                    refresh: true,
-                },
-                Err(e) => Msg::ActionOutcome {
-                    text: format!("remove failed: {e}"),
+            let msg = if remove::contains_cwd(&info.path) {
+                Msg::ActionOutcome {
+                    text: format!(
+                        "refusing to remove '{}': it contains the current directory (cd elsewhere first)",
+                        info.display_name()
+                    ),
                     error: true,
                     refresh: false,
-                },
+                }
+            } else {
+                match remove::remove_worktree(ctx, &info, force, true) {
+                    Ok(()) => Msg::ActionOutcome {
+                        text: format!("removed worktree '{}'", info.display_name()),
+                        error: false,
+                        refresh: true,
+                    },
+                    Err(e) => Msg::ActionOutcome {
+                        text: format!("remove failed: {e}"),
+                        error: true,
+                        refresh: false,
+                    },
+                }
             };
             Ok(Some(msg))
         }

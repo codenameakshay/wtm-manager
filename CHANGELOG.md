@@ -5,6 +5,48 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.0] - 2026-09-08
+
+### Added
+
+- **`lock_reason` on `wtm list --json`.** git2 already returned why a
+  worktree was locked; the JSON only had `is_locked`. Agents can now see
+  the lock message (empty string if locked with no reason).
+- **`head_time` on `wtm list --json`.** Unix seconds of HEAD, filled from
+  the main repository so `--fast` still includes it. Agents can sort by
+  recency without opening each worktree.
+- **`wtm add --unique` and `--detach`.** Agents can create a throwaway
+  `stem/<8 hex>` branch (default stem: `wtm`) without hitting
+  `BranchInUse`, or a detached-HEAD worktree with no branch to delete.
+  Normal `wtm add <branch>` still refuses when the branch is in use.
+- **`--json` on `add`, `remove`, and `prune`.** One pretty object on
+  stdout. Failures still print `error:` on stderr (no error envelope).
+- **`wtm prune --detached`.** Linked worktrees with no branch (the leftovers
+  agent tools often leave) can be swept. When `default_base` is unset,
+  merged detection prefers `origin/HEAD`, then `origin/main` /
+  `origin/master`, then local HEAD. `wtm fetch` is still required to
+  refresh those remote-tracking refs.
+- **Agent skill and `AGENTS.md`.** `skills/wtm/` documents `--unique`,
+  mutation JSON, `dirty_count`, `lock_reason`, and `head_time`. Copy the
+  same folder into `~/.claude/skills` or `~/.cursor/skills`. Repo-root
+  `AGENTS.md` tells coding agents never to run bare `wtm`.
+- **Fish completions.** `wtm completions fish` writes a Fish script.
+  `wtm init fish` still has no cd wrapper. A Homebrew tap is not
+  published; the formula name will be `wtm-manager`.
+
+### Fixed
+
+- **Name lookup ignores hidden git registry ids.** `wtm path t3code` used
+  to substring-match a worktree whose directory was named `t3code-…` even
+  when that row's branch was something else, then stuff the "ambiguous"
+  hint inside the quoted name. Lookup now matches the display name
+  (branch, or registry name when detached) and reports
+  `named 't3code' (ambiguous: matches …)`.
+- **App: Remove no longer uses the process cwd as a safety signal.**
+  `remove_worktree` is shared with the GUI, whose working directory is not
+  the user's shell. The CLI and TUI still refuse to remove the worktree
+  you are standing in.
+
 ## [0.9.0] - 2026-09-07
 
 ### Added

@@ -101,10 +101,23 @@ pub enum Command {
 /// Arguments for `wtm add`.
 #[derive(Debug, Clone, Args)]
 pub struct AddArgs {
-    /// Branch to check out in the new worktree (created from the base ref
-    /// when it does not exist yet).
-    #[arg(value_name = "BRANCH")]
-    pub branch: String,
+    /// Branch to check out, unique-create stem, or detach path name.
+    /// Required unless `--unique` or `--detach` is set.
+    #[arg(
+        value_name = "BRANCH",
+        required_unless_present_any = ["unique", "detach"]
+    )]
+    pub branch: Option<String>,
+
+    /// Create a unique branch `STEM/<8 hex>` (default stem: `wtm`) and
+    /// retry if that name or destination already exists.
+    #[arg(long, conflicts_with = "detach")]
+    pub unique: bool,
+
+    /// Create a detached-HEAD worktree (no branch). BRANCH is used only
+    /// as the path-template name when given.
+    #[arg(long, conflicts_with = "unique")]
+    pub detach: bool,
 
     /// Base ref for a newly created branch (overrides the configured
     /// `default_base`; explicit refs must resolve to commits).
@@ -128,6 +141,10 @@ pub struct AddArgs {
     /// Skip the configured post-create setup (copy entries and commands).
     #[arg(long)]
     pub no_setup: bool,
+
+    /// Print one JSON object on stdout (git/setup chatter is silenced).
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// Arguments for `wtm list`.
@@ -159,6 +176,10 @@ pub struct RemoveArgs {
     /// are never deleted).
     #[arg(long)]
     pub with_branch: bool,
+
+    /// Print one JSON object on stdout.
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// Arguments for `wtm switch`.
@@ -194,6 +215,14 @@ pub struct PruneArgs {
     /// Prune even worktrees with uncommitted changes.
     #[arg(long)]
     pub force: bool,
+
+    /// Also prune linked worktrees whose HEAD is detached.
+    #[arg(long)]
+    pub detached: bool,
+
+    /// Print one JSON object on stdout.
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// Arguments for `wtm fetch`.
@@ -251,6 +280,8 @@ pub enum ShellKind {
     Zsh,
     /// GNU Bourne-Again Shell.
     Bash,
+    /// Fish shell. Completions only — `wtm init fish` has no cd wrapper.
+    Fish,
 }
 
 impl ShellKind {
@@ -259,6 +290,7 @@ impl ShellKind {
         match self {
             ShellKind::Zsh => clap_complete::Shell::Zsh,
             ShellKind::Bash => clap_complete::Shell::Bash,
+            ShellKind::Fish => clap_complete::Shell::Fish,
         }
     }
 }

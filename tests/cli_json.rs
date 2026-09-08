@@ -3,7 +3,10 @@
 
 mod common;
 
-use common::{find_entry, TestRepo};
+use std::path::Path;
+
+use common::{find_entry, stdout_str, TestRepo};
+use predicates::prelude::*;
 
 /// Stable field names declared in src/model.rs — the JSON contract.
 const EXPECTED_FIELDS: &[&str] = &[
@@ -14,6 +17,8 @@ const EXPECTED_FIELDS: &[&str] = &[
     "is_main",
     "is_missing",
     "is_locked",
+    "lock_reason",
+    "head_time",
     "is_prunable",
     "status",
 ];
@@ -83,4 +88,161 @@ fn json_no_status_and_fast_alias_yield_null_status() {
             );
         }
     }
+}
+
+#[test]
+fn json_exposes_lock_reason_when_git_locks_a_worktree() {
+    let repo = TestRepo::new();
+    repo.wtm().args(["add", "locked"]).assert().success();
+    let wt = repo.default_worktree_path("locked");
+    let path = wt.to_str().expect("utf-8 path");
+    repo.git(
+        repo.root(),
+        &["worktree", "lock", path, "--reason", "agent-in-use"],
+    );
+
+    let items = repo.list_json(&["--fast"]);
+    let locked = find_entry(&items, "locked").expect("locked worktree");
+    assert_eq!(locked["is_locked"], true);
+    assert_eq!(locked["lock_reason"], "agent-in-use");
+
+    let main = find_entry(&items, "main").expect("main");
+    assert_eq!(main["is_locked"], false);
+    assert!(main["lock_reason"].is_null());
+}
+
+#[test]
+fn json_fast_still_exposes_head_time() {
+    let repo = TestRepo::new();
+    repo.wtm().args(["add", "feature-x"]).assert().success();
+
+    let items = repo.list_json(&["--fast"]);
+    for entry in items.as_array().expect("array") {
+        assert!(
+            entry["status"].is_null(),
+            "--fast: status must be null, got {entry}"
+        );
+        assert!(
+            entry["head_time"].is_number(),
+            "--fast: head_time must be a unix timestamp, got {entry}"
+        );
+    }
+}
+
+fn mutation_json(assert: &assert_cmd::assert::Assert) -> serde_json::Value {
+    let stdout = stdout_str(assert);
+    serde_json::from_str(&stdout).unwrap_or_else(|err| {
+        panic!("mutation --json did not emit valid JSON: {err}\n---\n{stdout}")
+    })
+}
+
+#[test]
+fn add_json_unique_prints_one_object() {
+    let repo = TestRepo::new();
+    let assert = repo
+        .wtm()
+        .args(["add", "--unique", "--json"])
+        .assert()
+        .success();
+    let v = mutation_json(&assert);
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["action"], "add");
+    assert_eq!(v["detached"], false);
+    let branch = v["branch"].as_str().expect("branch");
+    assert!(branch.starts_with("wtm/"), "got {branch}");
+    assert_eq!(v["name"], branch);
+    let path = v["path"].as_str().expect("path");
+    assert!(Path::new(path).is_dir(), "created path must exist: {path}");
+}
+
+#[test]
+fn add_json_detach_sets_detached_true() {
+    let repo = TestRepo::new();
+    let assert = repo
+        .wtm()
+        .args(["add", "--detach", "--json"])
+        .assert()
+        .success();
+    let v = mutation_json(&assert);
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["action"], "add");
+    assert_eq!(v["detached"], true);
+    assert!(v["branch"].is_null());
+    assert!(v["name"].as_str().is_some_and(|n| !n.is_empty()));
+    assert!(Path::new(v["path"].as_str().unwrap()).is_dir());
+}
+
+#[test]
+fn add_json_failure_prints_error_on_stderr_not_stdout() {
+    let repo = TestRepo::new();
+    repo.wtm().args(["add", "taken"]).assert().success();
+    let assert = repo
+        .wtm()
+        .args(["add", "taken", "--json"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("already checked out"));
+    let stdout = stdout_str(&assert);
+    assert!(
+        stdout.trim().is_empty(),
+        "failed --json must not print an error envelope on stdout, got {stdout:?}"
+    );
+}
+
+#[test]
+fn remove_json_then_path_fails() {
+    let repo = TestRepo::new();
+    repo.wtm().args(["add", "gone"]).assert().success();
+    let wt = repo.default_worktree_path("gone");
+    let path = wt.canonicalize().unwrap();
+
+    let assert = repo
+        .wtm()
+        .args(["remove", "gone", "--json"])
+        .assert()
+        .success();
+    let v = mutation_json(&assert);
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["action"], "remove");
+    assert_eq!(v["name"], "gone");
+    assert_eq!(v["branch_deleted"], false);
+    assert_eq!(Path::new(v["path"].as_str().unwrap()), path.as_path());
+
+    repo.wtm()
+        .args(["path", "gone"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("named 'gone'"));
+}
+
+#[test]
+fn prune_json_dry_run_lists_candidates_without_removing() {
+    let repo = TestRepo::new();
+    repo.wtm().args(["add", "stale"]).assert().success();
+    let wt = repo.default_worktree_path("stale");
+    std::fs::remove_dir_all(&wt).unwrap();
+
+    let assert = repo
+        .wtm()
+        .args(["prune", "--json", "--dry-run"])
+        .assert()
+        .success();
+    let v = mutation_json(&assert);
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["action"], "prune");
+    assert_eq!(v["removed"], 0);
+    let candidates = v["candidates"]
+        .as_array()
+        .expect("candidates array")
+        .iter()
+        .map(|c| c.as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert!(
+        candidates.contains(&"stale"),
+        "dry-run must name the missing worktree, got {candidates:?}"
+    );
+    assert!(
+        repo.registry_porcelain().contains("stale"),
+        "dry-run must leave the registry entry"
+    );
 }

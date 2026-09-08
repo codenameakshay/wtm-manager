@@ -79,9 +79,10 @@ pub struct ListOptions {
 pub fn list(ctx: &RepoContext, opts: &ListOptions) -> Result<Vec<WorktreeInfo>>;
 
 /// Resolve `<name>` to a worktree: exact match on registry name, then branch
-/// name, then unique substring of branch/name (error WorktreeNotFound
-/// otherwise; if substring matching is ambiguous, also WorktreeNotFound with
-/// the candidates listed in the message). Never computes status.
+/// name, then unique substring of the display name (branch, or registry
+/// name when detached). Hidden registry ids are not substring-matched.
+/// Unknown names are WorktreeNotFound; ambiguous substring matches are
+/// WorktreeAmbiguous. Never computes status.
 pub fn find(ctx: &RepoContext, name: &str) -> Result<WorktreeInfo>;
 
 /// Worktree containing `path` (used to detect "you are removing the worktree
@@ -134,6 +135,8 @@ pub fn run_capture(cwd: &Path, args: &[&str]) -> Result<std::process::Output>;
 pub fn worktree_add(main_root: &Path, path: &Path, branch: &str, quiet: bool) -> Result<()>;
 /// Create and add a branch. Quiet captures Git output; otherwise it streams.
 pub fn worktree_add_new_branch(main_root: &Path, path: &Path, branch: &str, base: &str, quiet: bool) -> Result<()>;
+/// Detached HEAD, no branch. Quiet captures Git output; otherwise it streams.
+pub fn worktree_add_detach(main_root: &Path, path: &Path, base: &str, quiet: bool) -> Result<()>;
 /// `git worktree remove [--force] <path>`.
 pub fn worktree_remove(main_root: &Path, path: &Path, force: bool) -> Result<()>;
 /// `git worktree prune`.
@@ -170,7 +173,10 @@ prefix.
 
 Plain, serde-`Serialize` data: `WorktreeInfo` is everything `wtm list --json`
 emits for one worktree (name/path/branch/head/flags plus an optional
-`status`); `WorktreeStatus` is the expensive per-worktree fields
+`status`); `lock_reason` is `null` when unlocked and a string (possibly
+empty) when `is_locked` is true; `head_time` is unix seconds of the HEAD
+commit (or `null` when the oid does not peel) and is filled during the cheap
+listing pass, so `--fast` still emits it. `WorktreeStatus` is the expensive per-worktree fields
 (dirty/dirty_count/ahead/behind/upstream_gone/merged) computed by
 `worktree::list` when status is requested. Field names are the stable JSON
 contract — do not rename without a version bump plan.
@@ -198,7 +204,7 @@ pub struct ConfigFile { /* every field Option<...>, including nested */ }
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
     pub path_template: String,        // default "../{repo}-worktrees/{branch}"
-    pub default_base: Option<String>, // default Some("origin/main")? NO — default None means "use HEAD"; built-in default is None. Config may set e.g. "origin/main".
+    pub default_base: Option<String>, // default None. CLI/TUI/GUI listing and add/prune then try origin/HEAD, origin/main, origin/master before HEAD. Library `list(..., base: None)` still means HEAD.
     pub editor: Option<String>,       // resolution order at use site: config > $VISUAL > $EDITOR
     pub setup: SetupConfig,
     pub prune: PruneConfig,
@@ -369,20 +375,25 @@ pub enum Command {
     List(ListArgs),      // alias: ls; --json; --no-status alias --fast
     Remove(RemoveArgs),  // alias: rm; --force, --with-branch
     Switch(SwitchArgs),  // aliases: cd, sw; hidden --print-path
-    Prune(PruneArgs),    // alias: clean; --merged --gone --dry-run --force
+    Prune(PruneArgs),    // alias: clean; --merged --gone --detached --dry-run --force --json
     Fetch(FetchArgs),    // --remote
     Open(OpenArgs),      // --with <cmd>
     Path(PathArgs),
     App,                 // alias: gui; open the desktop app
     Tui,                 // alias: ui; the full-screen interactive TUI
-    Init(InitArgs),      // shell: zsh|bash (ValueEnum Shell)
-    Completions(CompletionsArgs),
+    Init(InitArgs),      // shell: zsh|bash; fish is completions-only
+    Completions(CompletionsArgs),  // zsh|bash|fish
     Config(ConfigArgs),  // subcommands: path, init
 }
 ```
-AddArgs: `branch: String`, `--from <base>`, `--path <path>`, `--cd`, `--open`,
-`--no-setup`. `--json` lives ONLY on read commands (list; path/switch emit
-plain text). Every command and flag gets real help text (doc comments).
+AddArgs: `branch: Option<String>` (required unless `--unique` or `--detach`),
+`--unique` (stem defaults to `wtm`; creates `stem/<8 hex>` and retries on
+collision), `--detach` (no branch; `git worktree add --detach`), `--from
+<base>`, `--path <path>`, `--cd`, `--open`, `--no-setup`. `--unique` and
+`--detach` conflict. `--json` on `list`, `add`, `remove`, and `prune`
+(pretty object/array on stdout; failures still print `error:` on stderr
+with no JSON envelope). path/switch emit plain text. Every command and
+flag gets real help text (doc comments).
 
 ## src/commands/ — one module per command
 
@@ -395,7 +406,10 @@ consistent across all commands: resolve ctx+config in a shared
 `commands::prepare(global)` helper).
 
 Key behaviors:
-- add: branch exists (local) ⇒ error BranchInUse if some worktree already has
+- add: `--unique` generates `stem/<8 hex>` (stem defaults to `wtm`) and
+  retries on `BranchInUse` / destination collision — never auto-suffix
+  without the flag. `--detach` calls `worktree_add_detach` (no branch).
+  Otherwise: branch exists (local) ⇒ error BranchInUse if some worktree already has
   it checked out, else `worktree_add`. Branch doesn't exist ⇒ base = --from >
   config.default_base > HEAD. Any explicitly selected base must resolve and
   peel to a commit; otherwise fail before mutation. Then call
@@ -404,19 +418,27 @@ Key behaviors:
   setup (unless --no-setup); on Error::Setup print it but exit non-zero.
   --open: preflight and launch the editor on the new path. Print success only
   outside quiet mode. `--cd` writes the target only after setup and all other
-  requested post-create actions succeed.
-- list: with_status = !no_status; --json ⇒ render_json to stdout.
+  requested post-create actions succeed. `--json` prints one object
+  `{ok,action,name,branch,path,detached}` on stdout and silences git/setup
+  chatter so stdout stays parseable.
+- list: with_status = !no_status; merged base = `listing_base` (configured
+  `default_base`, else origin/HEAD, origin/main, origin/master, else HEAD).
+  `--json` ⇒ render_json to stdout. `-v` prints the resolved merged base.
 - remove: name optional ⇒ interactive picker (TTY-gated, see picker rules).
-  Refuse main worktree (MainWorktree). Refuse when target contains cwd.
-  Safety: if dirty and !force ⇒ Error::Dirty. Missing dir ⇒ remove registry
+  Refuse main worktree (MainWorktree). CLI `run` and the TUI refuse when
+  the target contains cwd; `remove_worktree` itself does not (the GUI
+  process cwd is meaningless). Safety: if dirty and !force ⇒ Error::Dirty.
+  Missing dir ⇒ remove registry
   entry via `git worktree remove --force` (it's the only way) but only ever
   after informing the user via stderr note; still safe. --with-branch ⇒
   branch_delete after successful removal, but refuse for protected branches.
+  `--json` prints `{ok,action,name,path,branch_deleted}`.
 - switch: resolve worktree; with --print-path (hidden flag) print ONLY the
   path to stdout (ALL other UI, including the picker, must go to stderr);
   without it print the path plus a hint (stderr) about `wtm init zsh`.
 - prune: candidates = missing/prunable entries (always) + merged (only with
-  --merged) + upstream_gone (only with --gone). Skip main worktree and any
+  --merged) + upstream_gone (only with --gone) + detached HEAD (only with
+  --detached; no branch delete; locked detached trees are skipped). Skip main worktree and any
   candidate whose branch ∈ protected_branches. `prune::exclude_cwd` then
   drops any candidate whose path contains the process cwd, applied by each
   caller (CLI `run`, TUI) right after selecting candidates — a worktree
@@ -430,7 +452,9 @@ Key behaviors:
   failures, and report failures together after the registry refresh. Branch
   deletion: merged/gone candidates get their branch deleted (that is the
   point of pruning); protected branches never; missing-dir entries never (we
-  only clean the registry).
+  only clean the registry). `--json` prints
+  `{ok,action,removed,skipped,failures,candidates}`; dry-run sets
+  `removed: 0` and fills `candidates`.
 - fetch: remote = `--remote` > configured `origin` > first remote name
   alphabetically. No remotes configured ⇒ `Error::Other` ("no configured
   remotes"). Runs `git fetch --prune` (stale remote-tracking refs would keep
@@ -447,8 +471,9 @@ Key behaviors:
   paying for a full registry listing. An explicit `-C` instead scopes
   containment to that repository's registry.
 - init: print the shell function + `eval` of completions for zsh or bash to
-  stdout (see wrapper below).
-- completions: clap_complete::generate to stdout.
+  stdout. Fish has no wrapper: `init fish` returns an error pointing at
+  `wtm completions fish`.
+- completions: clap_complete::generate to stdout (zsh, bash, fish).
 - config path: print global path and (if in a repo) repo-level paths with
   existence markers. config init: scaffold_repo_config.
 

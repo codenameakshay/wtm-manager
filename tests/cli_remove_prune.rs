@@ -4,7 +4,7 @@
 
 mod common;
 
-use common::{canon, find_entry, TestRepo};
+use common::{canon, find_entry, stdout_str, TestRepo};
 use predicates::prelude::*;
 
 #[test]
@@ -194,6 +194,23 @@ fn prune_refuses_the_worktree_that_contains_cwd() {
 }
 
 #[test]
+fn remove_refuses_the_worktree_that_contains_cwd() {
+    let repo = TestRepo::new();
+    repo.wtm().args(["add", "standing-in"]).assert().success();
+    let wt = canon(&repo.default_worktree_path("standing-in"));
+
+    repo.wtm_in(&wt)
+        .args(["remove", "standing-in"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("current directory"));
+    assert!(
+        wt.is_dir(),
+        "CLI remove must not delete the worktree that contains cwd"
+    );
+}
+
+#[test]
 fn prune_merged_never_touches_protected_branches() {
     let repo = TestRepo::new();
     // "develop" is in the default protected_branches list.
@@ -268,4 +285,63 @@ fn prune_continues_after_candidate_failure() {
         "later independent candidate must still be pruned"
     );
     assert!(!repo.branch_exists("later-merged"));
+}
+
+#[test]
+fn prune_detached_dry_run_lists_detached_only_with_flag() {
+    let repo = TestRepo::new();
+    repo.wtm().args(["add", "--detach"]).assert().success();
+
+    let without = repo
+        .wtm()
+        .args(["prune", "--json", "--dry-run"])
+        .assert()
+        .success();
+    let without: serde_json::Value = serde_json::from_str(&stdout_str(&without)).unwrap();
+    assert!(
+        without["candidates"].as_array().unwrap().is_empty(),
+        "detached leftovers are not pruned without --detached, got {without}"
+    );
+
+    let with = repo
+        .wtm()
+        .args(["prune", "--json", "--detached", "--dry-run"])
+        .assert()
+        .success();
+    let with: serde_json::Value = serde_json::from_str(&stdout_str(&with)).unwrap();
+    assert_eq!(with["removed"], 0);
+    assert!(
+        !with["candidates"].as_array().unwrap().is_empty(),
+        "--detached dry-run must name the leftover, got {with}"
+    );
+}
+
+#[test]
+fn prune_merged_uses_origin_main_when_default_base_unset() {
+    let repo = TestRepo::new();
+    repo.wtm().args(["add", "feature"]).assert().success();
+    let wt = repo.default_worktree_path("feature");
+    repo.commit_file_in(&wt, "feat.txt", "landed on origin\n");
+    let feature_tip = repo.rev_parse(&wt, "HEAD");
+    repo.git(
+        repo.root(),
+        &["update-ref", "refs/remotes/origin/main", &feature_tip],
+    );
+
+    let assert = repo
+        .wtm()
+        .args(["prune", "--merged", "--json", "--dry-run"])
+        .assert()
+        .success();
+    let v: serde_json::Value = serde_json::from_str(&stdout_str(&assert)).unwrap();
+    let candidates = v["candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c.as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert!(
+        candidates.contains(&"feature"),
+        "feature is merged into origin/main even though local main is behind, got {candidates:?}"
+    );
 }

@@ -260,6 +260,21 @@ fn completions_emit_shell_scripts() {
         .assert()
         .success()
         .stdout(predicate::str::contains("_wtm"));
+    repo.wtm()
+        .args(["completions", "fish"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("complete"));
+}
+
+#[test]
+fn init_fish_has_no_wrapper_yet() {
+    let repo = TestRepo::new();
+    repo.wtm()
+        .args(["init", "fish"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("completions fish"));
 }
 
 // ---------------------------------------------------------------------------

@@ -42,27 +42,37 @@ pub fn run(args: &PruneArgs, global: &GlobalArgs) -> Result<()> {
     // Status (dirty/merged/gone) is only needed when a status-derived
     // selection or safety check can trigger.
     let with_status = args.merged || args.gone || !args.force;
-    let items = worktree::list(
-        &ctx,
-        &ListOptions {
-            with_status,
-            base: config.default_base.clone(),
-        },
-    )?;
+    let base = worktree::listing_base(&ctx, config.default_base.as_deref())?;
+    if global.verbose {
+        eprintln!("merged base: {}", base.as_deref().unwrap_or("HEAD"));
+    }
+    let items = worktree::list(&ctx, &ListOptions { with_status, base })?;
 
     let candidates = candidates(
         &items,
         &config.prune.protected_branches,
         args.merged,
         args.gone,
+        args.detached,
         global.verbose,
     );
     let (candidates, cwd_skipped) = exclude_cwd(candidates);
-    for c in &cwd_skipped {
-        eprintln!(
-            "warning: skipping '{}': it contains the current directory (cd elsewhere first)",
-            c.info.display_name()
-        );
+    if !args.json {
+        for c in &cwd_skipped {
+            eprintln!(
+                "warning: skipping '{}': it contains the current directory (cd elsewhere first)",
+                c.info.display_name()
+            );
+        }
+    }
+
+    let candidate_names: Vec<String> = candidates
+        .iter()
+        .map(|c| c.info.display_name().to_string())
+        .collect();
+
+    if args.json {
+        return run_json(&ctx, args, &candidates, candidate_names);
     }
 
     if candidates.is_empty() {
@@ -109,6 +119,57 @@ pub fn run(args: &PruneArgs, global: &GlobalArgs) -> Result<()> {
     Ok(())
 }
 
+fn run_json(
+    ctx: &RepoContext,
+    args: &PruneArgs,
+    candidates: &[PruneCandidate],
+    candidate_names: Vec<String>,
+) -> Result<()> {
+    if args.dry_run {
+        crate::output::print_json(&serde_json::json!({
+            "ok": true,
+            "action": "prune",
+            "removed": 0,
+            "skipped": [],
+            "failures": [],
+            "candidates": candidate_names,
+        }));
+        return Ok(());
+    }
+
+    if candidates.is_empty() {
+        gitcmd::worktree_prune(&ctx.main_root)?;
+        crate::output::print_json(&serde_json::json!({
+            "ok": true,
+            "action": "prune",
+            "removed": 0,
+            "skipped": [],
+            "failures": [],
+            "candidates": candidate_names,
+        }));
+        return Ok(());
+    }
+
+    let report = execute(ctx, candidates, args.force, true, &|_| {});
+    let ok = report.failures.is_empty();
+    crate::output::print_json(&serde_json::json!({
+        "ok": ok,
+        "action": "prune",
+        "removed": report.removed,
+        "skipped": report.skipped,
+        "failures": report.failures,
+        "candidates": candidate_names,
+    }));
+    if !ok {
+        return Err(Error::Other(format!(
+            "prune completed with {} failure(s): {}",
+            report.failures.len(),
+            report.failures.join("; ")
+        )));
+    }
+    Ok(())
+}
+
 /// Select prune candidates from a listing: never the main worktree, never a
 /// protected branch; reasons are missing/prunable always, plus merged/gone
 /// when the corresponding flag is set. `verbose` prints a stderr note for
@@ -118,6 +179,7 @@ pub fn candidates(
     protected: &[String],
     merged: bool,
     gone: bool,
+    detached: bool,
     verbose: bool,
 ) -> Vec<PruneCandidate> {
     let mut selected: Vec<PruneCandidate> = Vec::new();
@@ -150,6 +212,9 @@ pub fn candidates(
         let is_gone = gone && status.is_some_and(|s| s.upstream_gone);
         if is_gone {
             reasons.push("gone");
+        }
+        if detached && info.branch.is_none() && !info.is_locked {
+            reasons.push("detached");
         }
         if reasons.is_empty() {
             continue;
@@ -366,6 +431,8 @@ mod tests {
                 is_main: false,
                 is_missing: false,
                 is_locked: false,
+                lock_reason: None,
+                head_time: None,
                 is_prunable: true,
                 // Deliberately stale "clean" status: execute must re-check.
                 status: Some(WorktreeStatus {
@@ -384,6 +451,9 @@ mod tests {
 
     #[test]
     fn exclude_cwd_skips_the_candidate_at_current_dir_and_keeps_others() {
+        let _cwd = crate::commands::remove::CWD_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let cwd = std::env::current_dir().unwrap();
         let elsewhere = std::env::temp_dir().join("wtm-exclude-cwd-test-does-not-exist");
         let cands = vec![
@@ -476,7 +546,7 @@ mod tests {
         .unwrap();
         // Every branch shares main's tip (no commit of its own), so all N
         // are merged candidates.
-        let cands = candidates(&items, &[], true, false, false);
+        let cands = candidates(&items, &[], true, false, false, false);
         assert_eq!(cands.len(), N);
 
         let progress_log: std::sync::Mutex<Vec<usize>> = std::sync::Mutex::new(Vec::new());
