@@ -5,13 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.10.0] - 2026-09-07
+## [0.10.0] - 2026-09-08
 
 ### Added
 
 - **`lock_reason` on `wtm list --json`.** git2 already returned why a
   worktree was locked; the JSON only had `is_locked`. Agents can now see
   the lock message (empty string if locked with no reason).
+- **`head_time` on `wtm list --json`.** Unix seconds of HEAD, filled from
+  the main repository so `--fast` still includes it. Agents can sort by
+  recency without opening each worktree.
 - **`wtm add --unique` and `--detach`.** Agents can create a throwaway
   `stem/<8 hex>` branch (default stem: `wtm`) without hitting
   `BranchInUse`, or a detached-HEAD worktree with no branch to delete.
