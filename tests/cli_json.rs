@@ -238,7 +238,7 @@ fn prune_json_dry_run_lists_candidates_without_removing() {
         .map(|c| c.as_str().unwrap())
         .collect::<Vec<_>>();
     assert!(
-        candidates.iter().any(|c| *c == "stale"),
+        candidates.contains(&"stale"),
         "dry-run must name the missing worktree, got {candidates:?}"
     );
     assert!(

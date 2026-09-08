@@ -341,7 +341,7 @@ fn prune_merged_uses_origin_main_when_default_base_unset() {
         .map(|c| c.as_str().unwrap())
         .collect::<Vec<_>>();
     assert!(
-        candidates.iter().any(|c| *c == "feature"),
+        candidates.contains(&"feature"),
         "feature is merged into origin/main even though local main is behind, got {candidates:?}"
     );
 }
