@@ -83,7 +83,7 @@ pub fn run(args: &RemoveArgs, global: &GlobalArgs) -> Result<()> {
 ///   touched).
 ///
 /// Callers that represent a user's shell (CLI `run`, TUI `d`) must apply
-/// [`contains_cwd`] themselves. The GUI must not: its process cwd is not
+/// the cwd guard themselves. The GUI must not: its process cwd is not
 /// the directory the user is standing in.
 pub fn remove_worktree(
     ctx: &RepoContext,
