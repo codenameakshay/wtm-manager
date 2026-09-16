@@ -66,6 +66,9 @@ to open a new shell (or `source` the rc file) for it to take effect.
 | Clean up leftover worktrees | `wtm prune --merged --gone --detached --json` |
 | Fetch remotes so ahead/behind and gone are current | `wtm fetch` |
 | Open a worktree in the editor | `wtm open <name>` |
+| List a saved host's repos and worktrees, machine-readable | `wtm host scan <name> --json` |
+| Preview stale worktrees on a host | `wtm host prune <name> --merged --gone --json --dry-run` |
+| Remove a worktree on a host | `wtm host rm <name> <path> --json` |
 
 **IMPORTANT for agents:**
 

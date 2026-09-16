@@ -220,6 +220,24 @@ Repository…" row in the sidebar's empty state — any of the three opens a
 native folder picker; pick a git repository and it's added to the sidebar
 and opened.
 
+**Remote hosts.** The sidebar's Hosts section lists machines you reach
+over SSH, such as a VPS. Click **Add Host…** and give a name, an SSH
+destination (an `~/.ssh/config` alias, `user@host`, or
+`ssh://user@host:port`), and optional root directories (default: the
+remote home). Select a host to see every repository under those roots and
+all of their worktrees, the biggest first, each with its disk usage and
+status. Select worktrees and press `⌘⌫`, or use a repository's **Clean
+Up** button (merged and upstream-gone worktrees), to free the space. A confirmation lists what will go and about how much it frees.
+Nothing is installed on the host: each action is one `ssh` call that runs
+`git` and `du` there. Login must work without a password prompt, so run
+`ssh <destination>` in a terminal once first. The app never connects at
+launch or on window focus. The same hosts work from the CLI through
+[`wtm host`](#wtm-host).
+
+<p align="center">
+  <img src="assets/app-hosts.png" alt="wtm's host view: the sidebar lists two local repositories and two hosts, and the main pane shows the selected host's three repositories, biggest first, each with its worktrees, their status pills, and their disk usage" width="840">
+</p>
+
 **What it does:** a sidebar of every repository you've opened (sorted
 alphabetically, and stable — it doesn't reorder itself when you select a
 repo), a worktree list with live status — sortable by Name, Recent, or
@@ -284,7 +302,8 @@ bound.
 `$XDG_CONFIG_HOME` overrides): `~/.config/wtm/repos.json` (the sidebar's
 repository list) and `~/.config/wtm/gui.json` (appearance, panel visibility,
 window frame, last-opened repo, terminal app, sort mode, and recent Run
-Command suggestions). Neither is read by the CLI. The app never
+Command suggestions). Neither is read by the CLI. Saved hosts live in
+`~/.config/wtm/hosts.json`, which the app and `wtm host` share. The app never
 writes to `.worktree.toml` or `config.toml` — those stay exactly what the
 [Configuration](#configuration) section below describes, shared read-only
 with the CLI (the settings sheet shows the effective values with a link to
@@ -542,6 +561,34 @@ exists.
 
 `wtm config init` scaffolds a fully commented `.worktree.toml` at the repo
 root (errors if one already exists) — see [Configuration](#configuration).
+
+### `wtm host`
+
+Manage a remote machine's repositories and worktrees over ssh: list them
+with disk usage, and remove or prune worktrees, without installing
+anything on the host. The host needs `git` and a POSIX `sh`, and a working
+key- or agent-based ssh login (run `ssh <destination>` once yourself first
+so the host is in `known_hosts`).
+
+- `wtm host add <name> <destination>` — save a host (`--root <path>`,
+  repeatable; default: the remote home directory).
+- `wtm host list` (alias `ls`) — list saved hosts.
+- `wtm host forget <name>` — forget a saved host.
+- `wtm host scan <name>` — list its repositories and worktrees, with disk
+  usage (`--json`, `--no-size`).
+- `wtm host rm <name> <path>` (alias `remove`) — remove one worktree
+  (`--force`, `--with-branch`, `--json`).
+- `wtm host prune <name>` — remove stale worktrees (`--merged`, `--gone`,
+  `--detached`, `--in <path>`, `--dry-run`, `--force`, `--json`).
+
+```sh
+wtm host add vps ubuntu@203.0.113.7 --root /home/ubuntu/src
+wtm host scan vps
+wtm host prune vps --merged --gone --dry-run
+```
+
+See [`skills/wtm/reference.md`](skills/wtm/reference.md) for the full flag
+list and JSON shapes.
 
 ## Configuration
 

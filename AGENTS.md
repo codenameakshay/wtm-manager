@@ -20,6 +20,9 @@ cd "$(wtm path <name>)"
 | Preview leftovers | `wtm prune --merged --gone --detached --json --dry-run` |
 | Sweep leftovers | `wtm prune --merged --gone --detached --json` |
 | Refresh remotes first | `wtm fetch` |
+| List a host's repos and worktrees | `wtm host scan <name> --json` (add `--no-size` when sizes are not needed) |
+| Preview remote leftovers | `wtm host prune <name> --merged --gone --json --dry-run` |
+| Remove a remote worktree | `wtm host rm <name> <path> --json` |
 
 `--json` on add/remove/prune prints one object on stdout. Failures print
 `error:` on stderr and exit 1; there is no JSON error envelope.

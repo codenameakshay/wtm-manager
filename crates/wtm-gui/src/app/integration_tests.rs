@@ -33,10 +33,12 @@ use super::*;
 // ---------------------------------------------------------------------
 
 /// RAII guard: sets `WTM_CONFIG_DIR` under `crate::prefs::ENV_LOCK`,
-/// restores on drop. See this module's doc comment on why the lock is
-/// shared with `prefs`'s own tests rather than a second, independent one.
+/// restores it (and `WTM_SSH`, which [`Fixture::fake_ssh`] sets) on drop.
+/// See this module's doc comment on why the lock is shared with `prefs`'s
+/// own tests rather than a second, independent one.
 struct EnvGuard {
     previous: Option<std::ffi::OsString>,
+    previous_ssh: Option<std::ffi::OsString>,
     _lock: std::sync::MutexGuard<'static, ()>,
 }
 
@@ -44,9 +46,11 @@ impl EnvGuard {
     fn set(dir: &Path) -> Self {
         let lock = prefs::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let previous = std::env::var_os("WTM_CONFIG_DIR");
+        let previous_ssh = std::env::var_os("WTM_SSH");
         std::env::set_var("WTM_CONFIG_DIR", dir);
         EnvGuard {
             previous,
+            previous_ssh,
             _lock: lock,
         }
     }
@@ -54,9 +58,14 @@ impl EnvGuard {
 
 impl Drop for EnvGuard {
     fn drop(&mut self) {
-        match &self.previous {
-            Some(value) => std::env::set_var("WTM_CONFIG_DIR", value),
-            None => std::env::remove_var("WTM_CONFIG_DIR"),
+        for (key, previous) in [
+            ("WTM_CONFIG_DIR", &self.previous),
+            ("WTM_SSH", &self.previous_ssh),
+        ] {
+            match previous {
+                Some(value) => std::env::set_var(key, value),
+                None => std::env::remove_var(key),
+            }
         }
     }
 }
@@ -295,6 +304,37 @@ impl Fixture {
         let dir = self.base.join(name);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    /// Point `$WTM_SSH` at a new script running `body`. `ssh` pipes the
+    /// remote script on stdin, so [`LOCAL_SSH`] makes this fixture's scratch
+    /// space the "host". `_env` restores the variable; its lock is already
+    /// held and not reentrant.
+    fn fake_ssh(&self, body: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        // A fresh file per call, never one a finished scan just executed.
+        static SCRIPTS: AtomicUsize = AtomicUsize::new(0);
+        let path = self.base.join(format!(
+            "fake-ssh-{}",
+            SCRIPTS.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).expect("write fake ssh");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+            .expect("make fake ssh executable");
+        std::env::set_var("WTM_SSH", &path);
+        path
+    }
+
+    /// A saved-host value whose only root is this fixture's scratch space,
+    /// never the real home directory.
+    fn host(&self) -> Host {
+        Host::new(
+            "box",
+            "box-alias",
+            vec![self.base.to_string_lossy().into_owned()],
+        )
+        .expect("valid host")
     }
 }
 
@@ -2722,6 +2762,508 @@ fn remove_missing_repos_via_palette_names_and_removes_the_entry(cx: &mut TestApp
             status.text.contains("gone-via-palette"),
             "the message must name the removed repository, not just count it: {}",
             status.text
+        );
+    });
+}
+
+// ---------------------------------------------------------------------
+// 20. Remote hosts
+// ---------------------------------------------------------------------
+
+/// Stands in for `ssh <host> sh -s`: runs the piped script locally, with the
+/// same hermetic git config as `git` above.
+const LOCAL_SSH: &str = "export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+                         GIT_CONFIG_NOSYSTEM=1\nexec sh -s";
+
+fn shown_host(app: &WtmApp) -> &HostView {
+    app.host.as_ref().expect("a host must be shown")
+}
+
+fn host_worktree<'a>(app: &'a WtmApp, name: &str) -> Option<&'a wtm::remote::RemoteWorktree> {
+    shown_host(app)
+        .repos
+        .as_ref()?
+        .iter()
+        .flat_map(|repo| &repo.worktrees)
+        .find(|w| w.info.display_name() == name)
+}
+
+fn confirm_names(app: &WtmApp) -> BTreeSet<String> {
+    let Some(HostDialog::Confirm(state)) = &app.host_dialog else {
+        panic!("the host confirmation must be open");
+    };
+    state
+        .groups
+        .iter()
+        .flat_map(|(_, entries)| entries)
+        .map(|(c, _)| c.info.display_name().to_string())
+        .collect()
+}
+
+#[gpui::test]
+fn add_host_persists_and_selecting_it_scans_with_sizes(cx: &mut TestAppContext) {
+    let fx = Fixture::new();
+    fx.fake_ssh(LOCAL_SSH);
+    let roots = fx.base.to_string_lossy().into_owned();
+    let (view, cx) = open_app(cx, Some(fx.open()));
+    cx.run_until_parked();
+
+    view.update_in(cx, |app, window, cx| app.open_add_host_dialog(window, cx));
+    cx.simulate_input("vps");
+    view.update_in(cx, |app, window, cx| {
+        let Some(HostDialog::Add(state)) = &app.host_dialog else {
+            panic!("the Add Host form must be open");
+        };
+        state
+            .destination
+            .update(cx, |input, cx| input.set_value("vps-alias", window, cx));
+        state
+            .roots
+            .update(cx, |input, cx| input.set_value(roots.clone(), window, cx));
+    });
+    cx.simulate_keystrokes("enter");
+
+    assert_eq!(
+        remote::load_hosts(),
+        [Host::new("vps", "vps-alias", vec![roots.clone()]).unwrap()]
+    );
+    view.read_with(cx, |app, _| {
+        assert!(app.host_dialog.is_none(), "submitting closes the form");
+        assert!(app.active.is_none(), "the repository is closed");
+        assert!(app.rows.is_empty());
+        assert_eq!(app.hosts.len(), 1);
+        assert_eq!(shown_host(app).host.name, "vps");
+    });
+
+    cx.run_until_parked();
+
+    view.read_with(cx, |app, _| {
+        let shown = shown_host(app);
+        assert!(!shown.scanning && shown.sized);
+        assert_eq!(shown.error, None);
+        let repos = shown.repos.as_ref().expect("the scan landed");
+        assert_eq!(repos.len(), 1);
+        assert_eq!(repos[0].name, "repo");
+        assert_eq!(repos[0].path, fx.root);
+        assert!(repos[0].worktrees[0].info.is_main, "main is listed first");
+        let feature = host_worktree(app, "feature-x").expect("feature-x is listed");
+        assert_eq!(feature.info.status.as_ref().unwrap().dirty_count, 1);
+        assert!(
+            repos[0].worktrees.iter().all(|w| w.size_bytes.is_some()),
+            "{:?}",
+            repos[0].worktrees
+        );
+    });
+}
+
+#[gpui::test]
+fn add_host_invalid_input_keeps_dialog_open(cx: &mut TestAppContext) {
+    let fx = Fixture::new();
+    let (view, cx) = open_app(cx, Some(fx.open()));
+    cx.run_until_parked();
+
+    cx.simulate_keystrokes("cmd-k");
+    cx.simulate_input("Add Host");
+    cx.simulate_keystrokes("enter");
+    view.read_with(cx, |app, _| {
+        assert!(
+            matches!(app.host_dialog, Some(HostDialog::Add(_))),
+            "the palette command opens the Add Host form"
+        );
+    });
+
+    cx.simulate_input("vps");
+    view.update_in(cx, |app, window, cx| {
+        let Some(HostDialog::Add(state)) = &app.host_dialog else {
+            panic!("the Add Host form must be open");
+        };
+        state
+            .destination
+            .update(cx, |input, cx| input.set_value("-x", window, cx));
+    });
+    cx.simulate_keystrokes("enter");
+
+    view.read_with(cx, |app, cx| {
+        let Some(HostDialog::Add(state)) = &app.host_dialog else {
+            panic!("an invalid host must keep the form open");
+        };
+        assert_eq!(state.name.read(cx).value(), "vps");
+        assert_eq!(
+            state.error.as_deref(),
+            Some(
+                "invalid ssh destination '-x' (use an ssh alias, user@host, or \
+                 ssh://user@host:port)"
+            )
+        );
+        assert!(app.host.is_none());
+        assert!(app.active.is_some(), "the repository stays open");
+    });
+    assert!(remote::load_hosts().is_empty(), "nothing is saved");
+}
+
+#[gpui::test]
+fn switching_between_host_and_repo_discards_stale_results(cx: &mut TestAppContext) {
+    let fx = Fixture::new();
+    let other = fx.sibling_repo("other");
+    fx.fake_ssh(LOCAL_SSH);
+    let host = fx.host();
+    let (view, cx) = open_app(cx, Some(fx.open()));
+    cx.run_until_parked();
+
+    view.update_in(cx, |app, _window, cx| {
+        app.select_host(host.clone(), cx);
+        app.select_repo(fx.root().to_path_buf(), cx);
+    });
+    cx.run_until_parked();
+
+    view.read_with(cx, |app, _| {
+        assert!(app.host.is_none(), "the scan must not bring the host back");
+        assert_eq!(app.active.as_ref().unwrap().path(), fx.root());
+        assert!(app.rows.iter().any(|r| r.display_name() == "feature-x"));
+        assert!(!app.loading);
+    });
+
+    view.update_in(cx, |app, _window, cx| {
+        app.select_repo(other.clone(), cx);
+        app.select_host(host.clone(), cx);
+    });
+    cx.run_until_parked();
+
+    view.read_with(cx, |app, _| {
+        assert!(app.active.is_none());
+        assert!(
+            app.rows.is_empty(),
+            "the listing for `other` must be dropped"
+        );
+        assert!(
+            !app.loading,
+            "the dropped listing must not leave the spinner on"
+        );
+        let shown = shown_host(app);
+        assert_eq!(shown.host, host);
+        let names: Vec<&str> = shown
+            .repos
+            .iter()
+            .flatten()
+            .map(|r| r.name.as_str())
+            .collect();
+        assert_eq!(names.len(), 2);
+        assert!(
+            names.contains(&"repo") && names.contains(&"other"),
+            "{names:?}"
+        );
+    });
+}
+
+#[gpui::test]
+fn host_remove_selected_deletes_and_rescans(cx: &mut TestAppContext) {
+    let fx = Fixture::new();
+    let a = fx.add_worktree("clean-a");
+    let b = fx.add_worktree("clean-b");
+    fx.fake_ssh(LOCAL_SSH);
+    let (view, cx) = open_app(cx, None);
+    view.update_in(cx, |app, _window, cx| app.select_host(fx.host(), cx));
+    cx.run_until_parked();
+
+    let main = fx.root().to_path_buf();
+    view.update_in(cx, |app, _window, cx| {
+        app.toggle_host_selection(a.clone(), cx);
+        app.toggle_host_selection(b.clone(), cx);
+        // Rows never select main; even if it were selected it is not offered.
+        app.host.as_mut().unwrap().selected.insert(main.clone());
+    });
+    cx.simulate_keystrokes("cmd-backspace");
+
+    view.read_with(cx, |app, _| {
+        assert_eq!(
+            confirm_names(app),
+            BTreeSet::from(["clean-a".to_string(), "clean-b".to_string()])
+        );
+        let Some(HostDialog::Confirm(state)) = &app.host_dialog else {
+            unreachable!();
+        };
+        assert_eq!(state.kind, hosts::ConfirmKind::Remove);
+        assert!(state
+            .groups
+            .iter()
+            .flat_map(|(_, entries)| entries)
+            .all(|(c, size)| !c.delete_branch && size.is_some()));
+    });
+
+    view.update_in(cx, |app, _window, cx| app.confirm_host_dialog(cx));
+    cx.run_until_parked();
+
+    assert!(!a.exists());
+    assert!(!b.exists());
+    assert!(
+        fx.branch_exists("clean-a") && fx.branch_exists("clean-b"),
+        "Remove never deletes branches"
+    );
+    view.read_with(cx, |app, _| {
+        assert!(app.host_dialog.is_none());
+        assert!(app.removing_hosts.is_empty());
+        let shown = shown_host(app);
+        assert!(!shown.scanning);
+        assert_eq!(shown.selected, BTreeSet::from([main.clone()]));
+        assert!(host_worktree(app, "clean-a").is_none());
+        assert!(host_worktree(app, "clean-b").is_none());
+        assert!(host_worktree(app, "feature-x").is_some());
+        let status = app.status.as_ref().unwrap();
+        assert!(!status.error, "{}", status.text);
+        assert!(
+            status
+                .text
+                .starts_with("removed 2 worktrees on box · freed ~"),
+            "{}",
+            status.text
+        );
+    });
+}
+
+#[gpui::test]
+fn host_cleanup_removes_merged_and_skips_dirty_without_force(cx: &mut TestAppContext) {
+    let fx = Fixture::new(); // feature-x is merged and dirty
+    let done = fx.add_worktree("done");
+    let solo = fx.sibling_repo("solo");
+    // Detached from `main`'s tip, then committed into: its HEAD is now a
+    // descendant of `origin/main`, not merged into it. Clean Up must leave
+    // it alone — removing it would strand that commit unreachable.
+    let detached = fx.worktree_path("detached-unmerged");
+    git(
+        fx.root(),
+        &["worktree", "add", "--detach", detached.to_str().unwrap()],
+    );
+    std::fs::write(detached.join("extra.txt"), "extra\n").unwrap();
+    git(&detached, &["add", "."]);
+    git(&detached, &["commit", "-m", "diverge"]);
+    fx.fake_ssh(LOCAL_SSH);
+    let (view, cx) = open_app(cx, None);
+    view.update_in(cx, |app, _window, cx| app.select_host(fx.host(), cx));
+    cx.run_until_parked();
+
+    view.update_in(cx, |app, window, cx| {
+        app.open_host_cleanup(&solo, window, cx)
+    });
+    view.read_with(cx, |app, _| {
+        assert!(app.host_dialog.is_none());
+        let status = app.status.as_ref().unwrap();
+        assert_eq!(status.text, "nothing to clean up in solo");
+        assert!(!status.error);
+    });
+
+    view.update_in(cx, |app, window, cx| {
+        app.open_host_cleanup(fx.root(), window, cx)
+    });
+    view.read_with(cx, |app, _| {
+        let names = confirm_names(app);
+        assert_eq!(
+            names,
+            BTreeSet::from(["done".to_string(), "feature-x".to_string()]),
+            "the unmerged detached worktree must not be a candidate: {names:?}"
+        );
+    });
+
+    view.update_in(cx, |app, _window, cx| app.confirm_host_dialog(cx));
+    cx.run_until_parked();
+
+    assert!(!done.exists());
+    assert!(
+        !fx.branch_exists("done"),
+        "Clean Up deletes merged branches"
+    );
+    assert!(
+        fx.worktree_path("feature-x").is_dir(),
+        "a dirty worktree survives without force"
+    );
+    assert!(fx.branch_exists("feature-x"));
+    assert!(
+        detached.is_dir(),
+        "an unmerged detached worktree survives Clean Up"
+    );
+    view.read_with(cx, |app, _| {
+        assert!(app.host_dialog.is_none());
+        let status = app.status.as_ref().unwrap();
+        assert!(status.error, "{}", status.text);
+        assert!(
+            status.text.starts_with("removed 1 worktree on box"),
+            "{}",
+            status.text
+        );
+        assert!(
+            status.text.contains("failed: feature-x: "),
+            "{}",
+            status.text
+        );
+        assert!(host_worktree(app, "done").is_none());
+        assert!(host_worktree(app, "feature-x").is_some());
+    });
+}
+
+#[gpui::test]
+fn host_view_keys_inert_and_ssh_failure_shown(cx: &mut TestAppContext) {
+    let fx = Fixture::new();
+    fx.fake_ssh(LOCAL_SSH);
+    let (view, cx) = open_app(cx, Some(fx.open()));
+    cx.run_until_parked();
+    view.update_in(cx, |app, _window, cx| app.select_host(fx.host(), cx));
+    cx.run_until_parked();
+
+    cx.simulate_keystrokes("enter down cmd-e cmd-c");
+    view.read_with(cx, |app, _| {
+        assert!(!app.overlay_open(), "no dialog may open");
+        assert!(app.selected.is_none() && app.rows.is_empty());
+        assert!(app.status.is_none());
+        assert!(app.host.is_some());
+    });
+
+    let before = view.read_with(cx, |app, _| app.generation);
+    cx.simulate_keystrokes("cmd-r");
+    assert_eq!(view.read_with(cx, |app, _| app.generation), before + 1);
+    cx.run_until_parked();
+
+    let before = view.read_with(cx, |app, _| app.generation);
+    view.update_in(cx, |app, window, cx| {
+        app.window_active = false;
+        app.on_window_activation(window, cx);
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        view.read_with(cx, |app, _| app.generation),
+        before,
+        "focusing the window never starts a scan"
+    );
+
+    let feature = fx.worktree_path("feature-x");
+    view.update_in(cx, |app, _window, cx| {
+        app.toggle_host_selection(feature.clone(), cx)
+    });
+    cx.simulate_keystrokes("escape");
+    view.read_with(cx, |app, _| {
+        assert!(
+            shown_host(app).selected.is_empty(),
+            "Escape clears the selection"
+        );
+    });
+
+    fx.fake_ssh("echo 'Permission denied (publickey).' >&2\nexit 255");
+    cx.simulate_keystrokes("cmd-r");
+    cx.run_until_parked();
+    view.read_with(cx, |app, _| {
+        let shown = shown_host(app);
+        assert!(!shown.scanning);
+        let error = shown.error.as_deref().expect("the ssh failure is shown");
+        assert!(
+            error.starts_with(
+                "box: Permission denied (publickey). (wtm connects with BatchMode=yes"
+            ),
+            "{error}"
+        );
+        assert_eq!(
+            shown.repos.as_ref().map(Vec::len),
+            Some(1),
+            "the last listing stays"
+        );
+    });
+
+    fx.fake_ssh(LOCAL_SSH);
+    view.update_in(cx, |app, _window, cx| app.scan_host(cx));
+    cx.run_until_parked();
+    view.read_with(cx, |app, _| assert_eq!(shown_host(app).error, None));
+}
+
+#[gpui::test]
+fn host_remove_respects_repo_protected_branches(cx: &mut TestAppContext) {
+    let fx = Fixture::new();
+    std::fs::write(
+        fx.root().join(".worktree.toml"),
+        "[prune]\nprotected_branches = [\"main\", \"keep\"]\n",
+    )
+    .unwrap();
+    let keep = fx.add_worktree("keep");
+    let other = fx.add_worktree("other");
+    fx.fake_ssh(LOCAL_SSH);
+    let (view, cx) = open_app(cx, None);
+    view.update_in(cx, |app, _window, cx| app.select_host(fx.host(), cx));
+    cx.run_until_parked();
+
+    view.update_in(cx, |app, _window, cx| {
+        app.toggle_host_selection(keep.clone(), cx);
+        app.toggle_host_selection(other.clone(), cx);
+    });
+    cx.simulate_keystrokes("cmd-backspace");
+
+    view.read_with(cx, |app, _| {
+        assert_eq!(
+            confirm_names(app),
+            BTreeSet::from(["other".to_string()]),
+            "the repository's own .worktree.toml protects 'keep', overriding the built-in default list"
+        );
+    });
+}
+
+/// Regression test for a race where a host removal's own `busy` flag lived
+/// on `HostView`: leaving the host for a repository and coming back rebuilds
+/// `HostView` from scratch, so a fresh `busy = false` let a second removal
+/// start while the first was still running on the host. The fix moves the
+/// flag to `WtmApp::removing_hosts`, keyed by host name, which survives the
+/// `HostView` being dropped and recreated.
+///
+/// Deliberately does not use a sleeping fake ssh to create the race: a
+/// `cx.spawn` future's `this.update(...)` continuation cannot run until the
+/// test dispatcher is driven (`run_until_parked`/keystrokes that pump it),
+/// regardless of how fast the real ssh subprocess finishes on its own
+/// thread. Simply never parking between starting the removal and probing
+/// `removing_hosts` is enough to observe it "still running", deterministically.
+#[gpui::test]
+fn host_removal_stays_busy_after_leaving_and_returning(cx: &mut TestAppContext) {
+    let fx = Fixture::new();
+    let a = fx.add_worktree("clean-a");
+    fx.fake_ssh(LOCAL_SSH);
+    let (view, cx) = open_app(cx, Some(fx.open()));
+    cx.run_until_parked();
+
+    view.update_in(cx, |app, _window, cx| app.select_host(fx.host(), cx));
+    cx.run_until_parked();
+
+    view.update_in(cx, |app, _window, cx| {
+        app.toggle_host_selection(a.clone(), cx);
+    });
+    cx.simulate_keystrokes("cmd-backspace");
+    view.read_with(cx, |app, _| {
+        assert!(matches!(app.host_dialog, Some(HostDialog::Confirm(_))));
+    });
+
+    // Start the removal, but never park: its completion callback cannot run
+    // until the executor is driven, so the app stays exactly as
+    // `confirm_host_dialog` leaves it synchronously.
+    view.update_in(cx, |app, _window, cx| app.confirm_host_dialog(cx));
+    view.read_with(cx, |app, _| {
+        assert!(app.removing_hosts.contains("box"));
+    });
+
+    // Leave the host for the repository — this drops the `HostView` that
+    // used to carry `busy` — and come back to a brand new one.
+    view.update_in(cx, |app, _window, cx| {
+        app.select_repo(fx.root().to_path_buf(), cx);
+        app.select_host(fx.host(), cx);
+        app.toggle_host_selection(a.clone(), cx);
+    });
+
+    view.update_in(cx, |app, window, cx| app.open_host_remove(window, cx));
+    view.read_with(cx, |app, _| {
+        assert!(
+            app.host_dialog.is_none(),
+            "a second removal must be refused while the host is still in removing_hosts"
+        );
+        assert!(app.removing_hosts.contains("box"));
+    });
+
+    // Now let the first removal actually finish.
+    cx.run_until_parked();
+    view.read_with(cx, |app, _| {
+        assert!(
+            app.removing_hosts.is_empty(),
+            "the finished removal must clear its name from the set"
         );
     });
 }

@@ -80,6 +80,10 @@ impl WtmApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.host.is_some() {
+            self.open_host_remove(window, cx);
+            return;
+        }
         let indices = self.selected_indices();
         if indices.len() > 1 {
             self.open_bulk_remove_dialog(indices, window, cx);
@@ -201,11 +205,13 @@ impl WtmApp {
         // explanation of what that means and why it's the same tradeoff the
         // create dialog already makes for its own setup commands.
         let closed_run_command = self.run_command.take().is_some();
+        let closed_host_dialog = self.host_dialog.take().is_some();
         if closed_dialog
             || closed_settings
             || closed_palette
             || closed_bulk_remove
             || closed_run_command
+            || closed_host_dialog
         {
             window.focus(&self.focus_handle);
             cx.notify();
@@ -214,6 +220,12 @@ impl WtmApp {
         if !self.multi_selected.is_empty() {
             self.multi_selected.clear();
             cx.notify();
+        }
+        if let Some(view) = &mut self.host {
+            if !view.selected.is_empty() {
+                view.selected.clear();
+                cx.notify();
+            }
         }
     }
 
@@ -1087,6 +1099,7 @@ impl WtmApp {
             palette::CommandId::Settings => self.on_open_settings(&OpenSettings, window, cx),
             palette::CommandId::FetchRemote => self.on_fetch_remote(&FetchRemote, window, cx),
             palette::CommandId::AddRepository => self.on_add_repository(&AddRepository, window, cx),
+            palette::CommandId::AddHost => self.open_add_host_dialog(window, cx),
             palette::CommandId::RemoveMissingRepos => self.forget_missing_repos(cx),
             palette::CommandId::ShowDetailsTab => {
                 self.on_show_details_tab(&ShowDetailsTab, window, cx)

@@ -36,6 +36,8 @@ impl WtmApp {
         self.dialog = None;
         self.context_menu.close();
         self.context_menu_target = None;
+        self.host = None;
+        self.host_dialog = None;
         if let Err(e) = registry::remember(repo.path(), repo.name()) {
             // A registry that cannot be written is a papercut, not a failure:
             // the session still works, so say so and carry on.
@@ -59,6 +61,20 @@ impl WtmApp {
         // worktree's commits under the new repo's name for a frame. It also
         // clears the Files/Changes tabs' data the same way — see
         // `load_panel_data`.
+        self.load_details_for_selection(cx);
+    }
+
+    /// Close the active repository: its rows, selection, and detail data no
+    /// longer describe anything on screen. Shared by forgetting a missing
+    /// repository and by switching to a remote host.
+    pub(super) fn clear_active_repo(&mut self, cx: &mut Context<Self>) {
+        self.active = None;
+        self.rows.clear();
+        self.selected = None;
+        self.multi_selected.clear();
+        self.file_trees.clear();
+        self.pending_select = None;
+        self.sync_watcher(cx);
         self.load_details_for_selection(cx);
     }
 

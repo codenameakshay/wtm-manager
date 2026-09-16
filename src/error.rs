@@ -53,6 +53,9 @@ pub enum Error {
     #[error("setup step failed: {0} (the worktree was created successfully; fix the issue and re-run the setup commands manually, or remove the worktree with `wtm rm`)")]
     Setup(String),
 
+    #[error("{host}: {message}")]
+    Remote { host: String, message: String },
+
     #[error(transparent)]
     Git2(#[from] git2::Error),
 

@@ -740,7 +740,7 @@ impl WtmApp {
 /// (`crate::text_input`). Returns a concrete `Div`, not `impl IntoElement`,
 /// so callers with a conditional trailing child (the Base field's floating
 /// ref picker) can keep chaining `.when(..)`/`.child(..)` on the result.
-fn labeled_field(label: &str, input: Entity<TextInput>, theme: &Theme) -> Div {
+pub(super) fn labeled_field(label: &str, input: Entity<TextInput>, theme: &Theme) -> Div {
     div()
         .flex()
         .flex_col()
@@ -756,7 +756,7 @@ fn labeled_field(label: &str, input: Entity<TextInput>, theme: &Theme) -> Div {
 
 /// A warning-colored icon-plus-text line for a dialog body — used by both
 /// the single-target and bulk Remove dialogs to flag uncommitted changes.
-fn uncommitted_changes_warning(text: &'static str, theme: &Theme) -> impl IntoElement {
+pub(super) fn uncommitted_changes_warning(text: &'static str, theme: &Theme) -> impl IntoElement {
     div()
         .flex()
         .items_center()
@@ -764,6 +764,8 @@ fn uncommitted_changes_warning(text: &'static str, theme: &Theme) -> impl IntoEl
         .child(ui::icon(icons::WARNING, 12.0, theme.warning))
         .child(
             div()
+                .flex_1()
+                .min_w_0()
                 .text_size(px(TEXT_SM))
                 .text_color(theme.warning)
                 .child(text),
@@ -810,7 +812,7 @@ fn progress_line(done: usize, total: usize, theme: &Theme) -> impl IntoElement {
         .child(format!("Removing {done} of {total}…"))
 }
 
-fn destructive_count_line(count: usize, verb: &str, theme: &Theme) -> impl IntoElement {
+pub(super) fn destructive_count_line(count: usize, verb: &str, theme: &Theme) -> impl IntoElement {
     div()
         .text_size(px(TEXT_SM))
         .text_color(theme.text_muted)

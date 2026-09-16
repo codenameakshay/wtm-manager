@@ -17,6 +17,7 @@ pub mod gitcmd;
 pub mod model;
 pub mod output;
 pub mod registry;
+pub mod remote;
 pub mod repo;
 pub mod setup;
 pub mod template;

@@ -6,6 +6,7 @@ pub mod app;
 pub mod completions;
 pub mod config_cmd;
 pub mod fetch;
+pub mod host;
 pub mod init;
 pub mod list;
 pub mod open;
@@ -42,6 +43,7 @@ pub fn dispatch(cli: &Cli) -> Result<()> {
         Command::Init(args) => init::run(args, &cli.global),
         Command::Completions(args) => completions::run(args, &cli.global),
         Command::Config(args) => config_cmd::run(args, &cli.global),
+        Command::Host(args) => host::run(args, &cli.global),
     }
 }
 

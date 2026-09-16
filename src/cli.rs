@@ -96,6 +96,10 @@ pub enum Command {
 
     /// Inspect or scaffold wtm configuration files.
     Config(ConfigArgs),
+
+    /// Manage remote hosts over SSH: list their repositories and worktrees
+    /// with disk usage, and remove or prune worktrees.
+    Host(HostArgs),
 }
 
 /// Arguments for `wtm add`.
@@ -309,4 +313,101 @@ pub enum ConfigCommand {
     Path,
     /// Write a commented sample `.worktree.toml` at the repository root.
     Init,
+}
+
+/// Arguments for `wtm host`.
+#[derive(Debug, Clone, Args)]
+pub struct HostArgs {
+    #[command(subcommand)]
+    pub command: HostCommand,
+}
+
+/// Subcommands of `wtm host`.
+#[derive(Debug, Clone, Subcommand)]
+pub enum HostCommand {
+    /// Save a remote host to manage over ssh.
+    Add {
+        /// Unique label, used by `wtm host <name>` and shown in the app.
+        name: String,
+        /// What ssh connects to: an ssh alias, user@host, or
+        /// ssh://user@host:port.
+        destination: String,
+        /// Directory to search for repositories (repeatable; default: the
+        /// remote home directory).
+        #[arg(long = "root", value_name = "PATH")]
+        roots: Vec<String>,
+    },
+
+    /// List saved hosts.
+    #[command(visible_alias = "ls")]
+    List {
+        /// Emit the host list as pretty-printed JSON.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Forget a saved host. Nothing on the host itself is touched.
+    Forget {
+        /// Host to forget.
+        name: String,
+    },
+
+    /// Scan a host for repositories and worktrees, with disk usage.
+    Scan {
+        /// Host to scan.
+        name: String,
+        /// Emit the scan as pretty-printed JSON.
+        #[arg(long)]
+        json: bool,
+        /// Skip disk-usage computation (faster).
+        #[arg(long)]
+        no_size: bool,
+    },
+
+    /// Remove a worktree on a host (and optionally its branch).
+    #[command(visible_alias = "remove")]
+    Rm {
+        /// Host to remove from.
+        name: String,
+        /// Worktree path on the host.
+        #[arg(value_name = "WORKTREE_PATH")]
+        path: PathBuf,
+        /// Remove even if the worktree has uncommitted changes.
+        #[arg(long)]
+        force: bool,
+        /// Also delete the worktree's branch after removal.
+        #[arg(long)]
+        with_branch: bool,
+        /// Print one JSON object on stdout.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Remove stale worktrees on a host: missing directories, and
+    /// optionally merged or upstream-gone branches.
+    Prune {
+        /// Host to prune.
+        name: String,
+        /// Also prune worktrees whose branch is merged into the base ref.
+        #[arg(long)]
+        merged: bool,
+        /// Also prune worktrees whose branch's upstream no longer exists.
+        #[arg(long)]
+        gone: bool,
+        /// Also prune linked worktrees whose HEAD is detached.
+        #[arg(long)]
+        detached: bool,
+        /// Only prune this repository (its main worktree path on the host).
+        #[arg(long = "in", value_name = "REMOTE_PATH")]
+        in_repo: Option<PathBuf>,
+        /// Show what would be pruned without touching anything.
+        #[arg(long)]
+        dry_run: bool,
+        /// Prune even worktrees with uncommitted changes.
+        #[arg(long)]
+        force: bool,
+        /// Print one JSON object on stdout.
+        #[arg(long)]
+        json: bool,
+    },
 }

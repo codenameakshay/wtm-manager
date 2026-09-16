@@ -419,11 +419,12 @@ fn line2_layout(
 /// One worktree card. Returns a stateful element so the caller can attach
 /// click handling without this module knowing about the app's state.
 ///
-/// `age`, when known, is `data::relative_age` of the worktree's HEAD
-/// commit — shown muted at the far right of the meta line, right of the
-/// existing path/status/HEAD info. `None` (unknown activity: still
-/// loading, or no resolvable HEAD) renders nothing rather than a
-/// placeholder — an empty space reads better than a guess.
+/// `trailing` is shown muted at the far right of the meta line, right of
+/// the existing path/status/HEAD info: the local list passes
+/// `data::relative_age` of the worktree's HEAD commit, a host's list its
+/// disk usage. `None` (still loading, no resolvable HEAD, or not sized)
+/// renders nothing rather than a placeholder — an empty space reads better
+/// than a guess.
 ///
 /// `card_width` is this card's own live-computed width — see
 /// `app::chrome::WtmApp::worktree_row_card_width`'s doc for the full
@@ -441,7 +442,7 @@ pub fn render_row(
     row_ix: usize,
     selected: bool,
     awaiting_status: bool,
-    age: Option<String>,
+    trailing: Option<String>,
     card_width: f32,
     theme: &Theme,
     cx: &App,
@@ -473,7 +474,7 @@ pub fn render_row(
 
     let specs = pill_specs(info, awaiting_status, &theme);
     let sha = info.head.as_deref();
-    let layout = line2_layout(inner_width, &specs, sha, age.as_deref());
+    let layout = line2_layout(inner_width, &specs, sha, trailing.as_deref());
     let path_text = display_path(info, layout.path_max_chars);
     let path_box_width = path_text.chars().count() as f32 * ui::CHAR_WIDTH_APPROX;
 
@@ -579,7 +580,7 @@ pub fn render_row(
                         div()
                             .flex_none()
                             .text_color(theme.text_ghost)
-                            .child(age.as_deref().unwrap_or("").to_string()),
+                            .child(trailing.as_deref().unwrap_or("").to_string()),
                     )
                 }),
         )

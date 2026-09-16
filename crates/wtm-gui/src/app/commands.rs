@@ -385,6 +385,7 @@ impl WtmApp {
         match target {
             MenuTarget::Worktree(path) => self.handle_worktree_menu_action(&path, id, window, cx),
             MenuTarget::Repo(path) => self.handle_repo_menu_action(&path, id, cx),
+            MenuTarget::Host(name) => self.handle_host_menu_action(&name, id, cx),
             MenuTarget::EmptySpace => self.handle_empty_space_menu_action(id, window, cx),
         }
     }
@@ -498,12 +499,7 @@ impl WtmApp {
                     .as_ref()
                     .is_some_and(|repo| removed.iter().any(|entry| entry.path == repo.path()));
                 if active_removed {
-                    self.active = None;
-                    self.rows.clear();
-                    self.selected = None;
-                    self.multi_selected.clear();
-                    self.file_trees.clear();
-                    self.load_details_for_selection(cx);
+                    self.clear_active_repo(cx);
                 }
                 let names: Vec<&str> = removed.iter().map(|e| e.name.as_str()).collect();
                 self.set_info(format!("removed {} from the sidebar", names.join(", ")), cx);
@@ -648,7 +644,11 @@ impl WtmApp {
     }
 
     pub(super) fn on_reload(&mut self, _: &Reload, _window: &mut Window, cx: &mut Context<Self>) {
-        self.reload(cx);
+        if self.host.is_some() {
+            self.scan_host(cx);
+        } else {
+            self.reload(cx);
+        }
     }
 
     pub(super) fn on_open_selected(
