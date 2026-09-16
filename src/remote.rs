@@ -503,6 +503,11 @@ fn parse_scan(output: &str) -> Vec<RemoteRepo> {
         }
     }
     for repo in &mut repos {
+        // git reports symlink-resolved paths; use them so the repository
+        // and its worktrees agree (macOS `/tmp` is `/private/tmp`).
+        if let Some(main) = repo.worktrees.iter().find(|w| w.info.is_main) {
+            repo.path = main.info.path.clone();
+        }
         subtract_nested_sizes(repo);
     }
     repos
@@ -719,6 +724,7 @@ mod tests {
         let repo = &repos[0];
         assert_eq!(repo.name, "app");
         assert_eq!(repo.path, main);
+        assert_eq!(repo.path, repo.worktrees[0].info.path);
         assert_eq!(repo.worktrees.len(), 5);
 
         let main_wt = &repo.worktrees[0];
