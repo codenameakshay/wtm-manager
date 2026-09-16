@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Hosts with a `RemoteForward` in the ssh config scan again.** wtm
+  inherited the forward, so a scan failed with "remote port forwarding
+  failed" whenever another session already held the port. When the port
+  was free, wtm's shared connection could hold it for a minute. wtm now
+  passes `ClearAllForwardings=yes` (and `-a -x`). The "run ssh once" hint
+  now appears only for login and host-key failures.
+
 ## [0.11.0] - 2026-09-16
 
 ### Added
