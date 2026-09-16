@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.11.0] - 2026-09-16
 
 ### Added
 
@@ -24,6 +24,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   status. Remove selected worktrees (`⌘⌫`) or use a repository's Clean Up
   button to free space; a confirmation shows what goes and what it frees.
   The app never connects over ssh at launch or on window focus.
+
+### Security
+
+- **rustls 0.23.45.** The desktop app's HTTP client (through gpui) used
+  rustls 0.23.43, which is affected by RUSTSEC-2026-0285: it accepted TLS
+  1.3 handshake messages across encryption-level boundaries. The lockfile
+  now uses the patched release.
 
 ## [0.10.0] - 2026-09-08
 
