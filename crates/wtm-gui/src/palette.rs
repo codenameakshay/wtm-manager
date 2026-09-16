@@ -204,6 +204,7 @@ pub enum CommandId {
     Settings,
     FetchRemote,
     AddRepository,
+    AddHost,
     RemoveMissingRepos,
     ShowDetailsTab,
     ShowFilesTab,
@@ -310,6 +311,12 @@ pub const COMMANDS: &[CommandSpec] = &[
         id: CommandId::AddRepository,
         label: "Add Repository…",
         shortcut: "⌘⇧O",
+        icon: icons::PLUS,
+    },
+    CommandSpec {
+        id: CommandId::AddHost,
+        label: "Add Host…",
+        shortcut: "",
         icon: icons::PLUS,
     },
     CommandSpec {

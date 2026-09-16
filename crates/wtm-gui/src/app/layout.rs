@@ -117,7 +117,9 @@ pub fn wide_tabs_fit(window_width: f32) -> bool {
     window_width >= WIDE_TABS_BREAKPOINT
 }
 
-/// The footer's hint row (`chrome::render_footer_hints`), by priority.
+/// The footer's hint row (`chrome::render_footer_hints`), by priority. The
+/// tiers below name the worktree list's hints; a host's pane shows its own,
+/// shorter, set at the same tiers.
 /// `↑↓ select` names the list's single most fundamental interaction and is
 /// kept down to the narrowest width the footer ever actually renders at;
 /// `⌘R reload` is dropped first because it duplicates the titlebar's own

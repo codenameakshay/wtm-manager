@@ -18,12 +18,12 @@ use crate::motion;
 /// [`WtmApp::worktree_row_card_width`] can reuse the exact number
 /// `render_list`'s `max_w(px(..))` paints, instead of a second literal that
 /// could silently drift from it.
-const LIST_MAX_WIDTH: f32 = 1040.0;
+pub(super) const LIST_MAX_WIDTH: f32 = 1040.0;
 
 /// [`WtmApp::render_row_checkbox`]'s own fixed square size, named so
 /// [`WtmApp::worktree_row_card_width`] can reserve the exact same width
 /// instead of a second, independently-typed `15.0`.
-const ROW_CHECKBOX_SIZE: f32 = 15.0;
+pub(super) const ROW_CHECKBOX_SIZE: f32 = 15.0;
 
 impl WtmApp {
     /// The sidebar: window controls clearance, actions, then the repo list.
@@ -92,10 +92,13 @@ impl WtmApp {
             )
             .child(div().h(px(theme::SPACE_12)).flex_none())
             .child(
+                // Scrolls so the hosts below a long repository list stay
+                // reachable.
                 div()
+                    .id("sidebar-list")
                     .flex_1()
                     .min_h_0()
-                    .overflow_hidden()
+                    .overflow_y_scroll()
                     .flex()
                     .flex_col()
                     .px(px(theme::SPACE_8))
@@ -121,7 +124,8 @@ impl WtmApp {
                                         .child("No repositories yet."),
                                 )
                             }),
-                    ),
+                    )
+                    .child(self.render_host_section(&theme, cx)),
             )
             .child(
                 // Height is left to derive from the button plus this
@@ -247,11 +251,11 @@ impl WtmApp {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let theme = self.chrome_theme(cx);
-        let title = self
-            .active
-            .as_ref()
-            .map(|repo| repo.name().to_string())
-            .unwrap_or_else(|| "wtm".to_string());
+        let title = match (&self.host, &self.active) {
+            (Some(view), _) => view.host.name.clone(),
+            (None, Some(repo)) => repo.name().to_string(),
+            (None, None) => "wtm".to_string(),
+        };
         // Whether *this* window currently has client-side decorations —
         // not simply "is this Linux": an X11 window manager without
         // decoration support keeps `Decorations::Server` regardless of what
@@ -386,7 +390,8 @@ impl WtmApp {
     /// (`theme::ICON_BUTTON_SIZE`, `RADIUS_CONTROL`, `element_hover` hover,
     /// `press_feedback`) by hand instead of through them.
     fn render_reload_button(&self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
-        let glyph: AnyElement = if self.loading {
+        let spinning = self.loading || self.host.as_ref().is_some_and(|view| view.scanning);
+        let glyph: AnyElement = if spinning {
             let icon_svg = gpui::svg()
                 .path(icons::REFRESH)
                 .size(px(14.0))
@@ -456,7 +461,7 @@ impl WtmApp {
     /// already use — see its own doc for why an approximation is the only
     /// option (gpui has no API to measure real shaped text outside of an
     /// actual layout pass).
-    fn worktree_row_card_width(&self, window: &Window) -> f32 {
+    pub(super) fn worktree_row_card_width(&self, window: &Window) -> f32 {
         let content_column = self.content_column(window).min(LIST_MAX_WIDTH);
         content_column
             - theme::SPACE_8 * 2.0 // the list's own `.px(px(theme::SPACE_8))`
@@ -699,7 +704,12 @@ impl WtmApp {
                             ),
                     )
                     .when(multi_count > 1, |this| {
-                        this.child(self.render_selection_bar(multi_count, &theme, cx))
+                        this.child(self.render_selection_bar(
+                            multi_count,
+                            "⇧-click extends · ⌘-click toggles · ⎋ clears",
+                            &theme,
+                            cx,
+                        ))
                     })
                     .child({
                         // `.relative()` wrapper, sibling (not ancestor) of
@@ -950,9 +960,10 @@ impl WtmApp {
     /// or the new row checkboxes, just built. The bulk-remove path itself
     /// already exists (`RemoveSelected` already branches on a multi-row
     /// selection); this only wires a visible button to it.
-    fn render_selection_bar(
+    pub(super) fn render_selection_bar(
         &self,
         count: usize,
+        hint: &'static str,
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
@@ -979,7 +990,7 @@ impl WtmApp {
                             .truncate()
                             .text_size(px(ui::TEXT_XS))
                             .text_color(theme.text_ghost)
-                            .child("⇧-click extends · ⌘-click toggles · ⎋ clears"),
+                            .child(hint),
                     )
                     .child(
                         ui::button("selection-clear", "Clear", ButtonVariant::Secondary, theme)
@@ -1052,7 +1063,7 @@ impl WtmApp {
                             })
                             .child(message.text.clone())
                             .into_any_element(),
-                        None => render_footer_hints(&theme, content_column),
+                        None => render_footer_hints(self.host.is_some(), &theme, content_column),
                     }),
             )
             .when_some(self.active.as_ref(), |this, repo| {
@@ -1592,7 +1603,7 @@ impl WtmApp {
 /// it isn't a clean constant the way `LABEL_WIDTH`/`COMMIT_SHA_WIDTH` are,
 /// and an approximate budget already comfortably fits this narrower,
 /// simpler row.
-const SIDEBAR_PATH_MAX_CHARS: usize = 28;
+pub(super) const SIDEBAR_PATH_MAX_CHARS: usize = 28;
 
 /// Where a repository lives, home-relative and without the repo's own
 /// directory name — the sidebar already shows that on the line above, and
@@ -1689,40 +1700,37 @@ fn window_control_button(id: &'static str, theme: &Theme) -> Stateful<Div> {
 /// value keybindings as [`ui::kbd`] chips rather than plain text, so a
 /// shortcut named in the footer looks like the same shortcut everywhere
 /// else in the app instead of a bare string.
-fn render_footer_hints(theme: &Theme, content_column: f32) -> AnyElement {
+fn render_footer_hints(host_shown: bool, theme: &Theme, content_column: f32) -> AnyElement {
     // Every hint here is a short, fixed, known-at-compile-time string, so
     // rather than shrinking/truncating one to fit (gpui 0.2.2's
     // text-measurement caching bug makes that collapse to 2-3 characters
     // with no ellipsis — see `detail_panel::LABEL_WIDTH`), this drops
     // whole hints by priority (`layout::FooterHints`) once the live
     // content column reports there isn't room for all of them.
-    let row = div()
+    const LIST_HINTS: [(&str, &str); 3] =
+        [("↑↓", "select"), ("⏎", "open in editor"), ("⌘R", "reload")];
+    // A host's rows are selected by clicking; arrows and Enter do nothing.
+    const HOST_HINTS: [(&str, &str); 3] = [("⌘⌫", "remove"), ("⌘R", "rescan"), ("⎋", "clear")];
+    use layout::FooterHints;
+    let shown = match FooterHints::for_content_column(content_column) {
+        FooterHints::All => 3,
+        FooterHints::Core => 2,
+        FooterHints::Minimal => 1,
+        FooterHints::None => return div().into_any_element(),
+    };
+    let hints = if host_shown { &HOST_HINTS } else { &LIST_HINTS };
+    div()
         .flex()
         .items_center()
         .gap(px(theme::SPACE_6))
-        .text_color(theme.text_ghost);
-    use layout::FooterHints;
-    match FooterHints::for_content_column(content_column) {
-        FooterHints::All => row
-            .child(ui::kbd("↑↓", theme))
-            .child("select")
-            .child(ui::kbd("⏎", theme))
-            .child("open in editor")
-            .child(ui::kbd("⌘R", theme))
-            .child("reload")
-            .into_any_element(),
-        FooterHints::Core => row
-            .child(ui::kbd("↑↓", theme))
-            .child("select")
-            .child(ui::kbd("⏎", theme))
-            .child("open in editor")
-            .into_any_element(),
-        FooterHints::Minimal => row
-            .child(ui::kbd("↑↓", theme))
-            .child("select")
-            .into_any_element(),
-        FooterHints::None => div().into_any_element(),
-    }
+        .text_color(theme.text_ghost)
+        .children(hints[..shown].iter().flat_map(|&(key, label)| {
+            [
+                ui::kbd(key, theme).into_any_element(),
+                label.into_any_element(),
+            ]
+        }))
+        .into_any_element()
 }
 
 #[cfg(test)]

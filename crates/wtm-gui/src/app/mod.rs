@@ -15,6 +15,7 @@ mod chrome;
 mod commands;
 mod dialog_actions;
 mod dialog_forms;
+mod hosts;
 #[cfg(test)]
 mod integration_tests;
 mod layout;
@@ -35,6 +36,7 @@ use gpui::{
 use wtm::commands::prune::{PruneCandidate, PruneReport};
 use wtm::model::WorktreeInfo;
 use wtm::registry::{self, RepoEntry};
+use wtm::remote::{self, Host};
 use wtm::setup::SetupEvent;
 use wtm::worktree::WorktreeDetails;
 
@@ -58,6 +60,7 @@ use crate::ui::{self, ButtonVariant};
 use crate::watcher::RepoWatcher;
 use crate::window_frame;
 use crate::worktree_list::{self, SortMode};
+use hosts::{HostDialog, HostView};
 
 actions!(
     wtm,
@@ -130,6 +133,8 @@ actions!(
 enum MenuTarget {
     Worktree(PathBuf),
     Repo(PathBuf),
+    /// A sidebar host row, by name.
+    Host(String),
     /// Right-clicked the list's own background rather than a row — see
     /// `commands::open_empty_space_context_menu`.
     EmptySpace,
@@ -346,6 +351,14 @@ pub struct WtmApp {
     /// own — see that module's doc — so this lives here like every other
     /// overlay's scroll handle).
     settings_scroll: ScrollHandle,
+    /// Saved remote hosts, in the order they were added.
+    hosts: Vec<Host>,
+    /// The remote host shown in place of the worktree list. Mutually
+    /// exclusive with `active`: selecting either clears the other.
+    host: Option<HostView>,
+    /// The Add Host form or a host removal confirmation, mutually exclusive
+    /// with the other overlays like `run_command`.
+    host_dialog: Option<HostDialog>,
 }
 
 /// Sort registry entries into the order the sidebar displays them in:
@@ -465,6 +478,9 @@ impl WtmApp {
             files_tree_scroll: ScrollHandle::new(),
             files_diff_scroll: ScrollHandle::new(),
             settings_scroll: ScrollHandle::new(),
+            hosts: remote::load_hosts(),
+            host: None,
+            host_dialog: None,
         };
 
         if let Some(repo) = initial {
@@ -527,6 +543,7 @@ impl WtmApp {
             || self.palette.is_some()
             || self.bulk_remove.is_some()
             || self.run_command.is_some()
+            || self.host_dialog.is_some()
     }
 
     /// `Theme::of(cx)` for the background shell specifically — the
@@ -663,6 +680,8 @@ impl Render for WtmApp {
             Some(self.render_bulk_remove_dialog(&theme, cx))
         } else if self.run_command.is_some() {
             Some(self.render_run_command_dialog(&theme, cx))
+        } else if self.host_dialog.is_some() {
+            Some(self.render_host_dialog(&theme, cx))
         } else {
             self.render_dialog(cx)
         };
@@ -721,7 +740,11 @@ impl Render for WtmApp {
                     .flex_col()
                     .bg(theme.bg)
                     .child(self.render_titlebar(window, cx))
-                    .child(self.render_list(cx))
+                    .child(if self.host.is_some() {
+                        self.render_host_pane(window, cx)
+                    } else {
+                        self.render_list(cx).into_any_element()
+                    })
                     .child(self.render_footer(window, cx)),
             )
             .child(self.render_detail_panel(window, cx))
