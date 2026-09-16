@@ -242,6 +242,74 @@ no URL git recognizes. There's no fixed keyboard shortcut for it, since
 which worktree it would act on depends on the current selection — it's
 reachable from the palette and every row's context menu either way.
 
+## Remote hosts
+
+The sidebar's **Hosts** section lists machines the app reaches over SSH.
+It shows the same `hosts.json` that `wtm host` reads and writes
+(`src/remote.rs`), so a host added in either place shows up in both.
+
+**Adding a host.** **Add Host…** (under the host list, or in the command
+palette) asks for three things:
+
+- **Name.** A label with no spaces.
+- **SSH destination.** An `~/.ssh/config` alias, `user@host`, or
+  `ssh://user@host:port`.
+- **Roots.** Comma-separated directories to search. Empty means the
+  remote home directory.
+
+wtm runs the system `ssh` with `BatchMode=yes`, so it never asks for a
+password. Key or agent login must work, and the host key must already be
+in `known_hosts`. Run `ssh <destination>` in a terminal once before you
+add the host.
+
+**The host view.** Selecting a host closes the open repository and shows
+the host in place of the worktree list. Nothing else stays live: no
+watcher, no detail panel, and no ssh call when the window gets focus.
+The app never connects at launch either. A scan is one `ssh <destination>
+sh -s` call. It pipes a POSIX shell script that runs `git` and `du` on the
+host and prints records for the app to parse, so nothing is installed
+there. The scan runs in two passes:
+
+1. List the repositories and their worktree status. This takes a few
+   seconds on a real host.
+2. Add the `du` sizes. This can take tens of seconds.
+
+A rescan keeps the previous sizes on screen until new ones arrive, so the
+order does not jump. Repositories are sorted by total size, biggest
+first. Inside each one, the main worktree comes first and the linked
+worktrees follow by size. A main worktree's size includes `.git` but not
+linked worktrees nested inside it, such as `.claude/worktrees/*`. Status
+pills mean the same as in the local list. One difference: the host's
+`.worktree.toml` is not read, so merged is checked against `origin/HEAD`,
+`origin/main`, `origin/master`, then `HEAD`. ⌘R and the **Rescan** button
+scan again. A failed scan shows ssh's own message with a **Retry**
+button.
+
+**Freeing space.** Two actions remove worktrees. Both run on the
+background executor, and both end with one confirmation that lists every
+worktree, how much space it frees, and a **Force** toggle when any
+worktree has uncommitted changes:
+
+- **Remove.** Click rows to select them, then press ⌘⌫ or use the
+  selection bar. The main worktree cannot be selected, and protected
+  branches are skipped. Branches are kept.
+- **Clean Up.** This button is on each repository that has linked
+  worktrees. It selects what `wtm prune --merged --gone --detached` would,
+  and it deletes the branches of merged and upstream-gone worktrees.
+
+Removal always goes through `git worktree remove` and then
+`git worktree prune`. Without Force, git refuses a dirty worktree. The
+footer then reports it as a failure, together with how many worktrees
+were removed and about how much space was freed.
+
+**Host context menu.** Right-click a host for **Rescan**, **Copy
+Destination**, or **Forget Host**. Right-clicking does not select the
+host. Forget only removes the saved entry and never touches the host.
+
+<p align="center">
+  <img src="../assets/app-hosts-cleanup.png" alt="The Clean Up confirmation over a host's repository list: three merged or detached worktrees to remove, a warning that one has uncommitted changes with a Force toggle, and a line saying it frees about 395 MB" width="840">
+</p>
+
 ## Command palette
 
 ⌘K opens a fuzzy-search overlay over both the open repository's worktrees
@@ -366,7 +434,7 @@ registry entry, the same guarantee as the sidebar's own row menu above.
 
 ## Where its state lives
 
-Two files, next to the CLI's own `~/.config/wtm/config.toml` (same
+Three files, next to the CLI's own `~/.config/wtm/config.toml` (same
 `$WTM_CONFIG_DIR`/`$XDG_CONFIG_HOME` overrides):
 
 - `~/.config/wtm/repos.json` — the sidebar registry (`src/registry.rs`):
@@ -375,12 +443,14 @@ Two files, next to the CLI's own `~/.config/wtm/config.toml` (same
   appearance, `terminal`, reduce-motion, sort mode, recent commands,
   sidebar/detail-panel visibility, window frame, and last-opened
   repository path.
+- `~/.config/wtm/hosts.json` — saved remote hosts (`src/remote.rs`): each
+  host's name, SSH destination, and roots. `wtm host` shares this file.
 
-Both use the same persistence pattern: an atomic write (temp file, then
+All three use the same persistence pattern: an atomic write (temp file, then
 rename) and a schema version, so a crash mid-write can't truncate the file
 and a file from a newer build of the app is ignored wholesale rather than
-partially trusted. Neither file is read by the CLI — they exist purely for
-the app's own sidebar and window state.
+partially trusted. The CLI does not read `repos.json` or `gui.json`; they
+exist only for the app's own sidebar and window state.
 
 ## Testing
 
@@ -398,7 +468,10 @@ detail panel's Files/Changes tabs, adding a repository, sort-mode changes
 (including that selection survives a re-sort by path, not index), Fetch
 (its in-flight guard and a failure when offline), the Run Command dialog
 (a successful run, a failing one presented as a completed run rather than
-an error, and recent-command suggestions), and Escape's layered
+an error, and recent-command suggestions), remote hosts (adding one,
+scanning it, removing and cleaning up its worktrees, switching between a
+host and a repository, and an ssh failure, with `$WTM_SSH` pointing at a
+script that runs the host script locally), and Escape's layered
 close/collapse behavior.
 
 Two things are deliberately not covered, and the suite says so rather than

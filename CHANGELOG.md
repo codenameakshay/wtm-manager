@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`wtm host` manages remote repositories and worktrees over ssh.** `wtm
+  host add` saves a destination and optional root directories; `wtm host
+  scan` lists what's there with disk usage; `wtm host rm` and `wtm host
+  prune` remove worktrees (optionally their branch, or merged/gone/detached
+  ones in bulk) — all with `--json`. Nothing is installed on the host: each
+  operation is one `ssh <destination> sh -s` round trip running plain `git`
+  and `du`, so the host only needs `git`, a POSIX `sh`, and a working key-
+  or agent-based login. Status and removal follow the same rules as `wtm
+  list`/`wtm prune`.
+- **Remote hosts in the desktop app.** A Hosts section in the sidebar
+  saves SSH hosts to the same `hosts.json`. Selecting one lists every
+  repository and worktree on it, the biggest first, with disk usage and
+  status. Remove selected worktrees (`⌘⌫`) or use a repository's Clean Up
+  button to free space; a confirmation shows what goes and what it frees.
+  The app never connects over ssh at launch or on window focus.
+
 ## [0.10.0] - 2026-09-08
 
 ### Added

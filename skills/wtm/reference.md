@@ -216,6 +216,140 @@ the repo-level config paths, each annotated with whether it exists.
 `wtm config init` scaffolds a fully commented `.worktree.toml` at the repo
 root (errors if one already exists).
 
+### `wtm host`
+
+Manage remote hosts over ssh: list their repositories and worktrees with
+disk usage, and remove or prune worktrees. Hosts are saved locally; nothing
+is installed on the host itself.
+
+| Subcommand | Description |
+|---|---|
+| `add <name> <destination>` | Save a host. `--root <path>` (repeatable; default: the remote home directory). |
+| `list` (alias `ls`) | List saved hosts (name, destination, roots). `--json` emits it as a pretty-printed array. |
+| `forget <name>` | Forget a saved host. Nothing on the host itself is touched. |
+| `scan <name>` | List repositories and worktrees under the host's roots, with disk usage. `--json`; `--no-size` skips disk-usage computation. |
+| `rm <name> <path>` (alias `remove`) | Remove the worktree at `<path>` on the host. `--force` removes it even if dirty; `--with-branch` also deletes its branch (refused for protected branches); `--json`. |
+| `prune <name>` | Remove stale worktrees on the host: missing directories always, plus opt-in merged/gone/detached. `--merged`, `--gone`, `--detached`, `--in <path>` (restrict to one repository's main worktree path), `--dry-run`, `--force`, `--json`. |
+
+#### `wtm host scan --json` shape
+
+An array of repository objects:
+
+```json
+[
+  {
+    "name": "app",
+    "path": "/home/ubuntu/src/app",
+    "worktrees": [
+      {
+        "name": "main",
+        "path": "/home/ubuntu/src/app",
+        "branch": "main",
+        "head": "3bc1518",
+        "is_main": true,
+        "is_missing": false,
+        "is_locked": false,
+        "lock_reason": null,
+        "head_time": 1789546955,
+        "is_prunable": false,
+        "status": {
+          "dirty": false,
+          "dirty_count": 0,
+          "ahead": null,
+          "behind": null,
+          "upstream_gone": false,
+          "merged": false
+        },
+        "size_bytes": 143360
+      },
+      {
+        "name": "app-feature",
+        "path": "/home/ubuntu/src/app-feature",
+        "branch": "feature",
+        "head": "3bc1518",
+        "is_main": false,
+        "is_missing": false,
+        "is_locked": false,
+        "lock_reason": null,
+        "head_time": 1789546955,
+        "is_prunable": false,
+        "status": {
+          "dirty": false,
+          "dirty_count": 0,
+          "ahead": null,
+          "behind": null,
+          "upstream_gone": false,
+          "merged": true
+        },
+        "size_bytes": 4096
+      }
+    ]
+  }
+]
+```
+
+Each worktree object has every `wtm list --json` field (see above) plus
+`size_bytes`: the `du -sk` size of that worktree in bytes, `null` when the
+directory is missing or `--no-size` was passed. The main worktree's size
+includes `.git` but excludes linked worktrees nested inside it — those are
+already counted on their own rows. Linked worktrees are listed under their
+main repository's entry wherever they actually live on disk.
+
+#### `wtm host rm --json` and `wtm host prune --json` shapes
+
+`rm` prints one object: `ok`, `action` (`"remove"`), `host`, `name`,
+`branch`, `path`, `branch_deleted`.
+
+```json
+{
+  "ok": true,
+  "action": "remove",
+  "host": "vps",
+  "name": "feature",
+  "branch": "feature",
+  "path": "/home/ubuntu/src/app-feature",
+  "branch_deleted": true
+}
+```
+
+`prune` prints one object: `ok`, `action` (`"prune"`), `host`, `removed`,
+`skipped`, `failures`, `candidates`. `--dry-run` leaves `removed` at `0`
+and adds `reclaimable_bytes` (the summed `size_bytes` of the candidates it
+would remove; dirty ones listed in `skipped` are not counted).
+
+```json
+{
+  "ok": true,
+  "action": "prune",
+  "host": "vps",
+  "removed": 0,
+  "skipped": [],
+  "failures": [],
+  "candidates": ["feature"],
+  "reclaimable_bytes": 4096
+}
+```
+
+**How it connects:** each subcommand that touches the host is one
+`ssh <destination> sh -s` round trip piping a POSIX shell script that runs
+plain `git` (and `du`) there — nothing is installed. ssh runs with
+`BatchMode=yes` (key or agent login only; run `ssh <destination>` once
+yourself first so the host key is in `known_hosts`) and
+`ConnectTimeout=10`, and reuses one connection for 60 seconds via
+`ControlPath=~/.ssh/wtm-%C` when `~/.ssh` exists. Set `$WTM_SSH` to use a
+different ssh program. `scan` searches each root (default: the remote
+home) up to 4 directory levels deep for `.git` directories, skipping
+`node_modules`, `.cache`, `.npm`, `.cargo`, `.rustup`, `.local`, `.venv`,
+and `.pub-cache`. Status follows the same rules as `wtm list`, except the
+host's `.worktree.toml` is never read: merged is checked against
+`origin/HEAD`, `origin/main`, `origin/master`, then `HEAD`, and
+`protected_branches` come from the local global config. Removal always
+goes through `git worktree remove` (git refuses a dirty worktree without
+`--force` and never deletes a directory it doesn't manage), followed by
+`git worktree prune`. Hosts are saved in `hosts.json`, next to
+`config.toml` in the wtm config directory (`$WTM_CONFIG_DIR` /
+`$XDG_CONFIG_HOME/wtm` / `~/.config/wtm`).
+
 ## Configuration
 
 Layered, each layer overriding the previous **field-by-field** (list-valued
