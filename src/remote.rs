@@ -4,7 +4,7 @@
 //! Nothing is installed on the host. Each operation is ONE `ssh <host> sh -s`
 //! round trip that pipes a POSIX shell script on stdin; the script runs
 //! plain `git` (and `du`) on the host and prints tab-separated records that
-//! [`parse_scan`] / [`parse_remove`] turn back into typed values. Using the
+//! `parse_scan` / `parse_remove` turn back into typed values. Using the
 //! real `ssh` keeps `~/.ssh/config` aliases, agents, ProxyJump, and
 //! known_hosts working for free.
 //!
