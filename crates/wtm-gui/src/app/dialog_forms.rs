@@ -764,6 +764,8 @@ pub(super) fn uncommitted_changes_warning(text: &'static str, theme: &Theme) -> 
         .child(ui::icon(icons::WARNING, 12.0, theme.warning))
         .child(
             div()
+                .flex_1()
+                .min_w_0()
                 .text_size(px(TEXT_SM))
                 .text_color(theme.warning)
                 .child(text),

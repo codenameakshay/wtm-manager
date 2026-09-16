@@ -202,17 +202,12 @@ fn plural(n: usize) -> &'static str {
     }
 }
 
-/// Text already truncated in Rust, in a box sized to it. The definite width
-/// sidesteps gpui 0.2.2's `.truncate()` measurement bug (see
-/// `detail_panel::LABEL_WIDTH`); nowrap plus overflow only clip if the
-/// per-character estimate runs short.
+/// Text already truncated in Rust (gpui 0.2.2's `.truncate()` is broken, see
+/// `detail_panel::LABEL_WIDTH`). It never shrinks, so its natural width is
+/// the right one; a width from `ui::CHAR_WIDTH_APPROX`, a small-monospace
+/// estimate, would clip larger or bold text.
 fn text_box(text: String) -> Div {
-    div()
-        .flex_none()
-        .w(px(text.chars().count() as f32 * ui::CHAR_WIDTH_APPROX))
-        .whitespace_nowrap()
-        .overflow_hidden()
-        .child(text)
+    div().flex_none().whitespace_nowrap().child(text)
 }
 
 /// "Clean Up" at `TEXT_BASE` plus `ui::button`'s `SPACE_12` padding.
@@ -696,6 +691,7 @@ impl WtmApp {
 
         let summary = match &view.repos {
             None if view.scanning => "scanning…".to_string(),
+            None if view.error.is_some() => "scan failed".to_string(),
             None => "not scanned".to_string(),
             Some(repos) => {
                 let worktrees: usize = repos.iter().map(|r| r.worktrees.len()).sum();
@@ -732,12 +728,6 @@ impl WtmApp {
                     .items_center()
                     .gap(px(theme::SPACE_8))
                     .text_size(px(ui::TEXT_SM))
-                    .child(
-                        text_box(truncate_tail(&view.host.name, 32))
-                            .text_size(px(ui::TEXT_BASE))
-                            .font_weight(gpui::FontWeight::MEDIUM)
-                            .text_color(theme.text),
-                    )
                     .child(
                         text_box(truncate_tail(&view.host.destination, 40))
                             .font_family(theme.font_mono)
@@ -1004,19 +994,22 @@ impl WtmApp {
                             .text_size(px(ui::TEXT_SM))
                             .text_color(theme.text_faint),
                     )
-                    .child(
-                        ui::button(
-                            ("host-cleanup", repo_ix),
-                            "Clean Up",
-                            ButtonVariant::Secondary,
-                            theme,
+                    // A main worktree alone has nothing Clean Up could remove.
+                    .when(count > 1, |this| {
+                        this.child(
+                            ui::button(
+                                ("host-cleanup", repo_ix),
+                                "Clean Up",
+                                ButtonVariant::Secondary,
+                                theme,
+                            )
+                            .on_click(cx.listener(
+                                move |this, _, window, cx| {
+                                    this.open_host_cleanup(&repo_path, window, cx);
+                                },
+                            )),
                         )
-                        .on_click(cx.listener(
-                            move |this, _, window, cx| {
-                                this.open_host_cleanup(&repo_path, window, cx);
-                            },
-                        )),
-                    ),
+                    }),
             )
             .into_any_element()
     }
@@ -1068,8 +1061,8 @@ impl WtmApp {
                     .text_size(px(ui::TEXT_XS))
                     .text_color(theme.text_ghost)
                     .child(format!(
-                        "wtm never prompts for a password, so key-based login must work. \
-                         Run `ssh {destination}` in a terminal once first."
+                        "Key-based login only: wtm never asks for a password. \
+                         Run “ssh {destination}” in a terminal once first."
                     )),
             )
             .when_some(state.error.clone(), |this, error| {
@@ -1164,8 +1157,7 @@ impl WtmApp {
         if has_dirty {
             body = body
                 .child(uncommitted_changes_warning(
-                    "Some have uncommitted changes. Without Force, git refuses to remove \
-                     those and they are reported as failures.",
+                    "Some have uncommitted changes. Without Force, git keeps those.",
                     theme,
                 ))
                 .child(
