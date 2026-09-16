@@ -47,6 +47,7 @@ const SCRUBBED_ENV: &[&str] = &[
     "VISUAL",
     "EDITOR",
     "WTM_CONFIG_DIR",
+    "WTM_SSH",
 ];
 
 /// Hermetic environment values applied on top of the scrub list.
@@ -285,4 +286,20 @@ pub fn entry_path(entry: &serde_json::Value) -> PathBuf {
 /// Captured stdout of a finished assert as UTF-8.
 pub fn stdout_str(assert: &assert_cmd::assert::Assert) -> String {
     String::from_utf8(assert.get_output().stdout.clone()).expect("stdout is UTF-8")
+}
+
+/// Write an executable POSIX shell script (mode 0o755) at `path`.
+pub fn write_executable_script(path: &Path, contents: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    fs::write(path, contents).expect("write script");
+    fs::set_permissions(path, fs::Permissions::from_mode(0o755)).expect("chmod script");
+}
+
+/// Write a fake `ssh` at `<base>/fake-ssh` that ignores its arguments and
+/// runs the piped script locally via `sh -s`, so a "remote" host in tests is
+/// just the local machine. Point `WTM_SSH` at the returned path.
+pub fn write_fake_ssh(base: &Path) -> PathBuf {
+    let path = base.join("fake-ssh");
+    write_executable_script(&path, "#!/bin/sh\nexec sh -s\n");
+    path
 }
