@@ -137,19 +137,23 @@ pub fn save(registry: &Registry) -> Result<()> {
     let Some(path) = registry_path() else {
         return Ok(());
     };
+    let mut to_write = registry.clone();
+    to_write.version = SCHEMA_VERSION;
+    write_json_atomic(&path, &to_write)
+}
+
+/// Write `value` as pretty JSON to `path` via a temp file and rename, so a
+/// crash mid-write never truncates the existing file.
+pub(crate) fn write_json_atomic(path: &Path, value: &impl Serialize) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-
-    let mut to_write = registry.clone();
-    to_write.version = SCHEMA_VERSION;
-    let json = serde_json::to_string_pretty(&to_write).map_err(|e| {
-        crate::error::Error::Other(format!("could not serialize the repo registry: {e}"))
+    let json = serde_json::to_string_pretty(value).map_err(|e| {
+        crate::error::Error::Other(format!("could not serialize {}: {e}", path.display()))
     })?;
-
     let tmp = path.with_extension("json.tmp");
     std::fs::write(&tmp, json.as_bytes())?;
-    std::fs::rename(&tmp, &path)?;
+    std::fs::rename(&tmp, path)?;
     Ok(())
 }
 

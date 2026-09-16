@@ -114,13 +114,7 @@ impl Default for PruneConfig {
 /// field-by-field; missing files are silently skipped. An unparseable file
 /// produces `Error::Config` naming the file path.
 pub fn load(repo_root: &Path) -> Result<Config> {
-    let mut cfg = Config::default();
-
-    if let Some(global_path) = global_config_path() {
-        if let Some(layer) = load_layer(&global_path)? {
-            cfg = merge(cfg, layer);
-        }
-    }
+    let mut cfg = load_global()?;
 
     if let Some(layer) = load_layer(&repo_root.join(REPO_CONFIG_FILENAME))? {
         if layer.editor.is_some() {
@@ -146,6 +140,19 @@ pub fn load(repo_root: &Path) -> Result<Config> {
     }
 
     Ok(cfg)
+}
+
+/// Built-in defaults merged with the global config file only, for callers
+/// with no local repository (such as remote hosts).
+pub fn load_global() -> Result<Config> {
+    let cfg = Config::default();
+    match global_config_path() {
+        Some(path) => Ok(match load_layer(&path)? {
+            Some(layer) => merge(cfg, layer),
+            None => cfg,
+        }),
+        None => Ok(cfg),
+    }
 }
 
 /// Merge a parsed file layer over `base`, field-by-field. `setup.commands`,
