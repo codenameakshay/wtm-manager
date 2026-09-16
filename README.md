@@ -227,8 +227,7 @@ destination (an `~/.ssh/config` alias, `user@host`, or
 remote home). Select a host to see every repository under those roots and
 all of their worktrees, the biggest first, each with its disk usage and
 status. Select worktrees and press `⌘⌫`, or use a repository's **Clean
-Up** button (merged, upstream-gone, and detached worktrees), to free the
-space. A confirmation lists what will go and about how much it frees.
+Up** button (merged and upstream-gone worktrees), to free the space. A confirmation lists what will go and about how much it frees.
 Nothing is installed on the host: each action is one `ssh` call that runs
 `git` and `du` there. Login must work without a password prompt, so run
 `ssh <destination>` in a terminal once first. The app never connects at

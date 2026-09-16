@@ -279,9 +279,12 @@ order does not jump. Repositories are sorted by total size, biggest
 first. Inside each one, the main worktree comes first and the linked
 worktrees follow by size. A main worktree's size includes `.git` but not
 linked worktrees nested inside it, such as `.claude/worktrees/*`. Status
-pills mean the same as in the local list. One difference: the host's
-`.worktree.toml` is not read, so merged is checked against `origin/HEAD`,
-`origin/main`, `origin/master`, then `HEAD`. ⌘R and the **Rescan** button
+pills mean the same as in the local list. One difference: `default_base`
+is not read from the host, so merged is checked against `origin/HEAD`,
+`origin/main`, `origin/master`, then `HEAD`. Protected branches come from
+your global config merged with each repository's `.worktree.toml` and
+`.worktree.local.toml` on the host, and a scan fails if one of those files
+does not parse. ⌘R and the **Rescan** button
 scan again. A failed scan shows ssh's own message with a **Retry**
 button.
 
@@ -294,11 +297,16 @@ worktree has uncommitted changes:
   selection bar. The main worktree cannot be selected, and protected
   branches are skipped. Branches are kept.
 - **Clean Up.** This button is on each repository that has linked
-  worktrees. It selects what `wtm prune --merged --gone --detached` would,
-  and it deletes the branches of merged and upstream-gone worktrees.
+  worktrees. It selects what `wtm prune --merged --gone` would, so a
+  detached worktree is included only when its commit is merged. It
+  deletes the branches of merged and upstream-gone worktrees.
 
 Removal always goes through `git worktree remove` and then
-`git worktree prune`. Without Force, git refuses a dirty worktree. The
+`git worktree prune`. Without Force, git refuses a dirty worktree. A
+worktree the scan saw as missing is forced only if it is still gone, and a
+branch is deleted only if it still points at the scanned commit. A second
+removal on a host cannot start while one is still running there, even
+after you leave the host and come back. The
 footer then reports it as a failure, together with how many worktrees
 were removed and about how much space was freed.
 

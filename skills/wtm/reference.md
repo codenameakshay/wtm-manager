@@ -335,18 +335,25 @@ would remove; dirty ones listed in `skipped` are not counted).
 plain `git` (and `du`) there — nothing is installed. ssh runs with
 `BatchMode=yes` (key or agent login only; run `ssh <destination>` once
 yourself first so the host key is in `known_hosts`) and
-`ConnectTimeout=10`, and reuses one connection for 60 seconds via
-`ControlPath=~/.ssh/wtm-%C` when `~/.ssh` exists. Set `$WTM_SSH` to use a
-different ssh program. `scan` searches each root (default: the remote
+`ConnectTimeout=10`, and `RemoteCommand=none`. It reuses one connection
+for 60 seconds via `ControlPath=~/.ssh/wtm-%C` when `~/.ssh` exists and
+the socket path fits. Set `$WTM_SSH` to use a different ssh program. `scan` searches each root (default: the remote
 home) up to 4 directory levels deep for `.git` directories, skipping
 `node_modules`, `.cache`, `.npm`, `.cargo`, `.rustup`, `.local`, `.venv`,
-and `.pub-cache`. Status follows the same rules as `wtm list`, except the
-host's `.worktree.toml` is never read: merged is checked against
-`origin/HEAD`, `origin/main`, `origin/master`, then `HEAD`, and
-`protected_branches` come from the local global config. Removal always
-goes through `git worktree remove` (git refuses a dirty worktree without
-`--force` and never deletes a directory it doesn't manage), followed by
-`git worktree prune`. Hosts are saved in `hosts.json`, next to
+and `.pub-cache`. A root given as a symlink is followed. Status follows the
+same rules as `wtm list`, with one difference: `default_base` is not read
+from the host, so merged is checked against `origin/HEAD`, `origin/main`,
+`origin/master`, then `HEAD`. `protected_branches` come from the local
+global config merged with each repository's `.worktree.toml` and
+`.worktree.local.toml` on the host. A scan fails if one of those files
+does not parse. Removal always goes through `git worktree remove` (git
+refuses a dirty worktree without `--force` and never deletes a directory
+it doesn't manage), followed by `git worktree prune`. A worktree the scan
+saw as missing is force-removed only if its directory is still gone. A
+branch is deleted only if it still points at the commit the scan saw;
+otherwise it is kept and the kept branch is reported as a failure. Quote a
+`~` root (`--root '~/src'`) so your local shell does not expand it;
+`host add` warns when a root is under your local home directory. Hosts are saved in `hosts.json`, next to
 `config.toml` in the wtm config directory (`$WTM_CONFIG_DIR` /
 `$XDG_CONFIG_HOME/wtm` / `~/.config/wtm`).
 
