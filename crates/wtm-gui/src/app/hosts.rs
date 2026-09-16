@@ -25,8 +25,6 @@ pub(super) struct HostView {
     /// The latest listing came from the sized pass.
     pub(super) sized: bool,
     pub(super) scanning: bool,
-    /// A removal is running on this host.
-    pub(super) busy: bool,
     pub(super) error: Option<String>,
     /// Selected worktrees by path, so a rescan's new order keeps them.
     pub(super) selected: BTreeSet<PathBuf>,
@@ -40,7 +38,6 @@ impl HostView {
             repos: None,
             sized: false,
             scanning: false,
-            busy: false,
             error: None,
             selected: BTreeSet::new(),
             scroll: ScrollHandle::new(),
@@ -118,12 +115,6 @@ struct HostRemoveReport {
     /// One line per worktree that was not removed, or was removed with a
     /// note (such as a kept branch), naming it.
     failures: Vec<String>,
-}
-
-fn protected_branches() -> Vec<String> {
-    wtm::config::load_global()
-        .map(|c| c.prune.protected_branches)
-        .unwrap_or_else(|_| wtm::config::PruneConfig::default().protected_branches)
 }
 
 /// A rescan's unsized pass would otherwise re-sort every repository by path
@@ -454,10 +445,9 @@ impl WtmApp {
         let Some(view) = &self.host else {
             return;
         };
-        if view.busy || view.selected.is_empty() {
+        if self.removing_hosts.contains(&view.host.name) || view.selected.is_empty() {
             return;
         }
-        let protected = protected_branches();
         let groups: Vec<RemovalGroup> = view
             .repos
             .iter()
@@ -469,7 +459,10 @@ impl WtmApp {
                     .filter(|w| view.selected.contains(&w.info.path))
                     .map(|w| w.info.clone())
                     .collect();
-                let candidates = with_sizes(repo, prune::selection_candidates(picked, &protected));
+                let candidates = with_sizes(
+                    repo,
+                    prune::selection_candidates(picked, &repo.protected_branches),
+                );
                 (!candidates.is_empty()).then(|| (repo.path.clone(), candidates))
             })
             .collect();
@@ -484,7 +477,10 @@ impl WtmApp {
     }
 
     /// A repository's Clean Up button: the same selection as `wtm prune
-    /// --merged --gone --detached`, deleting merged and gone branches.
+    /// --merged --gone`, deleting merged and gone branches. A detached
+    /// worktree is only included when its HEAD is merged (`merged` covers
+    /// it too); an unmerged one never is, since removing it would leave its
+    /// commits unreachable.
     pub(super) fn open_host_cleanup(
         &mut self,
         repo_path: &Path,
@@ -497,16 +493,13 @@ impl WtmApp {
         let Some(view) = &self.host else {
             return;
         };
-        if view.busy {
+        if self.removing_hosts.contains(&view.host.name) {
             return;
         }
         let Some(repo) = view.repos.iter().flatten().find(|r| r.path == repo_path) else {
             return;
         };
-        let candidates = with_sizes(
-            repo,
-            remote::prune_candidates(repo, &protected_branches(), true, true, true),
-        );
+        let candidates = with_sizes(repo, remote::prune_candidates(repo, true, true, false));
         if candidates.is_empty() {
             let message = format!("nothing to clean up in {}", repo.name);
             self.set_info(message, cx);
@@ -543,16 +536,16 @@ impl WtmApp {
         let Some(HostDialog::Confirm(state)) = &self.host_dialog else {
             return;
         };
-        let Some(view) = self.host.as_mut() else {
+        let Some(view) = &self.host else {
             return;
         };
-        if view.busy {
+        if self.removing_hosts.contains(&view.host.name) {
             return;
         }
-        view.busy = true;
         let host = view.host.clone();
         let groups = state.groups.clone();
         let force = state.force;
+        self.removing_hosts.insert(host.name.clone());
         cx.notify();
 
         cx.spawn(async move |this, cx| {
@@ -568,25 +561,23 @@ impl WtmApp {
         .detach();
     }
 
-    /// Always report; only touch the pane and its confirmation if the host
-    /// that ran the removal is still the one shown.
+    /// Always report and clear `removing_hosts`; only touch the pane and its
+    /// confirmation if the host that ran the removal is still the one shown
+    /// (the user may have left it and come back to a fresh `HostView` while
+    /// this was running).
     fn finish_host_remove(
         &mut self,
         host_name: &str,
         report: HostRemoveReport,
         cx: &mut Context<Self>,
     ) {
+        self.removing_hosts.remove(host_name);
         let still_shown = self
             .host
             .as_ref()
             .is_some_and(|view| view.host.name == host_name);
-        if still_shown {
-            if matches!(self.host_dialog, Some(HostDialog::Confirm(_))) {
-                self.host_dialog = None;
-            }
-            if let Some(view) = &mut self.host {
-                view.busy = false;
-            }
+        if still_shown && matches!(self.host_dialog, Some(HostDialog::Confirm(_))) {
+            self.host_dialog = None;
         }
 
         let mut parts = vec![format!(
@@ -1107,7 +1098,10 @@ impl WtmApp {
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let busy = self.host.as_ref().is_some_and(|view| view.busy);
+        let busy = self
+            .host
+            .as_ref()
+            .is_some_and(|view| self.removing_hosts.contains(&view.host.name));
         let host_name = self
             .host
             .as_ref()
@@ -1130,9 +1124,7 @@ impl WtmApp {
                     .unwrap_or_default();
                 (
                     "Clean Up",
-                    format!(
-                        "Merged, upstream-gone, and detached worktrees in {repo} on {host_name}"
-                    ),
+                    format!("Merged and upstream-gone worktrees in {repo} on {host_name}"),
                     "Clean Up",
                 )
             }
@@ -1290,6 +1282,7 @@ mod tests {
             name: path.to_string(),
             path: PathBuf::from(path),
             worktrees,
+            protected_branches: vec![],
         }
     }
 

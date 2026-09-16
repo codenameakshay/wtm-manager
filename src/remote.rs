@@ -68,10 +68,13 @@ impl Host {
             .map(|r| r.trim().to_string())
             .filter(|r| !r.is_empty())
             .collect();
-        if roots.iter().any(|r| r.contains('\n')) {
-            return Err(Error::Other(
-                "a root path cannot contain a newline".to_string(),
-            ));
+        if let Some(root) = roots
+            .iter()
+            .find(|r| r.contains('\n') || r.starts_with('-'))
+        {
+            return Err(Error::Other(format!(
+                "invalid root '{root}' (a root cannot start with '-' or contain a newline)"
+            )));
         }
         Ok(Host {
             name: name.to_string(),
@@ -96,12 +99,28 @@ fn hosts_path() -> Option<PathBuf> {
 /// Saved hosts in the order they were added. A missing, corrupt, or
 /// newer-schema file reads as empty.
 pub fn load_hosts() -> Vec<Host> {
-    let Some(raw) = hosts_path().and_then(|p| std::fs::read_to_string(p).ok()) else {
-        return Vec::new();
+    load_hosts_for_update().unwrap_or_default()
+}
+
+/// Saved hosts, or an error when the file exists but cannot be trusted, so a
+/// write never replaces a hand-edited or newer file with a partial list.
+fn load_hosts_for_update() -> Result<Vec<Host>> {
+    let Some(path) = hosts_path() else {
+        return Ok(Vec::new());
+    };
+    let raw = match std::fs::read_to_string(&path) {
+        Ok(raw) => raw,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e.into()),
     };
     match serde_json::from_str::<HostsFile>(&raw) {
-        Ok(file) if file.version <= SCHEMA_VERSION => file.hosts,
-        _ => Vec::new(),
+        Ok(file) if file.version <= SCHEMA_VERSION => Ok(file.hosts),
+        Ok(file) => Err(Error::Config(format!(
+            "{} was written by a newer wtm (schema {})",
+            path.display(),
+            file.version
+        ))),
+        Err(e) => Err(Error::Config(format!("{}: {e}", path.display()))),
     }
 }
 
@@ -122,7 +141,7 @@ fn save_hosts(hosts: Vec<Host>) -> Result<()> {
 
 /// Add `host`, or replace the saved host with the same name.
 pub fn upsert_host(host: Host) -> Result<()> {
-    let mut hosts = load_hosts();
+    let mut hosts = load_hosts_for_update()?;
     match hosts.iter_mut().find(|h| h.name == host.name) {
         Some(existing) => *existing = host,
         None => hosts.push(host),
@@ -132,7 +151,7 @@ pub fn upsert_host(host: Host) -> Result<()> {
 
 /// Forget a saved host. Nothing on the host is touched.
 pub fn forget_host(name: &str) -> Result<bool> {
-    let mut hosts = load_hosts();
+    let mut hosts = load_hosts_for_update()?;
     let before = hosts.len();
     hosts.retain(|h| h.name != name);
     if hosts.len() == before {
@@ -163,6 +182,11 @@ pub struct RemoteRepo {
     pub path: PathBuf,
     /// Main worktree first, then linked worktrees in git's order.
     pub worktrees: Vec<RemoteWorktree>,
+    /// `prune.protected_branches` from the local global config merged with
+    /// this repository's `.worktree.toml` and `.worktree.local.toml` on the
+    /// host, as `wtm prune` would resolve it there.
+    #[serde(skip)]
+    pub protected_branches: Vec<String>,
 }
 
 impl RemoteRepo {
@@ -185,9 +209,23 @@ pub struct RemoteWorktree {
 
 /// List every repository under the host's roots with worktree status and,
 /// when `with_sizes`, disk usage. One ssh round trip.
+/// Fails when a repository's config does not parse, as `wtm prune` would
+/// there, rather than guess which branches it protects.
 pub fn scan(host: &Host, with_sizes: bool) -> Result<Vec<RemoteRepo>> {
     let output = run_script(host, &scan_script(&host.roots, with_sizes))?;
-    Ok(parse_scan(&output))
+    parse_scan(&output)
+        .into_iter()
+        .map(|(mut repo, files)| {
+            repo.protected_branches = config::load_with_repo_files(
+                &repo.path,
+                files.repo.as_deref(),
+                files.local.as_deref(),
+            )?
+            .prune
+            .protected_branches;
+            Ok(repo)
+        })
+        .collect()
 }
 
 /// Biggest first: repositories by total size, and within each, the main
@@ -211,16 +249,23 @@ pub fn sort_by_size(repos: &mut [RemoteRepo]) {
 }
 
 /// Prune candidates for a scanned repository, with the same rules as
-/// `wtm prune` (main and `protected` branches are never selected).
+/// `wtm prune` (the main worktree and protected branches are never
+/// selected).
 pub fn prune_candidates(
     repo: &RemoteRepo,
-    protected: &[String],
     merged: bool,
     gone: bool,
     detached: bool,
 ) -> Vec<PruneCandidate> {
     let infos: Vec<WorktreeInfo> = repo.worktrees.iter().map(|w| w.info.clone()).collect();
-    prune::candidates(&infos, protected, merged, gone, detached, false)
+    prune::candidates(
+        &infos,
+        &repo.protected_branches,
+        merged,
+        gone,
+        detached,
+        false,
+    )
 }
 
 /// What happened to one removal target.
@@ -234,8 +279,8 @@ pub struct RemoveOutcome {
 }
 
 /// Remove worktrees of the repository at `repo_path` on the host, deleting
-/// each candidate's branch when `delete_branch` is set, then run
-/// `git worktree prune`. Removal goes through `git worktree remove`, so git
+/// each candidate's branch when `delete_branch` is set and the branch still
+/// points at the scanned `head`, then run `git worktree prune`. Removal goes through `git worktree remove`, so git
 /// refuses dirty worktrees unless `force`, and never deletes a directory it
 /// does not manage. One ssh round trip; per-target failures are reported in
 /// the outcomes, not as an `Err`.
@@ -298,8 +343,12 @@ pub fn format_size(bytes: u64) -> String {
     }
 }
 
+/// `RemoteCommand=none` because a `RemoteCommand` in the user's ssh config
+/// makes ssh refuse the `sh -s` command.
 const SSH_OPTIONS: &[&str] = &[
     "-T",
+    "-o",
+    "RemoteCommand=none",
     "-o",
     "BatchMode=yes",
     "-o",
@@ -312,6 +361,10 @@ const SSH_OPTIONS: &[&str] = &[
 
 /// Reuse one connection for the app's scan, remove, rescan sequence. The
 /// socket lives in `~/.ssh` (private to the user) and only when it exists.
+/// ssh first binds `<ControlPath>.<16 random chars>`: the home directory plus
+/// `MUX_PATH_OVERHEAD` bytes must fit a Unix socket path (104 on macOS).
+const MUX_PATH_OVERHEAD: usize = "/.ssh/wtm-".len() + 40 + 17;
+const SOCKET_PATH_MAX: usize = 104;
 const SSH_MUX_OPTIONS: &[&str] = &[
     "-o",
     "ControlMaster=auto",
@@ -331,7 +384,10 @@ fn run_script(host: &Host, script: &str) -> Result<String> {
     let program = ssh_program();
     let mut cmd = Command::new(&program);
     cmd.args(SSH_OPTIONS);
-    if directories::BaseDirs::new().is_some_and(|d| d.home_dir().join(".ssh").is_dir()) {
+    if directories::BaseDirs::new().is_some_and(|d| {
+        d.home_dir().as_os_str().len() + MUX_PATH_OVERHEAD <= SOCKET_PATH_MAX
+            && d.home_dir().join(".ssh").is_dir()
+    }) {
         cmd.args(SSH_MUX_OPTIONS);
     }
     cmd.arg("--")
@@ -388,7 +444,10 @@ fn sh_root(root: &str) -> String {
     }
 }
 
-const SCRIPT_PRELUDE: &str = r#"LC_ALL=C
+/// Starts with a newline so login-script output that lacks one cannot glue
+/// itself to the first record.
+const SCRIPT_PRELUDE: &str = r#"echo
+LC_ALL=C
 GIT_OPTIONAL_LOCKS=0
 export LC_ALL GIT_OPTIONAL_LOCKS
 command -v git >/dev/null 2>&1 || { echo "git is not installed on this host" >&2; exit 1; }
@@ -396,7 +455,8 @@ tab=$(printf '\t')
 oneline() { printf '%s' "$1" | tr '\t\n' '  '; }
 "#;
 
-/// Record per line: `R<TAB>path` starts a repository; each following
+/// Record per line: `R<TAB>path` starts a repository. `F<TAB>name` starts
+/// one of its config files, whose lines follow as `T<TAB>line`. Each
 /// `W<TAB>…` line is one of its worktrees, fields in [`parse_worktree`]
 /// order, path last so it may contain tabs.
 const SCAN_BODY: &str = r#"reset() { wt=; head=; branch=; locked=0; lockr=; prunable=0; }
@@ -410,7 +470,9 @@ emit() {
   fi
   dirty=; ahead=; behind=; gone=0; merged=0; size=
   if [ "$missing" = 0 ]; then
-    dirty=$(git -C "$wt" status --porcelain --ignore-submodules 2>/dev/null | wc -l | tr -d ' ')
+    if st=$(git -C "$wt" status --porcelain --ignore-submodules 2>/dev/null); then
+      dirty=$(printf '%s\n' "$st" | grep -c .)
+    fi
     if [ -n "$branch" ]; then
       track=$(git -C "$repo" for-each-ref --format='%(upstream)%09%(upstream:track,nobracket)' "refs/heads/$branch" 2>/dev/null)
       up=${track%%"$tab"*}; state=${track#*"$tab"}
@@ -433,12 +495,13 @@ emit() {
 }
 for root in "$@"; do
   [ -d "$root" ] || continue
-  find "$root" -maxdepth 5 \( -name node_modules -o -name .cache -o -name .npm \
+  find -H "$root" -maxdepth 5 \( -name node_modules -o -name .cache -o -name .npm \
     -o -name .cargo -o -name .rustup -o -name .local -o -name .venv -o -name .pub-cache \) -prune \
     -o -name .git -type d -print -prune 2>/dev/null
 done | sort -u | while IFS= read -r gitdir; do
   repo=${gitdir%/.git}
   [ "$(git -C "$repo" rev-parse --is-inside-work-tree 2>/dev/null)" = true ] || continue
+  [ "$(git -C "$repo" rev-parse --git-dir 2>/dev/null)" = .git ] || continue
   base=; basename=
   for spec in origin/HEAD origin/main origin/master; do
     if b=$(git -C "$repo" rev-parse -q --verify "$spec^{commit}" 2>/dev/null); then
@@ -450,6 +513,11 @@ done | sort -u | while IFS= read -r gitdir; do
     basename=$(git -C "$repo" symbolic-ref -q --short HEAD 2>/dev/null)
   fi
   printf 'R\t%s\n' "$repo"
+  for f in .worktree.toml .worktree.local.toml; do
+    [ -f "$repo/$f" ] || continue
+    printf 'F\t%s\n' "$f"
+    while IFS= read -r line || [ -n "$line" ]; do printf 'T\t%s\n' "$line"; done < "$repo/$f"
+  done
   { git -C "$repo" worktree list --porcelain 2>/dev/null; echo; } | {
     main=1; reset
     while IFS= read -r line; do
@@ -480,10 +548,18 @@ fn scan_script(roots: &[String], with_sizes: bool) -> String {
     )
 }
 
+/// A repository's config files as read on the host.
+#[derive(Debug, Default)]
+struct RepoConfigText {
+    repo: Option<String>,
+    local: Option<String>,
+}
+
 /// Parse [`SCAN_BODY`] output. Lines that are not records (for example
 /// banner text from a login script) are ignored.
-fn parse_scan(output: &str) -> Vec<RemoteRepo> {
-    let mut repos: Vec<RemoteRepo> = Vec::new();
+fn parse_scan(output: &str) -> Vec<(RemoteRepo, RepoConfigText)> {
+    let mut repos: Vec<(RemoteRepo, RepoConfigText)> = Vec::new();
+    let mut open_file: Option<&str> = None;
     for line in output.lines() {
         if let Some(path) = line.strip_prefix("R\t") {
             let path = PathBuf::from(path);
@@ -491,18 +567,38 @@ fn parse_scan(output: &str) -> Vec<RemoteRepo> {
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_else(|| path.display().to_string());
-            repos.push(RemoteRepo {
-                name,
-                path,
-                worktrees: Vec::new(),
-            });
+            repos.push((
+                RemoteRepo {
+                    name,
+                    path,
+                    worktrees: Vec::new(),
+                    protected_branches: Vec::new(),
+                },
+                RepoConfigText::default(),
+            ));
+            open_file = None;
+        } else if let Some(name) = line.strip_prefix("F\t") {
+            open_file = Some(name);
+        } else if let Some(text) = line.strip_prefix("T\t") {
+            let Some((_, files)) = repos.last_mut() else {
+                continue;
+            };
+            let target = match open_file {
+                Some(".worktree.toml") => &mut files.repo,
+                Some(".worktree.local.toml") => &mut files.local,
+                _ => continue,
+            };
+            let contents = target.get_or_insert_with(String::new);
+            contents.push_str(text);
+            contents.push('\n');
         } else if let Some(record) = line.strip_prefix("W\t") {
-            if let (Some(repo), Some(worktree)) = (repos.last_mut(), parse_worktree(record)) {
+            open_file = None;
+            if let (Some((repo, _)), Some(worktree)) = (repos.last_mut(), parse_worktree(record)) {
                 repo.worktrees.push(worktree);
             }
         }
     }
-    for repo in &mut repos {
+    for (repo, _) in &mut repos {
         // git reports symlink-resolved paths; use them so the repository
         // and its worktrees agree (macOS `/tmp` is `/private/tmp`).
         if let Some(main) = repo.worktrees.iter().find(|w| w.info.is_main) {
@@ -578,15 +674,27 @@ fn subtract_nested_sizes(repo: &mut RemoteRepo) {
 }
 
 /// Output per target: `OK<TAB>note<TAB>path` or `ERR<TAB>message<TAB>path`.
+/// A worktree the scan saw as missing is only forced when it is still gone,
+/// and a branch is only deleted while it still points at the scanned commit.
 const REMOVE_BODY: &str = r#"repo=$1; flag=$2; shift 2
 cd / || exit 1
-while [ $# -ge 3 ]; do
-  path=$1; branch=$2; missing=$3; shift 3
-  f=$flag; [ "$missing" = 1 ] && f=--force
+while [ $# -ge 4 ]; do
+  path=$1; branch=$2; missing=$3; head=$4; shift 4
+  f=$flag
+  if [ "$missing" = 1 ] && [ ! -e "$path" ]; then f=--force; fi
   if out=$(git -C "$repo" worktree remove $f -- "$path" 2>&1); then
     note=
-    if [ -n "$branch" ] && ! out=$(git -C "$repo" branch -D -- "$branch" 2>&1); then
-      note="worktree removed, but branch $branch was kept: $out"
+    if [ -n "$branch" ]; then
+      tip=$(git -C "$repo" rev-parse -q --verify "refs/heads/$branch" 2>/dev/null)
+      case $tip in
+        "$head"?*) same=$head ;;
+        *) same= ;;
+      esac
+      if [ -z "$same" ]; then
+        note="worktree removed, but branch $branch was kept: it changed since the scan"
+      elif ! out=$(git -C "$repo" branch -D -- "$branch" 2>&1); then
+        note="worktree removed, but branch $branch was kept: $out"
+      fi
     fi
     printf 'OK\t%s\t%s\n' "$(oneline "$note")" "$path"
   else
@@ -611,6 +719,7 @@ fn remove_script(repo_path: &Path, targets: &[&PruneCandidate], force: bool) -> 
         args.push(sh_quote(&t.info.path.to_string_lossy()));
         args.push(sh_quote(branch));
         args.push(sh_quote(if t.info.is_missing { "1" } else { "0" }));
+        args.push(sh_quote(t.info.head.as_deref().unwrap_or("")));
     }
     format!("{SCRIPT_PRELUDE}set -- {}\n{REMOVE_BODY}", args.join(" "))
 }
@@ -673,6 +782,12 @@ mod tests {
             &[root.to_string_lossy().into_owned()],
             true,
         )))
+        .into_iter()
+        .map(|(mut repo, _)| {
+            repo.protected_branches = vec!["main".to_string()];
+            repo
+        })
+        .collect()
     }
 
     fn worktree<'a>(repo: &'a RemoteRepo, name: &str) -> &'a RemoteWorktree {
@@ -759,8 +874,7 @@ mod tests {
         assert!(gone.info.is_missing && gone.info.is_prunable);
         assert!(gone.info.status.is_none() && gone.size_bytes.is_none());
 
-        let protected = vec!["main".to_string()];
-        let mut names: Vec<String> = prune_candidates(repo, &protected, true, false, false)
+        let mut names: Vec<String> = prune_candidates(repo, true, false, false)
             .iter()
             .map(|c| c.info.display_name().to_string())
             .collect();
@@ -853,9 +967,88 @@ mod tests {
     }
 
     #[test]
+    fn remove_script_rechecks_missing_and_keeps_a_moved_branch() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let base = tmp.path().canonicalize().unwrap();
+        let main = base.join("repo");
+        init_repo(&main);
+        git(&main, &["worktree", "add", "-b", "back", "../back"]);
+        git(&main, &["worktree", "add", "-b", "moved", "../moved"]);
+        let parked = base.join("parked");
+        fs::rename(base.join("back"), &parked).unwrap();
+        let repo = &scan_local(&base)[0];
+        let stale_missing = candidate(worktree(repo, "back"), false);
+        let stale_tip = candidate(worktree(repo, "moved"), true);
+        assert!(stale_missing.info.is_missing);
+
+        fs::rename(&parked, base.join("back")).unwrap();
+        fs::write(base.join("back/work.txt"), "unsaved").unwrap();
+        commit_file(&base.join("moved"), "later.txt");
+
+        let outcomes = parse_remove(&run_local(&remove_script(
+            &main,
+            &[&stale_missing, &stale_tip],
+            false,
+        )));
+        assert!(!outcomes[0].removed, "{:?}", outcomes[0]);
+        assert!(base.join("back/work.txt").exists());
+        assert!(outcomes[1].removed);
+        assert!(
+            outcomes[1]
+                .message
+                .as_deref()
+                .unwrap()
+                .contains("changed since the scan"),
+            "{:?}",
+            outcomes[1]
+        );
+        assert_eq!(git(&main, &["branch", "--list", "moved"]), "moved");
+    }
+
+    #[test]
+    fn scan_follows_a_symlinked_root_and_skips_broken_nested_git_dirs() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let base = tmp.path().canonicalize().unwrap();
+        let main = base.join("real").join("app");
+        init_repo(&main);
+        fs::create_dir_all(main.join("vendor/broken/.git")).unwrap();
+        std::os::unix::fs::symlink(base.join("real"), base.join("link")).unwrap();
+
+        let repos = scan_local(&base.join("link"));
+
+        let paths: Vec<&Path> = repos.iter().map(|r| r.path.as_path()).collect();
+        assert_eq!(paths, [main.as_path()]);
+    }
+
+    #[test]
+    fn scan_captures_repo_config_files() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let base = tmp.path().canonicalize().unwrap();
+        let main = base.join("app");
+        init_repo(&main);
+        fs::write(
+            main.join(".worktree.toml"),
+            "[prune]\nprotected_branches = [\"main\", \"keep\"]",
+        )
+        .unwrap();
+
+        let output = run_local(&scan_script(&[base.to_string_lossy().into_owned()], false));
+        let parsed = parse_scan(&format!("banner without newline{output}"));
+
+        assert_eq!(parsed.len(), 1);
+        let files = &parsed[0].1;
+        assert_eq!(
+            files.repo.as_deref(),
+            Some("[prune]\nprotected_branches = [\"main\", \"keep\"]\n")
+        );
+        assert_eq!(files.local, None);
+        assert_eq!(parsed[0].0.worktrees.len(), 1);
+    }
+
+    #[test]
     fn parse_scan_ignores_noise_and_bad_records() {
         let output = "Welcome!\nR\t/srv/a\nW\t1\t0\t0\t0\tmain\tabc\t10\t0\t\t\t0\t0\t2048\t\t/srv/a\nW\ttoo\tfew\nR\t/srv/b\n";
-        let repos = parse_scan(output);
+        let repos: Vec<RemoteRepo> = parse_scan(output).into_iter().map(|(r, _)| r).collect();
         assert_eq!(repos.len(), 2);
         assert_eq!(repos[0].worktrees.len(), 1);
         assert_eq!(repos[0].size_bytes(), 2_097_152);
@@ -865,7 +1058,7 @@ mod tests {
 
     #[test]
     fn sort_by_size_puts_biggest_first_and_main_on_top() {
-        let mut repos = parse_scan(concat!(
+        let mut repos: Vec<RemoteRepo> = parse_scan(concat!(
             "R\t/srv/small\n",
             "W\t1\t0\t0\t0\tmain\t\t\t0\t\t\t0\t0\t1\t\t/srv/small\n",
             "R\t/srv/big\n",
@@ -873,7 +1066,10 @@ mod tests {
             "W\t0\t1\t0\t1\tgone\t\t\t\t\t\t0\t0\t\t\t/srv/big-gone\n",
             "W\t0\t0\t0\t0\tb\t\t\t0\t\t\t0\t0\t9\t\t/srv/big-b\n",
             "W\t0\t0\t0\t0\ta\t\t\t0\t\t\t0\t0\t9\t\t/srv/big-a\n",
-        ));
+        ))
+        .into_iter()
+        .map(|(r, _)| r)
+        .collect();
         sort_by_size(&mut repos);
         let order: Vec<Vec<&str>> = repos
             .iter()
@@ -896,6 +1092,7 @@ mod tests {
         assert!(Host::new("my vps", "vps", vec![]).is_err());
         assert!(Host::new("vps", "-oProxyCommand=x", vec![]).is_err());
         assert!(Host::new("vps", "a b", vec![]).is_err());
+        assert!(Host::new("vps", "vps", vec!["-delete".into()]).is_err());
     }
 
     #[test]

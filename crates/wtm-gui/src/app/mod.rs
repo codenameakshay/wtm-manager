@@ -22,7 +22,7 @@ mod layout;
 mod loading;
 mod selection;
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 
@@ -359,6 +359,10 @@ pub struct WtmApp {
     /// The Add Host form or a host removal confirmation, mutually exclusive
     /// with the other overlays like `run_command`.
     host_dialog: Option<HostDialog>,
+    /// Host names with a removal running, so leaving and returning to a host
+    /// mid-removal (which drops and rebuilds its `HostView`) cannot forget
+    /// that one is in flight and let a second one start.
+    removing_hosts: HashSet<String>,
 }
 
 /// Sort registry entries into the order the sidebar displays them in:
@@ -481,6 +485,7 @@ impl WtmApp {
             hosts: remote::load_hosts(),
             host: None,
             host_dialog: None,
+            removing_hosts: HashSet::new(),
         };
 
         if let Some(repo) = initial {

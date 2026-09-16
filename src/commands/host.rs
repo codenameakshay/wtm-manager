@@ -5,7 +5,6 @@ use std::path::Path;
 
 use crate::cli::{GlobalArgs, HostArgs, HostCommand};
 use crate::commands::prune::PruneCandidate;
-use crate::config;
 use crate::error::{Error, Result};
 use crate::output;
 use crate::remote::{self, Host, RemoteRepo, RemoteWorktree};
@@ -56,12 +55,31 @@ pub fn run(args: &HostArgs, global: &GlobalArgs) -> Result<()> {
 
 fn add(name: &str, destination: &str, roots: Vec<String>, global: &GlobalArgs) -> Result<()> {
     let host = Host::new(name, destination, roots)?;
+    if !global.quiet {
+        warn_about_locally_expanded_roots(&host.roots);
+    }
     let (name, destination) = (host.name.clone(), host.destination.clone());
     remote::upsert_host(host)?;
     if !global.quiet {
         eprintln!("saved host {name} ({destination})");
     }
     Ok(())
+}
+
+/// An unquoted `--root ~/x` reaches wtm already expanded to the local home,
+/// which is rarely a path on the host.
+fn warn_about_locally_expanded_roots(roots: &[String]) {
+    let Some(dirs) = directories::BaseDirs::new() else {
+        return;
+    };
+    for root in roots {
+        if let Ok(rest) = Path::new(root).strip_prefix(dirs.home_dir()) {
+            eprintln!(
+                "warning: root {root} is under your local home directory; to mean the remote home, quote it: --root '~/{}'",
+                rest.display()
+            );
+        }
+    }
 }
 
 fn list(json: bool) -> Result<()> {
@@ -253,16 +271,16 @@ fn rm(
     let host = remote::find_host(name)?;
     let repos = remote::scan(&host, false)?;
 
-    let mut found: Option<(std::path::PathBuf, RemoteWorktree)> = None;
+    let mut found: Option<(RemoteRepo, RemoteWorktree)> = None;
     'search: for repo in &repos {
         for w in &repo.worktrees {
             if w.info.path == path {
-                found = Some((repo.path.clone(), w.clone()));
+                found = Some((repo.clone(), w.clone()));
                 break 'search;
             }
         }
     }
-    let Some((repo_path, worktree)) = found else {
+    let Some((repo, worktree)) = found else {
         return Err(Error::Other(format!(
             "no worktree at {} on {}",
             path.display(),
@@ -277,12 +295,7 @@ fn rm(
 
     let branch = worktree.info.branch.clone();
     if let Some(b) = branch.as_deref().filter(|_| with_branch) {
-        if config::load_global()?
-            .prune
-            .protected_branches
-            .iter()
-            .any(|p| p == b)
-        {
+        if repo.protected_branches.iter().any(|p| p == b) {
             return Err(Error::ProtectedBranch(b.to_string()));
         }
     }
@@ -293,7 +306,7 @@ fn rm(
         reasons: Vec::new(),
         delete_branch,
     };
-    let outcome = remote::remove_worktrees(&host, &repo_path, &[candidate], force)?
+    let outcome = remote::remove_worktrees(&host, &repo.path, &[candidate], force)?
         .into_iter()
         .next()
         .expect("one target produces one outcome");
@@ -345,7 +358,6 @@ fn prune(
     global: &GlobalArgs,
 ) -> Result<()> {
     let host = remote::find_host(name)?;
-    let protected = config::load_global()?.prune.protected_branches;
     let repos_all = remote::scan(&host, dry_run)?;
     let repos: Vec<&RemoteRepo> = if let Some(target) = in_repo {
         let filtered: Vec<&RemoteRepo> = repos_all.iter().filter(|r| r.path == target).collect();
@@ -363,7 +375,7 @@ fn prune(
 
     let mut plan: Vec<(&RemoteRepo, Vec<PruneCandidate>, Vec<PruneCandidate>)> = Vec::new();
     for repo in repos {
-        let candidates = remote::prune_candidates(repo, &protected, merged, gone, detached);
+        let candidates = remote::prune_candidates(repo, merged, gone, detached);
         let (kept, skipped) = if force {
             (candidates, Vec::new())
         } else {
@@ -465,7 +477,15 @@ fn prune(
         if kept.is_empty() {
             continue;
         }
-        let outcomes = remote::remove_worktrees(&host, &repo.path, kept, force)?;
+        let outcomes = match remote::remove_worktrees(&host, &repo.path, kept, force) {
+            Ok(outcomes) => outcomes,
+            Err(e) => {
+                for c in kept {
+                    failures.push(format!("{}: {e}", c.info.display_name()));
+                }
+                continue;
+            }
+        };
         for (c, outcome) in kept.iter().zip(outcomes) {
             if outcome.removed {
                 removed += 1;
@@ -475,6 +495,9 @@ fn prune(
                         c.info.display_name(),
                         c.info.path.display()
                     );
+                }
+                if let Some(message) = outcome.message {
+                    failures.push(format!("{}: {message}", c.info.display_name()));
                 }
             } else {
                 failures.push(format!(

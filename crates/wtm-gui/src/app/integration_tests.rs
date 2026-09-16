@@ -3001,8 +3001,9 @@ fn host_remove_selected_deletes_and_rescans(cx: &mut TestAppContext) {
     );
     view.read_with(cx, |app, _| {
         assert!(app.host_dialog.is_none());
+        assert!(app.removing_hosts.is_empty());
         let shown = shown_host(app);
-        assert!(!shown.busy && !shown.scanning);
+        assert!(!shown.scanning);
         assert_eq!(shown.selected, BTreeSet::from([main.clone()]));
         assert!(host_worktree(app, "clean-a").is_none());
         assert!(host_worktree(app, "clean-b").is_none());
@@ -3024,6 +3025,17 @@ fn host_cleanup_removes_merged_and_skips_dirty_without_force(cx: &mut TestAppCon
     let fx = Fixture::new(); // feature-x is merged and dirty
     let done = fx.add_worktree("done");
     let solo = fx.sibling_repo("solo");
+    // Detached from `main`'s tip, then committed into: its HEAD is now a
+    // descendant of `origin/main`, not merged into it. Clean Up must leave
+    // it alone — removing it would strand that commit unreachable.
+    let detached = fx.worktree_path("detached-unmerged");
+    git(
+        fx.root(),
+        &["worktree", "add", "--detach", detached.to_str().unwrap()],
+    );
+    std::fs::write(detached.join("extra.txt"), "extra\n").unwrap();
+    git(&detached, &["add", "."]);
+    git(&detached, &["commit", "-m", "diverge"]);
     fx.fake_ssh(LOCAL_SSH);
     let (view, cx) = open_app(cx, None);
     view.update_in(cx, |app, _window, cx| app.select_host(fx.host(), cx));
@@ -3043,9 +3055,11 @@ fn host_cleanup_removes_merged_and_skips_dirty_without_force(cx: &mut TestAppCon
         app.open_host_cleanup(fx.root(), window, cx)
     });
     view.read_with(cx, |app, _| {
+        let names = confirm_names(app);
         assert_eq!(
-            confirm_names(app),
-            BTreeSet::from(["done".to_string(), "feature-x".to_string()])
+            names,
+            BTreeSet::from(["done".to_string(), "feature-x".to_string()]),
+            "the unmerged detached worktree must not be a candidate: {names:?}"
         );
     });
 
@@ -3062,6 +3076,10 @@ fn host_cleanup_removes_merged_and_skips_dirty_without_force(cx: &mut TestAppCon
         "a dirty worktree survives without force"
     );
     assert!(fx.branch_exists("feature-x"));
+    assert!(
+        detached.is_dir(),
+        "an unmerged detached worktree survives Clean Up"
+    );
     view.read_with(cx, |app, _| {
         assert!(app.host_dialog.is_none());
         let status = app.status.as_ref().unwrap();
@@ -3151,4 +3169,101 @@ fn host_view_keys_inert_and_ssh_failure_shown(cx: &mut TestAppContext) {
     view.update_in(cx, |app, _window, cx| app.scan_host(cx));
     cx.run_until_parked();
     view.read_with(cx, |app, _| assert_eq!(shown_host(app).error, None));
+}
+
+#[gpui::test]
+fn host_remove_respects_repo_protected_branches(cx: &mut TestAppContext) {
+    let fx = Fixture::new();
+    std::fs::write(
+        fx.root().join(".worktree.toml"),
+        "[prune]\nprotected_branches = [\"main\", \"keep\"]\n",
+    )
+    .unwrap();
+    let keep = fx.add_worktree("keep");
+    let other = fx.add_worktree("other");
+    fx.fake_ssh(LOCAL_SSH);
+    let (view, cx) = open_app(cx, None);
+    view.update_in(cx, |app, _window, cx| app.select_host(fx.host(), cx));
+    cx.run_until_parked();
+
+    view.update_in(cx, |app, _window, cx| {
+        app.toggle_host_selection(keep.clone(), cx);
+        app.toggle_host_selection(other.clone(), cx);
+    });
+    cx.simulate_keystrokes("cmd-backspace");
+
+    view.read_with(cx, |app, _| {
+        assert_eq!(
+            confirm_names(app),
+            BTreeSet::from(["other".to_string()]),
+            "the repository's own .worktree.toml protects 'keep', overriding the built-in default list"
+        );
+    });
+}
+
+/// Regression test for a race where a host removal's own `busy` flag lived
+/// on `HostView`: leaving the host for a repository and coming back rebuilds
+/// `HostView` from scratch, so a fresh `busy = false` let a second removal
+/// start while the first was still running on the host. The fix moves the
+/// flag to `WtmApp::removing_hosts`, keyed by host name, which survives the
+/// `HostView` being dropped and recreated.
+///
+/// Deliberately does not use a sleeping fake ssh to create the race: a
+/// `cx.spawn` future's `this.update(...)` continuation cannot run until the
+/// test dispatcher is driven (`run_until_parked`/keystrokes that pump it),
+/// regardless of how fast the real ssh subprocess finishes on its own
+/// thread. Simply never parking between starting the removal and probing
+/// `removing_hosts` is enough to observe it "still running", deterministically.
+#[gpui::test]
+fn host_removal_stays_busy_after_leaving_and_returning(cx: &mut TestAppContext) {
+    let fx = Fixture::new();
+    let a = fx.add_worktree("clean-a");
+    fx.fake_ssh(LOCAL_SSH);
+    let (view, cx) = open_app(cx, Some(fx.open()));
+    cx.run_until_parked();
+
+    view.update_in(cx, |app, _window, cx| app.select_host(fx.host(), cx));
+    cx.run_until_parked();
+
+    view.update_in(cx, |app, _window, cx| {
+        app.toggle_host_selection(a.clone(), cx);
+    });
+    cx.simulate_keystrokes("cmd-backspace");
+    view.read_with(cx, |app, _| {
+        assert!(matches!(app.host_dialog, Some(HostDialog::Confirm(_))));
+    });
+
+    // Start the removal, but never park: its completion callback cannot run
+    // until the executor is driven, so the app stays exactly as
+    // `confirm_host_dialog` leaves it synchronously.
+    view.update_in(cx, |app, _window, cx| app.confirm_host_dialog(cx));
+    view.read_with(cx, |app, _| {
+        assert!(app.removing_hosts.contains("box"));
+    });
+
+    // Leave the host for the repository — this drops the `HostView` that
+    // used to carry `busy` — and come back to a brand new one.
+    view.update_in(cx, |app, _window, cx| {
+        app.select_repo(fx.root().to_path_buf(), cx);
+        app.select_host(fx.host(), cx);
+        app.toggle_host_selection(a.clone(), cx);
+    });
+
+    view.update_in(cx, |app, window, cx| app.open_host_remove(window, cx));
+    view.read_with(cx, |app, _| {
+        assert!(
+            app.host_dialog.is_none(),
+            "a second removal must be refused while the host is still in removing_hosts"
+        );
+        assert!(app.removing_hosts.contains("box"));
+    });
+
+    // Now let the first removal actually finish.
+    cx.run_until_parked();
+    view.read_with(cx, |app, _| {
+        assert!(
+            app.removing_hosts.is_empty(),
+            "the finished removal must clear its name from the set"
+        );
+    });
 }

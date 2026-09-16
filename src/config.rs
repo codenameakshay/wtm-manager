@@ -114,9 +114,23 @@ impl Default for PruneConfig {
 /// field-by-field; missing files are silently skipped. An unparseable file
 /// produces `Error::Config` naming the file path.
 pub fn load(repo_root: &Path) -> Result<Config> {
+    let repo = read_optional(&repo_root.join(REPO_CONFIG_FILENAME))?;
+    let local = read_optional(&repo_root.join(LOCAL_CONFIG_FILENAME))?;
+    load_with_repo_files(repo_root, repo.as_deref(), local.as_deref())
+}
+
+/// [`load`] for a repository whose `.worktree.toml` and
+/// `.worktree.local.toml` contents were read elsewhere, such as on a remote
+/// host. `repo_root` only names the files in error messages.
+pub fn load_with_repo_files(
+    repo_root: &Path,
+    repo: Option<&str>,
+    local: Option<&str>,
+) -> Result<Config> {
     let mut cfg = load_global()?;
 
-    if let Some(layer) = load_layer(&repo_root.join(REPO_CONFIG_FILENAME))? {
+    if let Some(contents) = repo {
+        let layer = parse_layer(contents, &repo_root.join(REPO_CONFIG_FILENAME))?;
         if layer.editor.is_some() {
             return Err(Error::Config(format!(
                 "{REPO_CONFIG_FILENAME}: editor cannot be loaded from shared repository config because it is executed as a command; move editor to {LOCAL_CONFIG_FILENAME} or the global config"
@@ -135,8 +149,11 @@ pub fn load(repo_root: &Path) -> Result<Config> {
         cfg = merge(cfg, layer);
     }
 
-    if let Some(layer) = load_layer(&repo_root.join(LOCAL_CONFIG_FILENAME))? {
-        cfg = merge(cfg, layer);
+    if let Some(contents) = local {
+        cfg = merge(
+            cfg,
+            parse_layer(contents, &repo_root.join(LOCAL_CONFIG_FILENAME))?,
+        );
     }
 
     Ok(cfg)
@@ -233,15 +250,21 @@ pub fn scaffold_repo_config(repo_root: &Path) -> Result<PathBuf> {
 /// exist; `Error::Config` (naming the path) when it exists but fails to
 /// parse.
 fn load_layer(path: &Path) -> Result<Option<ConfigFile>> {
+    read_optional(path)?
+        .map(|contents| parse_layer(&contents, path))
+        .transpose()
+}
+
+fn read_optional(path: &Path) -> Result<Option<String>> {
     match std::fs::read_to_string(path) {
-        Ok(contents) => {
-            let parsed: ConfigFile = toml::from_str(&contents)
-                .map_err(|e| Error::Config(format!("{}: {e}", path.display())))?;
-            Ok(Some(parsed))
-        }
+        Ok(contents) => Ok(Some(contents)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(Error::Io(e)),
     }
+}
+
+fn parse_layer(contents: &str, path: &Path) -> Result<ConfigFile> {
+    toml::from_str(contents).map_err(|e| Error::Config(format!("{}: {e}", path.display())))
 }
 
 const SAMPLE_CONFIG: &str = r#"# wtm repository configuration.
@@ -529,6 +552,34 @@ protected_branches = ["main", "master", "develop"]
             }
             other => panic!("expected config error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn load_with_repo_files_layers_text_over_global_config() {
+        let global = tempfile::tempdir().unwrap();
+        std::fs::write(
+            global.path().join("config.toml"),
+            "default_base = \"origin/main\"\n[prune]\nprotected_branches = [\"main\"]\n",
+        )
+        .unwrap();
+        let _guard = EnvGuard::set("WTM_CONFIG_DIR", global.path());
+        let root = Path::new("/srv/app");
+
+        let cfg = load_with_repo_files(
+            root,
+            Some("[prune]\nprotected_branches = [\"main\", \"release\"]\n"),
+            Some("path_template = \"../x/{branch}\"\n"),
+        )
+        .unwrap();
+        assert_eq!(cfg.prune.protected_branches, ["main", "release"]);
+        assert_eq!(cfg.default_base.as_deref(), Some("origin/main"));
+        assert_eq!(cfg.path_template, "../x/{branch}");
+
+        let error = load_with_repo_files(root, Some("not toml [[["), None).unwrap_err();
+        assert!(
+            error.to_string().contains("/srv/app/.worktree.toml"),
+            "{error}"
+        );
     }
 
     #[test]

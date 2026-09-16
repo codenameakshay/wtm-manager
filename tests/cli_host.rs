@@ -275,6 +275,60 @@ fn host_rm_with_branch_refuses_protected_branch() {
 }
 
 #[test]
+fn host_rm_with_branch_respects_repo_protected_branches() {
+    let repo = TestRepo::new();
+    let ssh = common::write_fake_ssh(repo.base());
+    repo.wtm().args(["add", "keep"]).assert().success();
+    let keep_path = repo.default_worktree_path("keep");
+
+    repo.write_repo_config("[prune]\nprotected_branches = [\"main\", \"keep\"]\n");
+
+    host_add(&repo, &ssh, "ubuntu@example.com", &[repo.base()]).success();
+
+    repo.wtm()
+        .env("WTM_SSH", &ssh)
+        .args(["host", "rm", "vps"])
+        .arg(&keep_path)
+        .arg("--with-branch")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("branch 'keep' is protected"));
+    assert!(keep_path.exists());
+}
+
+#[test]
+fn host_scan_fails_on_invalid_repo_config() {
+    let repo = TestRepo::new();
+    let ssh = common::write_fake_ssh(repo.base());
+    repo.write_repo_config("not toml [[[");
+
+    host_add(&repo, &ssh, "ubuntu@example.com", &[repo.base()]).success();
+
+    repo.wtm()
+        .env("WTM_SSH", &ssh)
+        .args(["host", "scan", "vps"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(".worktree.toml"));
+}
+
+#[test]
+fn host_add_warns_about_locally_expanded_root() {
+    let repo = TestRepo::new();
+    let ssh = common::write_fake_ssh(repo.base());
+    let root = repo.base().join("home").join("projects");
+
+    repo.wtm()
+        .env("WTM_SSH", &ssh)
+        .args(["host", "add", "vps", "x"])
+        .arg("--root")
+        .arg(&root)
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("quote it: --root '~/projects'"));
+}
+
+#[test]
 fn host_prune_merged_dry_run_then_prune() {
     let repo = TestRepo::new();
     let ssh = common::write_fake_ssh(repo.base());
@@ -318,6 +372,38 @@ fn host_prune_merged_dry_run_then_prune() {
         .trim()
         .is_empty());
     assert!(path_b.exists());
+}
+
+#[test]
+fn host_prune_respects_repo_protected_branches() {
+    let repo = TestRepo::new();
+    let ssh = common::write_fake_ssh(repo.base());
+    repo.wtm().args(["add", "keep"]).assert().success();
+    repo.wtm().args(["add", "drop"]).assert().success();
+    let keep_path = repo.default_worktree_path("keep");
+    let drop_path = repo.default_worktree_path("drop");
+
+    repo.write_repo_config("[prune]\nprotected_branches = [\"main\", \"keep\"]\n");
+
+    host_add(&repo, &ssh, "ubuntu@example.com", &[repo.base()]).success();
+
+    let assert = repo
+        .wtm()
+        .env("WTM_SSH", &ssh)
+        .args(["host", "prune", "vps", "--merged", "--json"])
+        .assert()
+        .success();
+    let v: serde_json::Value = serde_json::from_str(&stdout_str(&assert)).expect("valid JSON");
+    let candidates: Vec<String> = v["candidates"]
+        .as_array()
+        .expect("candidates array")
+        .iter()
+        .map(|c| c.as_str().expect("string").to_string())
+        .collect();
+    assert_eq!(candidates, ["drop"]);
+    assert_eq!(v["removed"], 1, "{v}");
+    assert!(keep_path.exists());
+    assert!(!drop_path.exists());
 }
 
 #[test]
