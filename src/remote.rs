@@ -343,12 +343,22 @@ pub fn format_size(bytes: u64) -> String {
     }
 }
 
-/// `RemoteCommand=none` because a `RemoteCommand` in the user's ssh config
-/// makes ssh refuse the `sh -s` command.
+/// Options that override the user's ssh config for these one-shot scripts:
+/// - `RemoteCommand=none`: a configured `RemoteCommand` makes ssh refuse the
+///   `sh -s` command.
+/// - `ClearAllForwardings=yes`: a configured `RemoteForward` fails when
+///   another session already holds the port (ssh exits under
+///   `ExitOnForwardFailure`), and would otherwise tie the port to wtm's
+///   shared connection for `ControlPersist`.
+/// - `-a -x`: the scripts need neither the agent nor X11 on the host.
 const SSH_OPTIONS: &[&str] = &[
     "-T",
+    "-a",
+    "-x",
     "-o",
     "RemoteCommand=none",
+    "-o",
+    "ClearAllForwardings=yes",
     "-o",
     "BatchMode=yes",
     "-o",
@@ -411,7 +421,7 @@ fn run_script(host: &Host, script: &str) -> Result<String> {
         return Ok(String::from_utf8_lossy(&output.stdout).into_owned());
     }
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    let message = if output.status.code() == Some(255) {
+    let message = if output.status.code() == Some(255) && needs_login_hint(&stderr) {
         format!(
             "{} (wtm connects with BatchMode=yes: run `ssh {}` in a terminal once to accept the host key and check that key-based login works)",
             if stderr.is_empty() { "ssh failed" } else { &stderr },
@@ -426,6 +436,21 @@ fn run_script(host: &Host, script: &str) -> Result<String> {
         host: host.name.clone(),
         message,
     })
+}
+
+/// ssh exits 255 for every failure of its own, but only a login or host-key
+/// failure is fixed by running `ssh` interactively once.
+fn needs_login_hint(stderr: &str) -> bool {
+    const LOGIN_FAILURES: &[&str] = &[
+        "permission denied",
+        "host key verification failed",
+        "no more authentication methods",
+        "too many authentication failures",
+        "remote host identification has changed",
+        "authentication failed",
+    ];
+    let stderr = stderr.to_lowercase();
+    stderr.is_empty() || LOGIN_FAILURES.iter().any(|f| stderr.contains(f))
 }
 
 /// Single-quote `s` for POSIX `sh`.
@@ -1100,6 +1125,21 @@ mod tests {
         assert_eq!(sh_root("~"), "\"$HOME\"");
         assert_eq!(sh_root("~/it's"), "\"$HOME\"/'it'\\''s'");
         assert_eq!(sh_root("/srv/$x"), "'/srv/$x'");
+    }
+
+    #[test]
+    fn login_hint_only_for_login_and_host_key_failures() {
+        assert!(needs_login_hint(
+            "ubuntu@vps: Permission denied (publickey)."
+        ));
+        assert!(needs_login_hint("Host key verification failed."));
+        assert!(needs_login_hint(""));
+        assert!(!needs_login_hint(
+            "Error: remote port forwarding failed for listen port 8317"
+        ));
+        assert!(!needs_login_hint(
+            "ssh: connect to host vps port 22: Connection refused"
+        ));
     }
 
     #[test]

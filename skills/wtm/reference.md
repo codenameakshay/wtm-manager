@@ -335,7 +335,9 @@ would remove; dirty ones listed in `skipped` are not counted).
 plain `git` (and `du`) there — nothing is installed. ssh runs with
 `BatchMode=yes` (key or agent login only; run `ssh <destination>` once
 yourself first so the host key is in `known_hosts`) and
-`ConnectTimeout=10`, and `RemoteCommand=none`. It reuses one connection
+`ConnectTimeout=10`, `RemoteCommand=none`, and `ClearAllForwardings=yes`
+(plus `-a -x`), so forwards and remote commands in your ssh config do not
+apply to these calls. It reuses one connection
 for 60 seconds via `ControlPath=~/.ssh/wtm-%C` when `~/.ssh` exists and
 the socket path fits. Set `$WTM_SSH` to use a different ssh program. `scan` searches each root (default: the remote
 home) up to 4 directory levels deep for `.git` directories, skipping

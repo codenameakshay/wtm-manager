@@ -258,7 +258,9 @@ palette) asks for three things:
   remote home directory.
 
 wtm runs the system `ssh` with `BatchMode=yes`, so it never asks for a
-password. Key or agent login must work, and the host key must already be
+password. It also clears any port forwards from your ssh config for these
+calls, so a host whose config forwards a port still scans while another
+session holds that port. Key or agent login must work, and the host key must already be
 in `known_hosts`. Run `ssh <destination>` in a terminal once before you
 add the host.
 

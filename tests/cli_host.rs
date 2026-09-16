@@ -420,7 +420,7 @@ fn host_unknown_name_errors() {
 }
 
 #[test]
-fn host_ssh_failure_is_reported() {
+fn host_ssh_connection_failure_is_reported_without_login_hint() {
     let repo = TestRepo::new();
     let ssh = repo.base().join("fake-ssh-fail");
     common::write_executable_script(
@@ -440,5 +440,58 @@ fn host_ssh_failure_is_reported() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("Connection refused"))
-        .stderr(predicate::str::contains("BatchMode=yes"));
+        .stderr(predicate::str::contains("BatchMode=yes").not());
+}
+
+#[test]
+fn host_ssh_login_failure_suggests_an_interactive_login() {
+    let repo = TestRepo::new();
+    let ssh = repo.base().join("fake-ssh-denied");
+    common::write_executable_script(
+        &ssh,
+        "#!/bin/sh\necho 'ubuntu@example.com: Permission denied (publickey).' >&2\nexit 255\n",
+    );
+    repo.wtm()
+        .env("WTM_SSH", &ssh)
+        .args(["host", "add", "vps", "ubuntu@example.com"])
+        .assert()
+        .success();
+
+    repo.wtm()
+        .env("WTM_SSH", &ssh)
+        .args(["host", "scan", "vps"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Permission denied (publickey)."))
+        .stderr(predicate::str::contains(
+            "run `ssh ubuntu@example.com` in a terminal once",
+        ));
+}
+
+#[test]
+fn host_ssh_ignores_configured_port_forwards() {
+    let repo = TestRepo::new();
+    let args_file = repo.base().join("ssh-args");
+    let ssh = repo.base().join("fake-ssh-forward");
+    common::write_executable_script(
+        &ssh,
+        &format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\ncase \" $* \" in\n  *' ClearAllForwardings=yes '*) exec sh -s ;;\nesac\necho 'Error: remote port forwarding failed for listen port 8317' >&2\nexit 255\n",
+            args_file.display()
+        ),
+    );
+    host_add(&repo, &ssh, "ubuntu@example.com", &[repo.base()]).success();
+
+    repo.wtm()
+        .env("WTM_SSH", &ssh)
+        .args(["host", "scan", "vps", "--no-size", "--json"])
+        .assert()
+        .success();
+
+    let args = std::fs::read_to_string(&args_file).unwrap();
+    let args: Vec<&str> = args.lines().collect();
+    assert!(args.contains(&"ClearAllForwardings=yes"), "{args:?}");
+    assert!(args.contains(&"-a") && args.contains(&"-x"), "{args:?}");
+    let dash_dash = args.iter().position(|a| *a == "--").unwrap();
+    assert_eq!(&args[dash_dash + 1..], ["ubuntu@example.com", "sh -s"]);
 }
